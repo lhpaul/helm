@@ -3,9 +3,16 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "dev": "echo 'stub — implementar en Bloque 3'",
-    "build": "echo 'stub'",
-    "test": "echo 'stub'",
-    "lint": "echo 'stub'"
+    "dev": "bun run --watch src/index.ts",
+    "build": "tsc --noEmit && bun build src/index.ts --outdir dist --target bun",
+    "test": "echo 'no tests yet'",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "@helm/shared": "workspace:*",
+    "hono": "^4.12.18"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.13"
   }
 }

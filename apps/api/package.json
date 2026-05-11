@@ -1,0 +1,11 @@
+{
+  "name": "@helm/api",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "echo 'stub — implementar en Bloque 3'",
+    "build": "echo 'stub'",
+    "test": "echo 'stub'",
+    "lint": "echo 'stub'"
+  }
+}

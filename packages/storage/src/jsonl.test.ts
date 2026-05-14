@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,6 +41,14 @@ describe('appendJsonl / readJsonl', () => {
   it('readJsonl returns empty array when file does not exist', async () => {
     const result = await readJsonl(join(testDir, 'non-existent.jsonl'));
     expect(result).toEqual([]);
+  });
+
+  it('throws with path and 1-indexed line number on malformed JSON', async () => {
+    const path = join(testDir, 'costs.jsonl');
+    // line 1: valid, line 2: malformed
+    await writeFile(path, '{"ok":true}\n{bad json}\n', 'utf-8');
+
+    await expect(readJsonl(path)).rejects.toThrow(`Invalid JSONL at "${path}" line 2`);
   });
 
   it('each line is parsed independently as a separate entry', async () => {

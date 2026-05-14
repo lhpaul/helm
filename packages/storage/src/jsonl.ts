@@ -14,7 +14,7 @@ export async function appendJsonl<T>(path: string, entry: T): Promise<void> {
 /**
  * Reads and parses all entries from a .jsonl file.
  * Returns [] if the file does not exist (ENOENT).
- * Throws if any line contains invalid JSON (corrupted log is a real error).
+ * Throws with path + 1-indexed line number if any line contains invalid JSON.
  */
 export async function readJsonl<T>(path: string): Promise<T[]> {
   let content: string;
@@ -26,6 +26,13 @@ export async function readJsonl<T>(path: string): Promise<T[]> {
   }
   return content
     .split('\n')
-    .filter((line) => line.trim() !== '')
-    .map((line) => JSON.parse(line) as T);
+    .map((line, index) => ({ line, lineNo: index + 1 }))
+    .filter(({ line }) => line.trim() !== '')
+    .map(({ line, lineNo }) => {
+      try {
+        return JSON.parse(line) as T;
+      } catch {
+        throw new Error(`Invalid JSONL at "${path}" line ${lineNo}`);
+      }
+    });
 }

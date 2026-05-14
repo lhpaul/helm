@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { WORKFLOW_STAGES } from '@helm/workflow';
 
 // ── Issue Tracker (discriminated union on `provider`) ────────────────────────
 
@@ -36,18 +37,9 @@ const CodeRepoSchema = z
   .strict();
 
 // ── Workflow ─────────────────────────────────────────────────────────────────
+// WORKFLOW_STAGES is the single source of truth — defined in @helm/workflow.
 
-const WorkflowStageSchema = z.enum([
-  'discovery',
-  'spec-draft',
-  'spec-ready',
-  'plan-draft',
-  'plan-ready',
-  'in-development',
-  'code-review',
-  'remediation',
-  'released',
-]);
+const WorkflowStageSchema = z.enum(WORKFLOW_STAGES);
 
 // ── Specialists ──────────────────────────────────────────────────────────────
 // runtime enum is intentionally narrow in v0; extended to deepseek | anthropic_api | ollama in v1+
@@ -115,5 +107,5 @@ export const ProductSchema = z
 export type Product = z.infer<typeof ProductSchema>;
 export type IssueTracker = z.infer<typeof IssueTrackerSchema>;
 export type CodeRepo = z.infer<typeof CodeRepoSchema>;
-export type WorkflowStage = z.infer<typeof WorkflowStageSchema>;
+// WorkflowStage is re-exported from @helm/workflow via config/index.ts — not redefined here.
 export type Specialist = z.infer<typeof SpecialistSchema>;

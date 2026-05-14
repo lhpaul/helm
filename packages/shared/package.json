@@ -11,6 +11,7 @@
     "lint": "eslint src/"
   },
   "dependencies": {
+    "@helm/workflow": "workspace:*",
     "yaml": "^2.9.0",
     "zod": "^3.25.76"
   },

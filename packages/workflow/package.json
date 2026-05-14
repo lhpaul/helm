@@ -1,0 +1,14 @@
+{
+  "name": "@helm/workflow",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pure TypeScript workflow state machine for Helm's 9-stage pipeline.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src/"
+  }
+}

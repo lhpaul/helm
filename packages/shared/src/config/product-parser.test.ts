@@ -1,6 +1,11 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { ProductConfigError, parseProductConfig } from './product-parser.js';
+import {
+  ProductConfigError,
+  parseProductConfig,
+  parseProductConfigFromFile,
+} from './product-parser.js';
 
 const fixture = (name: string): string =>
   readFileSync(new URL(`./__fixtures__/${name}`, import.meta.url), 'utf-8');
@@ -144,5 +149,25 @@ describe('parseProductConfig', () => {
       expect(() => parseProductConfig(fixture('invalid-runtime.yaml'))).toThrow(ProductConfigError);
       expect(() => parseProductConfig(fixture('invalid-runtime.yaml'))).toThrow('runtime');
     });
+  });
+});
+
+describe('parseProductConfigFromFile', () => {
+  it('parses a valid YAML file from disk', async () => {
+    const filePath = fileURLToPath(
+      new URL('./__fixtures__/valid-github-projects.yaml', import.meta.url),
+    );
+    const config = await parseProductConfigFromFile(filePath);
+
+    expect(config.product.slug).toBe('example-app');
+    expect(config.issue_tracker.provider).toBe('github_projects');
+  });
+
+  it('throws ProductConfigError when file cannot be read', async () => {
+    const missingPath = fileURLToPath(
+      new URL('./__fixtures__/does-not-exist.yaml', import.meta.url),
+    );
+    await expect(parseProductConfigFromFile(missingPath)).rejects.toThrow(ProductConfigError);
+    await expect(parseProductConfigFromFile(missingPath)).rejects.toThrow('Cannot read file:');
   });
 });

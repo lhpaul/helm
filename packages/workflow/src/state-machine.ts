@@ -40,9 +40,10 @@ export function canTransition(from: WorkflowStage, to: WorkflowStage): boolean {
 /**
  * Returns the list of stages reachable from the given stage.
  * Returns an empty array for terminal stages (e.g. 'released').
+ * Returns a copy so callers cannot mutate the internal transition map.
  */
 export function getValidNextStages(from: WorkflowStage): readonly WorkflowStage[] {
-  return VALID_TRANSITIONS[from];
+  return [...VALID_TRANSITIONS[from]];
 }
 
 /**

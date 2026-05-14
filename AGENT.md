@@ -27,7 +27,21 @@ Leé estos antes de tomar decisiones técnicas:
 
 - `/Users/lhpaul/Git/MOME/agent-hq` — herramienta existente en MOME. Fuente de patrones técnicos a heredar (orquestador, terminal bridge, fan-out reviewers, cost tracking). Leer su `CLAUDE.md` antes de implementar cualquier patrón que ya esté resuelto ahí.
 - `/Users/lhpaul/Git/ai-dev-framework-template` — template del que Helm hereda Spec → Plan → Code, REVIEW.md, branch naming, CHANGELOG. Leer su `AGENTS.md` para entender la filosofía protocol-first.
-- `/Users/lhpaul/Git/Helm/helm-knowledge` (próximamente) — knowledge repo del propio Helm: specs, plans, ADRs, retrospectivas.
+- `/Users/lhpaul/Git/Helm/helm-knowledge` — knowledge repo del propio Helm: `.helm/product.yaml`, specs, plans, ADRs, retrospectivas.
+
+## Configuración local
+
+Las variables de entorno del server API viven en `apps/api/.env` (no en la raíz).
+Bun lee `.env` del directorio de trabajo del proceso — que es `apps/api/` cuando Turbo lanza el dev server.
+
+Para arrancar localmente: `cp apps/api/.env.example apps/api/.env` y completar los valores.
+
+| Variable                   | Paquete    | Descripción                                                                                                                            |
+| -------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `HELM_KNOWLEDGE_REPO_PATH` | `apps/api` | Path absoluto al knowledge repo del Product activo (donde vive `.helm/product.yaml`). Ejemplo: `/Users/lhpaul/Git/Helm/helm-knowledge` |
+
+Si en el futuro `apps/web` necesita variables de entorno, irán en `apps/web/.env.example` / `apps/web/.env` por separado.
+No centralizamos en root para no necesitar dotenv-cli overhead.
 
 ## Stack confirmado (v0)
 

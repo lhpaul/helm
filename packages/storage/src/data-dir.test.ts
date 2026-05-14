@@ -46,14 +46,20 @@ describe('ensureDataDir', () => {
 });
 
 describe('path helpers', () => {
-  it('agent-run helpers return expected paths without creating anything', () => {
+  it('agent-run helpers return expected paths without creating anything', async () => {
     const runDir = getAgentRunDir(testDir, 'run-abc123');
+
+    // verify runDir does not exist before calling helpers
+    await expect(stat(runDir)).rejects.toMatchObject({ code: 'ENOENT' });
 
     expect(runDir).toBe(join(testDir, 'agent-runs', 'run-abc123'));
     expect(getMetaPath(runDir)).toBe(join(runDir, 'meta.json'));
     expect(getLogPath(runDir)).toBe(join(runDir, 'log.txt'));
     expect(getCostsPath(runDir)).toBe(join(runDir, 'costs.jsonl'));
     expect(getInstructionsPath(runDir)).toBe(join(runDir, 'instructions.txt'));
+
+    // verify helpers left no filesystem side-effects
+    await expect(stat(runDir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('getLinearItemCachePath returns expected path for a linearId', () => {

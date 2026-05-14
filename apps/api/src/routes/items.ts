@@ -50,8 +50,10 @@ itemsRouter.post('/items', async (c) => {
     const config = await getProductConfig();
     productSlug = config.product.slug;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Failed to load product config';
-    return c.json({ error: msg }, 500);
+    // Log full error server-side for operator diagnostics; return a generic
+    // message to the client to avoid leaking filesystem paths or config details.
+    console.error('[items] Failed to load product config:', err);
+    return c.json({ error: 'Failed to load product config' }, 500);
   }
 
   const store = await getItemStore();

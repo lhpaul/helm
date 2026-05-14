@@ -105,12 +105,13 @@ describe('POST /api/items', () => {
     expect(res.status).toBe(409);
   });
 
-  it('returns 500 when HELM_KNOWLEDGE_REPO_PATH is not set', async () => {
+  it('returns 500 with generic message when product config cannot be loaded', async () => {
     delete process.env.HELM_KNOWLEDGE_REPO_PATH;
     const res = await post('/api/items', { externalId: 'HLM-1', triggeredBy: 't' });
     expect(res.status).toBe(500);
     const body = (await res.json()) as { error: string };
-    expect(body.error).toContain('HELM_KNOWLEDGE_REPO_PATH');
+    // Generic message — internal details (env var names, paths) are logged server-side only
+    expect(body.error).toBe('Failed to load product config');
   });
 });
 

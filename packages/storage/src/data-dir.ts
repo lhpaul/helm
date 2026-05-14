@@ -18,6 +18,8 @@ export type DataPaths = {
   linearCache: string;
   /** data/reviewers/ — fan-out tracker files per PR */
   reviewers: string;
+  /** data/items/ — one JSON file per tracked item (workflow state + history) */
+  items: string;
 };
 
 /**
@@ -33,6 +35,7 @@ export async function ensureDataDir(rootPath: string): Promise<DataPaths> {
     worktreesKnowledge: join(rootPath, 'worktrees', 'knowledge'),
     linearCache: join(rootPath, 'linear-cache'),
     reviewers: join(rootPath, 'reviewers'),
+    items: join(rootPath, 'items'),
   };
 
   await Promise.all([
@@ -41,6 +44,7 @@ export async function ensureDataDir(rootPath: string): Promise<DataPaths> {
     mkdir(paths.worktreesKnowledge, { recursive: true }),
     mkdir(join(rootPath, 'linear-cache', 'items'), { recursive: true }),
     mkdir(paths.reviewers, { recursive: true }),
+    mkdir(paths.items, { recursive: true }),
   ]);
 
   return paths;

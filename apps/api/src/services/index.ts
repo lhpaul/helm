@@ -14,7 +14,10 @@ let _itemStore: ItemStore | null = null;
  */
 export async function getItemStore(): Promise<ItemStore> {
   if (_itemStore !== null) return _itemStore;
-  const dataRoot = process.env.HELM_DATA_DIR ?? join(process.cwd(), 'data');
+  // Use ?.trim() + truthiness so an empty-string value (as in .env.example before
+  // it is filled in) falls through to the documented default, same as unset.
+  const envDataDir = process.env.HELM_DATA_DIR?.trim();
+  const dataRoot = envDataDir ? envDataDir : join(process.cwd(), 'data');
   const paths = await ensureDataDir(dataRoot);
   _itemStore = new ItemStore(paths.items);
   return _itemStore;

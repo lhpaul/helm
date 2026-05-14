@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,7 +38,8 @@ describe('writeJsonAtomic', () => {
     await writeJsonAtomic(path, { ok: true });
 
     expect(existsSync(path)).toBe(true);
-    expect(existsSync(`${path}.tmp`)).toBe(false);
+    const files = await readdir(testDir);
+    expect(files.filter((f) => f.endsWith('.tmp'))).toHaveLength(0);
   });
 });
 

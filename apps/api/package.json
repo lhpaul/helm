@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@helm/shared": "workspace:*",
+    "@helm/storage": "workspace:*",
     "@helm/workflow": "workspace:*",
     "hono": "^4.12.18"
   },

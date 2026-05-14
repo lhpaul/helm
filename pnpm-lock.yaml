@@ -47,6 +47,9 @@ importers:
       '@helm/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@helm/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       '@helm/workflow':
         specifier: workspace:*
         version: link:../../packages/workflow

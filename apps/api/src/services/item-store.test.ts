@@ -170,6 +170,14 @@ describe('externalId validation', () => {
     ).rejects.toThrow('Invalid externalId');
   });
 
+  it('rejects leading-dot IDs that would be invisible to list()', async () => {
+    // list() filters dotfiles with !f.startsWith('.'), so .foo.json would be
+    // written by create() but never returned — guard against the inconsistency.
+    await expect(
+      store.create({ externalId: '.hidden', productSlug: 'helm', triggeredBy: 't' }),
+    ).rejects.toThrow('Invalid externalId');
+  });
+
   it('accepts standard tracker ID formats', async () => {
     for (const id of ['MOM-142', 'HLM-7', 'issue_3', 'feature.v2', 'PROJ-001']) {
       await expect(

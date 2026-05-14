@@ -14,13 +14,18 @@ export class ItemStore {
   constructor(private readonly itemsDir: string) {}
 
   /**
-   * Rejects externalIds that could escape itemsDir via path traversal.
+   * Rejects externalIds that could escape itemsDir via path traversal or
+   * produce dotfiles that list() would silently skip.
    * Allows typical tracker formats: MOM-142, HLM-7, issue_3, feature.v2
-   * Blocks: slashes, backslashes, spaces, and any other special characters.
+   * Blocks: slashes, backslashes, spaces, leading dots, and other specials.
    */
   private assertSafeExternalId(externalId: string): void {
-    if (!/^[A-Za-z0-9._-]+$/.test(externalId)) {
-      throw new Error(`Invalid externalId: "${externalId}". Must match pattern [A-Za-z0-9._-]+`);
+    // (?!\.) — leading dot disallowed: list() drops dotfiles so .foo would
+    // be persisted by create() but never returned by list().
+    if (!/^(?!\.)[A-Za-z0-9._-]+$/.test(externalId)) {
+      throw new Error(
+        `Invalid externalId: "${externalId}". Must match [A-Za-z0-9._-]+ and must not start with "."`,
+      );
     }
   }
 

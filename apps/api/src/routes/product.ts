@@ -19,7 +19,16 @@ productRouter.get('/product', async (c) => {
   } catch (err) {
     // File not found — check err.code directly (preserved by parseProductConfigFromFile)
     if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
-      return c.json({ error: `product.yaml not found at expected location: ${configPath}` }, 404);
+      // Log the absolute path server-side for operational debugging; return only the
+      // relative location to the client to avoid leaking host filesystem structure.
+      console.error(`[product] config file not found: ${configPath}`);
+      return c.json(
+        {
+          error:
+            'product.yaml not found at expected location: $HELM_KNOWLEDGE_REPO_PATH/.helm/product.yaml',
+        },
+        404,
+      );
     }
     // Validation or YAML parse error — message already contains the field path
     if (err instanceof ProductConfigError) {

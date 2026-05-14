@@ -163,11 +163,15 @@ describe('parseProductConfigFromFile', () => {
     expect(config.issue_tracker.provider).toBe('github_projects');
   });
 
-  it('throws ProductConfigError when file cannot be read', async () => {
+  it('throws ProductConfigError with preserved fs error code when file cannot be read', async () => {
     const missingPath = fileURLToPath(
       new URL('./__fixtures__/does-not-exist.yaml', import.meta.url),
     );
-    await expect(parseProductConfigFromFile(missingPath)).rejects.toThrow(ProductConfigError);
-    await expect(parseProductConfigFromFile(missingPath)).rejects.toThrow('Cannot read file:');
+    const err = await parseProductConfigFromFile(missingPath).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ProductConfigError);
+    expect((err as ProductConfigError).message).toContain('Cannot read file:');
+    // code is preserved so callers can check err.code === 'ENOENT' without inspecting cause
+    expect((err as ProductConfigError).code).toBe('ENOENT');
   });
 });

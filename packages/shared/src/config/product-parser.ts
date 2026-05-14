@@ -8,6 +8,8 @@ export class ProductConfigError extends Error {
   constructor(
     message: string,
     public override readonly cause?: ZodError | Error,
+    /** Preserved fs error code (e.g. 'ENOENT') — allows callers to check err.code without inspecting cause. */
+    public readonly code?: string,
   ) {
     super(message);
     this.name = 'ProductConfigError';
@@ -46,7 +48,8 @@ export async function parseProductConfigFromFile(filePath: string): Promise<Prod
   try {
     content = await readFile(filePath, 'utf-8');
   } catch (err) {
-    throw new ProductConfigError(`Cannot read file: ${filePath}`, err as Error);
+    const fsErr = err as NodeJS.ErrnoException;
+    throw new ProductConfigError(`Cannot read file: ${filePath}`, fsErr, fsErr.code);
   }
   return parseProductConfig(content);
 }

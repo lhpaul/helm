@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises';
+import { readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readJson, writeJsonAtomic } from '@helm/storage';
 import { INITIAL_STAGE, validateTransition } from '@helm/workflow';
@@ -42,17 +42,17 @@ export class ItemStore {
   /**
    * Creates a new item at INITIAL_STAGE ('discovery') with a creation event.
    * Throws ItemAlreadyExistsError if an item with this externalId already exists.
+   *
+   * Uses writeFile with flag 'wx' (exclusive create) for atomic check-and-create:
+   * the OS rejects the write with EEXIST if the file already exists, eliminating
+   * the read-then-write race of a readJson+writeJsonAtomic sequence.
    */
   async create(input: {
     externalId: string;
     productSlug: string;
     triggeredBy: string;
   }): Promise<ItemState> {
-    const existing = await readJson<ItemState>(this.itemPath(input.externalId));
-    if (existing !== null) {
-      throw new ItemAlreadyExistsError(input.externalId);
-    }
-
+    const filePath = this.itemPath(input.externalId);
     const now = new Date().toISOString();
     const creationEvent: WorkflowEvent = {
       fromStage: null,
@@ -70,7 +70,15 @@ export class ItemStore {
       updatedAt: now,
     };
 
-    await writeJsonAtomic(this.itemPath(input.externalId), state);
+    try {
+      await writeFile(filePath, JSON.stringify(state, null, 2), { encoding: 'utf-8', flag: 'wx' });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new ItemAlreadyExistsError(input.externalId);
+      }
+      throw err;
+    }
+
     return state;
   }
 

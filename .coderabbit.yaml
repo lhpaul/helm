@@ -3,7 +3,7 @@ reviews:
   request_changes_workflow: false # no bloquees el merge automático
   high_level_summary: true
   poem: false # apaga el "poema" cómico al final de cada review
-  review_status: false # no postee "Review pending" status
+  review_status: true
   auto_review:
     enabled: true
     drafts: false # no revise PRs en draft

@@ -1,7 +1,8 @@
 {
-  "name": "@helm/shared",
+  "name": "@helm/workflow",
   "version": "0.0.0",
   "private": true,
+  "description": "Pure TypeScript workflow state machine for Helm's 9-stage pipeline.",
   "exports": {
     ".": "./src/index.ts"
   },
@@ -9,13 +10,5 @@
     "build": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint src/"
-  },
-  "dependencies": {
-    "@helm/workflow": "workspace:*",
-    "yaml": "^2.9.0",
-    "zod": "^3.25.76"
-  },
-  "devDependencies": {
-    "@types/node": "^22.19.19"
   }
 }

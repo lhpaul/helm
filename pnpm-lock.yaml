@@ -85,6 +85,9 @@ importers:
 
   packages/shared:
     dependencies:
+      '@helm/workflow':
+        specifier: workspace:*
+        version: link:../workflow
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -101,6 +104,8 @@ importers:
       '@types/node':
         specifier: ^22.19.19
         version: 22.19.19
+
+  packages/workflow: {}
 
 packages:
 

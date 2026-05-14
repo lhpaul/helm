@@ -157,3 +157,24 @@ describe('list', () => {
     expect(items[0]?.externalId).toBe('HLM-1');
   });
 });
+
+describe('externalId validation', () => {
+  it('rejects path traversal sequences in all public methods', async () => {
+    const traversalId = '../escape';
+    await expect(
+      store.create({ externalId: traversalId, productSlug: 'helm', triggeredBy: 't' }),
+    ).rejects.toThrow('Invalid externalId');
+    await expect(store.get(traversalId)).rejects.toThrow('Invalid externalId');
+    await expect(
+      store.transition({ externalId: traversalId, toStage: 'spec-draft', triggeredBy: 't' }),
+    ).rejects.toThrow('Invalid externalId');
+  });
+
+  it('accepts standard tracker ID formats', async () => {
+    for (const id of ['MOM-142', 'HLM-7', 'issue_3', 'feature.v2', 'PROJ-001']) {
+      await expect(
+        store.create({ externalId: id, productSlug: 'helm', triggeredBy: 't' }),
+      ).resolves.toBeDefined();
+    }
+  });
+});

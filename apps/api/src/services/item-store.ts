@@ -13,7 +13,19 @@ import type { ItemState, WorkflowEvent } from './types.js';
 export class ItemStore {
   constructor(private readonly itemsDir: string) {}
 
+  /**
+   * Rejects externalIds that could escape itemsDir via path traversal.
+   * Allows typical tracker formats: MOM-142, HLM-7, issue_3, feature.v2
+   * Blocks: slashes, backslashes, spaces, and any other special characters.
+   */
+  private assertSafeExternalId(externalId: string): void {
+    if (!/^[A-Za-z0-9._-]+$/.test(externalId)) {
+      throw new Error(`Invalid externalId: "${externalId}". Must match pattern [A-Za-z0-9._-]+`);
+    }
+  }
+
   private itemPath(externalId: string): string {
+    this.assertSafeExternalId(externalId);
     return join(this.itemsDir, `${externalId}.json`);
   }
 

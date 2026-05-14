@@ -4,6 +4,7 @@ import { readJson, writeJsonAtomic } from '@helm/storage';
 import { INITIAL_STAGE, validateTransition } from '@helm/workflow';
 import type { WorkflowStage } from '@helm/workflow';
 import { ItemAlreadyExistsError, ItemNotFoundError } from './errors.js';
+import { EXTERNAL_ID_REGEX } from './types.js';
 import type { ItemState, WorkflowEvent } from './types.js';
 
 /**
@@ -20,9 +21,9 @@ export class ItemStore {
    * Blocks: slashes, backslashes, spaces, leading dots, and other specials.
    */
   private assertSafeExternalId(externalId: string): void {
-    // (?!\.) — leading dot disallowed: list() drops dotfiles so .foo would
-    // be persisted by create() but never returned by list().
-    if (!/^(?!\.)[A-Za-z0-9._-]+$/.test(externalId)) {
+    // EXTERNAL_ID_REGEX is the single source of truth (defined in types.ts).
+    // This check is defense-in-depth — route handlers validate first.
+    if (!EXTERNAL_ID_REGEX.test(externalId)) {
       throw new Error(
         `Invalid externalId: "${externalId}". Must match [A-Za-z0-9._-]+ and must not start with "."`,
       );

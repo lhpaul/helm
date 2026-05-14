@@ -1,6 +1,16 @@
 import type { WorkflowStage } from '@helm/workflow';
 
 /**
+ * Validates externalId values for safe filesystem use.
+ * Allows standard tracker formats: MOM-142, HLM-7, issue_3, feature.v2
+ * Blocks: slashes, backslashes, spaces, leading dots, and other specials.
+ *
+ * Single source of truth — imported by both ItemStore and route handlers
+ * so the validation stays in sync.
+ */
+export const EXTERNAL_ID_REGEX = /^(?!\.)[A-Za-z0-9._-]+$/;
+
+/**
  * A single recorded transition in an item's workflow history.
  * fromStage is null only for the initial creation event.
  */

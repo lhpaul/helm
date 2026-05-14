@@ -47,6 +47,12 @@ importers:
       '@helm/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@helm/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
+      '@helm/workflow':
+        specifier: workspace:*
+        version: link:../../packages/workflow
       hono:
         specifier: ^4.12.18
         version: 4.12.18

@@ -2,10 +2,16 @@
   "name": "@helm/storage",
   "version": "0.0.0",
   "private": true,
-  "description": "Filesystem helpers para data/ (agent runs, logs, costs). Se implementa en Sesión 3.",
+  "description": "Filesystem helpers for data/ (agent runs, logs, costs).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "build": "echo 'placeholder'",
-    "test": "echo 'placeholder'",
-    "lint": "echo 'placeholder'"
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src/"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19"
   }
 }

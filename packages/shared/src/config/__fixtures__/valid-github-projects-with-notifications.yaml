@@ -1,0 +1,59 @@
+helm_version: '0'
+product:
+  slug: example-app
+  name: Example App
+
+issue_tracker:
+  provider: github_projects
+  org: example-org
+  project_number: 42
+  custom_field_name: Helm Stage
+
+code_repos:
+  - url: https://github.com/example-org/example-app
+    default_branch: main
+    role: app
+
+knowledge_repo:
+  url: https://github.com/example-org/example-app-knowledge
+  default_branch: main
+
+workflow:
+  stages_enabled:
+    - discovery
+    - spec-draft
+    - spec-ready
+    - plan-draft
+    - plan-ready
+    - in-development
+    - code-review
+    - remediation
+    - released
+  designer_gate: skip
+  qa_gate: skip
+
+specialists:
+  spec_writer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  plan_writer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  implementer:
+    runtime: claude_code
+    model: claude-opus-4-7
+  code_reviewer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  security_reviewer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  test_reviewer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  remediation:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+
+notifications:
+  slack_webhook: 'https://hooks.slack.com/services/TXXXXX/BXXXXX/dummy'

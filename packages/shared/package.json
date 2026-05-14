@@ -9,5 +9,12 @@
     "build": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint src/"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19"
   }
 }

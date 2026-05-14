@@ -1,0 +1,49 @@
+helm_version: '0'
+product:
+  slug: test-app
+  name: 'Test App'
+
+issue_tracker:
+  provider: github_projects
+  org: test-org
+  project_number: 1
+
+code_repos:
+  - url: https://github.com/test-org/test-app
+    default_branch: main
+    role: app
+
+knowledge_repo:
+  url: https://github.com/test-org/test-knowledge
+  default_branch: main
+
+workflow:
+  stages_enabled:
+    - in-development
+    - code-review
+    - released
+  designer_gate: skip
+  qa_gate: skip
+
+specialists:
+  spec_writer:
+    runtime: openai
+    model: gpt-5
+  plan_writer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  implementer:
+    runtime: claude_code
+    model: claude-opus-4-7
+  code_reviewer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  security_reviewer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  test_reviewer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  remediation:
+    runtime: claude_code
+    model: claude-sonnet-4-6

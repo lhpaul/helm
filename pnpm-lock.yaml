@@ -101,9 +101,9 @@ importers:
         specifier: workspace:*
         version: link:../workflow
     devDependencies:
-      '@types/node':
-        specifier: ^22.19.19
-        version: 22.19.19
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@25.7.0)(lightningcss@1.32.0)
 
   packages/shared:
     dependencies:

@@ -77,3 +77,71 @@ Sesión 2: bootstrap del monorepo. Tres bloques:
 3. Esqueletos: Hono `/health`, React + Vite + Tailwind con WS trivial.
 
 Meta: `pnpm dev` levanta server + dashboard, primer commit pusheado.
+
+## Flujo de trabajo asíncrono (autonomía en PRs)
+
+Para reducir round-trips humanos en cada bloque de sesión, Claude Code tiene autonomía documentada para operaciones mecánicas. La regla mental: humano filtra decisiones estratégicas; Claude Code ejecuta lo predecible.
+
+### Claude Code PUEDE hacer autónomamente:
+
+- Ejecutar `pnpm turbo run test`, `build`, `lint` y reportar resultado en el PR description.
+- Aplicar fixes de CodeRabbit que caen en categorías ya catched antes (path traversal en inputs externos, info leak de paths/tokens en error responses, race conditions en singletons o init, validación estricta con Zod `.strict()`, sanitización de inputs). Si el fix es claramente uno de estos patrones, aplicalo y commitea con `fix(...)` + "Addresses CodeRabbit review comment on PR #N".
+- Esperar a CodeRabbit después de cada push usando polling (ver sección "Reviewer loop básico" abajo).
+- Mergear el PR con `gh pr merge N --merge --delete-branch` después de:
+  1. Confirmar que tests, build y lint están verdes localmente.
+  2. Confirmar que CodeRabbit reportó "No actionable comments" o solo nitpicks dismissables.
+  3. Pull del develop y switch a develop después del merge.
+
+### Claude Code DEBE parar y pedir input humano si:
+
+- Surge una decisión arquitectónica no cubierta en el plan high-level aprobado al inicio del bloque.
+- CodeRabbit reporta un finding que requiere refactor sustantivo (no fix puntual).
+- Tests fallan más de 2 retries seguidos sin pattern claro de fix.
+- Hay conflict de merge con develop.
+- El plan de un Bloque excede 90 minutos de tiempo estimado.
+- Surge una limitación técnica que requiere agregar/cambiar dependencias significativas no previstas.
+
+### Reviewer loop básico para CodeRabbit
+
+Después de cada push a la feature branch, esperá a CodeRabbit con polling:
+
+```bash
+PR_NUMBER=N  # El número del PR
+SINCE=$(date -u +%s)  # Timestamp del push
+
+# Trigger explícito de review (después de fixes; al primer push CodeRabbit lo hace automático)
+# gh pr comment $PR_NUMBER --body "@coderabbitai review"
+
+# Poll cada 30s hasta que aparezca nuevo comentario del bot
+while true; do
+  LAST_BOT_COMMENT=$(gh api "repos/lhpaul/helm/issues/$PR_NUMBER/comments" \
+    --jq "[.[] | select(.user.login == \"coderabbitai[bot]\") | .created_at] | last")
+  LAST_TS=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$LAST_BOT_COMMENT" +%s 2>/dev/null || echo 0)
+  if [ "$LAST_TS" -gt "$SINCE" ]; then
+    echo "CodeRabbit respondió. Leyendo comentarios..."
+    gh pr view $PR_NUMBER --comments
+    break
+  fi
+  sleep 30
+done
+```
+
+Reglas del loop:
+
+- Timeout máximo: 10 minutos. Si CodeRabbit no responde en 10 min, parar y pedir input humano (probablemente hit rate limit).
+- Si el último comentario es "No actionable comments were generated" o equivalente, considerar el PR clean.
+- Si hay actionable comments, evaluá cada uno: si cae en categoría auto-fixable (ver lista arriba), aplicar; si no, parar y pedir input humano.
+
+### Categorías auto-fixables (lista viva)
+
+Cuando CodeRabbit detecta uno de estos patrones, Claude Code puede aplicar el fix sin pedir input:
+
+- **Path traversal**: input externo usado en filesystem path sin validación. Fix: validar con regex whitelist (`EXTERNAL_ID_REGEX` o equivalente) antes de construir el path.
+- **Info leak en error responses**: paths absolutos, tokens, mensajes internos enviados al cliente. Fix: log server-side con `console.error`, devolver mensaje genérico al cliente.
+- **Race condition en singleton lazy-init**: check-then-await sin single-flight pattern. Fix: shared in-flight promise + finally cleanup.
+- **Race condition en create-if-not-exists**: read-then-write sin atomicidad. Fix: `writeFile(path, content, { flag: 'wx' })` o equivalente.
+- **Validación laxa de body de API**: schemas Zod sin `.strict()`. Fix: agregar `.strict()` al schema.
+- **Empty string en env var**: `??` solo cubre null/undefined. Fix: `?.trim()` + truthiness check.
+- **Mutable internal state returned by reference**: getter retorna array/object interno. Fix: spread copy `[...arr]` o `{...obj}` antes de retornar.
+
+Si CodeRabbit reporta algo que NO está en esta lista, parar y pedir input humano.

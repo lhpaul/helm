@@ -92,6 +92,19 @@ importers:
         specifier: ^5.4.21
         version: 5.4.21(@types/node@25.7.0)(lightningcss@1.32.0)
 
+  packages/adapters:
+    dependencies:
+      '@helm/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@helm/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+    devDependencies:
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@25.7.0)(lightningcss@1.32.0)
+
   packages/shared:
     dependencies:
       '@helm/workflow':

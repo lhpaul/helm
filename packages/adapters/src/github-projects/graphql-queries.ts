@@ -13,6 +13,8 @@ export const GET_PROJECT_FIELDS = `
   query GetProjectFields($projectId: ID!) {
     node(id: $projectId) {
       ... on ProjectV2 {
+        # GitHub Projects v2 caps at 60 custom fields per project.
+        # 100 covers with margin. Re-evaluate if GitHub raises the cap.
         fields(first: 100) {
           nodes {
             __typename
@@ -69,6 +71,8 @@ export const GET_PROJECT_ITEMS = `
           }
           nodes {
             id
+            # Same rationale: max 60 custom fields means max 60 field values per item.
+            # 100 covers with margin. Re-evaluate if GitHub raises the cap.
             fieldValues(first: 100) {
               nodes {
                 __typename

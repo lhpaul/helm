@@ -61,11 +61,19 @@ export class MockAdapter implements IssueTrackerAdapter {
   // before returning a NormalizedEvent — webhook payloads come from external
   // sources and must not be trusted.
   parseWebhook(rawEvent: unknown): NormalizedEvent {
-    if (rawEvent !== null && typeof rawEvent === 'object' && 'type' in rawEvent) {
-      const { type } = rawEvent as { type: unknown };
-      if (typeof type === 'string' && type !== 'unknown') {
-        return rawEvent as NormalizedEvent;
+    try {
+      if (
+        rawEvent !== null &&
+        typeof rawEvent === 'object' &&
+        Object.prototype.hasOwnProperty.call(rawEvent, 'type')
+      ) {
+        const type = (rawEvent as Record<string, unknown>).type;
+        if (typeof type === 'string' && type !== 'unknown') {
+          return rawEvent as NormalizedEvent;
+        }
       }
+    } catch {
+      // fall through to unknown
     }
     return { type: 'unknown', raw: rawEvent };
   }

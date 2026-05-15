@@ -13,7 +13,7 @@ export const GET_PROJECT_FIELDS = `
   query GetProjectFields($projectId: ID!) {
     node(id: $projectId) {
       ... on ProjectV2 {
-        fields(first: 50) {
+        fields(first: 100) {
           nodes {
             __typename
             ... on ProjectV2SingleSelectField {
@@ -69,7 +69,7 @@ export const GET_PROJECT_ITEMS = `
           }
           nodes {
             id
-            fieldValues(first: 20) {
+            fieldValues(first: 100) {
               nodes {
                 __typename
                 ... on ProjectV2ItemFieldSingleSelectValue {

@@ -139,6 +139,11 @@ describe('MockAdapter', () => {
       const raw = { type: 'unknown', raw: 'x' };
       expect(adapter.parseWebhook(raw)).toEqual({ type: 'unknown', raw });
     });
+
+    it('returns unknown event when type is a non-string value', () => {
+      const raw = { type: 123 };
+      expect(adapter.parseWebhook(raw)).toEqual({ type: 'unknown', raw });
+    });
   });
 
   describe('ensureSubStages / registerWebhook', () => {

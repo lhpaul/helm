@@ -20,17 +20,20 @@ export class MockAdapter implements IssueTrackerAdapter {
   async ensureSubStages(): Promise<void> {}
 
   async getItem(externalId: string): Promise<NormalizedItem | null> {
-    return this.items.get(externalId) ?? null;
+    const item = this.items.get(externalId);
+    return item ? { ...item } : null;
   }
 
   async listItems(filter?: ItemFilter): Promise<NormalizedItem[]> {
     const all = Array.from(this.items.values());
-    if (!filter) return all;
-    return all.filter((item) => {
-      if (filter.status !== undefined && item.status !== filter.status) return false;
-      if (filter.subStage !== undefined && item.subStage !== filter.subStage) return false;
-      return true;
-    });
+    const filtered = !filter
+      ? all
+      : all.filter((item) => {
+          if (filter.status !== undefined && item.status !== filter.status) return false;
+          if (filter.subStage !== undefined && item.subStage !== filter.subStage) return false;
+          return true;
+        });
+    return filtered.map((item) => ({ ...item }));
   }
 
   async setSubStage(externalId: string, subStage: WorkflowStage): Promise<void> {
@@ -58,13 +61,11 @@ export class MockAdapter implements IssueTrackerAdapter {
   // before returning a NormalizedEvent — webhook payloads come from external
   // sources and must not be trusted.
   parseWebhook(rawEvent: unknown): NormalizedEvent {
-    if (
-      rawEvent !== null &&
-      typeof rawEvent === 'object' &&
-      'type' in rawEvent &&
-      (rawEvent as { type: unknown }).type !== 'unknown'
-    ) {
-      return rawEvent as NormalizedEvent;
+    if (rawEvent !== null && typeof rawEvent === 'object' && 'type' in rawEvent) {
+      const { type } = rawEvent as { type: unknown };
+      if (typeof type === 'string' && type !== 'unknown') {
+        return rawEvent as NormalizedEvent;
+      }
     }
     return { type: 'unknown', raw: rawEvent };
   }

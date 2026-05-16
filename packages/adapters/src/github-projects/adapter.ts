@@ -234,19 +234,30 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
       );
     }
     const url = `https://api.github.com/orgs/${this.config.org}/hooks`;
-    const res = await this.fetchFn(url, {
-      method: 'POST',
-      body: JSON.stringify({
-        name: 'web',
-        active: true,
-        events: ['projects_v2_item', 'issues', 'issue_comment'],
-        config: {
-          url: callbackUrl,
-          content_type: 'json',
-          secret: this.webhookSecret,
-        },
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    let res: Response;
+    try {
+      res = await this.fetchFn(url, {
+        method: 'POST',
+        signal: controller.signal,
+        body: JSON.stringify({
+          name: 'web',
+          active: true,
+          events: ['projects_v2_item', 'issues', 'issue_comment'],
+          config: {
+            url: callbackUrl,
+            content_type: 'json',
+            secret: this.webhookSecret,
+          },
+        }),
+      });
+    } catch {
+      console.error('[GitHubProjectsAdapter] registerWebhook: network or timeout error');
+      throw new GitHubAPIError('GitHub webhook registration failed — network error or timeout');
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!res.ok) {
       if (res.status === 401) {
         console.error('[GitHubProjectsAdapter] registerWebhook: authentication failed');
@@ -408,9 +419,10 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
   private async fetchAll(): Promise<void> {
     await this.ensureSetup();
     const items: NormalizedItem[] = [];
-    // Clear node maps before rebuild to evict removed items.
-    this.externalIdToNodeIds.clear();
-    this.issueNodeIdToExternalId.clear();
+    // Build into temporary maps so parseWebhook always sees consistent state.
+    // The swap below is atomic from JS's single-threaded perspective.
+    const nextExtIdToNodeIds = new Map<string, { itemId: string; issueId: string }>();
+    const nextIssueNodeIdToExtId = new Map<string, string>();
     let cursor: string | null = null;
     do {
       const page: GetProjectItemsResponse = await this.graphql<GetProjectItemsResponse>(
@@ -423,7 +435,7 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
       );
       const nodes = page.node?.items.nodes ?? [];
       for (const node of nodes) {
-        const item = this.normalizeItem(node);
+        const item = this.normalizeItem(node, nextExtIdToNodeIds, nextIssueNodeIdToExtId);
         if (item) items.push(item);
       }
       cursor =
@@ -431,17 +443,26 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
           ? (page.node.items.pageInfo.endCursor ?? null)
           : null;
     } while (cursor !== null);
+    // Atomic swap — replace live maps only after all pages are fetched.
+    this.externalIdToNodeIds.clear();
+    for (const [k, v] of nextExtIdToNodeIds) this.externalIdToNodeIds.set(k, v);
+    this.issueNodeIdToExternalId.clear();
+    for (const [k, v] of nextIssueNodeIdToExtId) this.issueNodeIdToExternalId.set(k, v);
     this.cache = { items, expiresAt: Date.now() + this.ttlMs };
   }
 
-  private normalizeItem(node: GitHubProjectItemNode): NormalizedItem | null {
+  private normalizeItem(
+    node: GitHubProjectItemNode,
+    extIdToNodeIds: Map<string, { itemId: string; issueId: string }>,
+    issueNodeIdToExtId: Map<string, string>,
+  ): NormalizedItem | null {
     if (!isIssueContent(node.content)) return null;
     const issue = node.content;
     const externalId = `issue_${issue.number}`;
 
-    // Populate write-op and parseWebhook lookup maps.
-    this.externalIdToNodeIds.set(externalId, { itemId: node.id, issueId: issue.id });
-    this.issueNodeIdToExternalId.set(issue.id, externalId);
+    // Populate write-op and parseWebhook lookup maps into the provided accumulators.
+    extIdToNodeIds.set(externalId, { itemId: node.id, issueId: issue.id });
+    issueNodeIdToExtId.set(issue.id, externalId);
 
     let subStage: WorkflowStage | null = null;
     for (const fv of node.fieldValues.nodes) {

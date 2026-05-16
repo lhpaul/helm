@@ -42,7 +42,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
   // f. Defense-in-depth: validate externalId from webhook payload before using it.
   if (event.type !== 'unknown') {
     const externalId = 'externalId' in event ? event.externalId : null;
-    if (externalId && !EXTERNAL_ID_REGEX.test(externalId)) {
+    if (typeof externalId === 'string' && !EXTERNAL_ID_REGEX.test(externalId)) {
       console.error(`[webhooks/github] Rejected invalid externalId from event: ${event.type}`);
       // Return 200 — this is not a delivery problem GitHub should retry.
       return c.json({ processed: true });

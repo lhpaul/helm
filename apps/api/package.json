@@ -9,6 +9,7 @@
     "lint": "eslint src/"
   },
   "dependencies": {
+    "@helm/adapters": "workspace:*",
     "@helm/shared": "workspace:*",
     "@helm/storage": "workspace:*",
     "@helm/workflow": "workspace:*",

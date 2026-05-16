@@ -143,5 +143,6 @@ Cuando CodeRabbit detecta uno de estos patrones, Claude Code puede aplicar el fi
 - **Validación laxa de body de API**: schemas Zod sin `.strict()`. Fix: agregar `.strict()` al schema.
 - **Empty string en env var**: `??` solo cubre null/undefined. Fix: `?.trim()` + truthiness check.
 - **Mutable internal state returned by reference**: getter retorna array/object interno. Fix: spread copy `[...arr]` o `{...obj}` antes de retornar.
+- **Never-throw contract violations**: cuando una interfaz/contrato dice "esta función nunca debe lanzar" (típicamente para handlers de webhooks, eventos, error-paths críticos), envolver implementaciones en try-catch defensivo. Aplica a parseWebhook de cualquier adapter, callbacks de error handlers, y métodos que se llamen desde paths donde no hay recovery posible.
 
 Si CodeRabbit reporta algo que NO está en esta lista, parar y pedir input humano.

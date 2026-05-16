@@ -6,3 +6,5 @@ export {
   GitHubAPIError,
   GitHubConfigError,
 } from './errors.js';
+export { verifyGitHubSignature } from './webhook-signature.js';
+export { parseGitHubWebhook } from './webhook-parser.js';

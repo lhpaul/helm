@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { GitHubProjectsAdapter } from './adapter.js';
-import type { GitHubProjectsConfig, GraphqlFn } from './adapter.js';
+import type { GitHubProjectsConfig, GraphqlFn, FetchFn } from './adapter.js';
 import {
   GitHubAuthError,
   GitHubAPIError,
@@ -348,34 +348,11 @@ describe('GitHubProjectsAdapter', () => {
     });
   });
 
-  describe('Block 3 stubs', () => {
-    it('setSubStage throws "Not implemented yet — Block 3"', async () => {
+  describe('parseWebhook (never throws)', () => {
+    it('returns unknown for unrecognised shape and never throws', () => {
       const { adapter } = makeAdapter();
-      await expect(adapter.setSubStage()).rejects.toThrow('Not implemented yet — Block 3');
-    });
-
-    it('setStatus throws "Not implemented yet — Block 3"', async () => {
-      const { adapter } = makeAdapter();
-      await expect(adapter.setStatus()).rejects.toThrow('Not implemented yet — Block 3');
-    });
-
-    it('comment throws "Not implemented yet — Block 3"', async () => {
-      const { adapter } = makeAdapter();
-      await expect(adapter.comment()).rejects.toThrow('Not implemented yet — Block 3');
-    });
-
-    it('registerWebhook throws "Not implemented yet — Block 3"', async () => {
-      const { adapter } = makeAdapter();
-      await expect(adapter.registerWebhook()).rejects.toThrow('Not implemented yet — Block 3');
-    });
-
-    it('parseWebhook returns {type:"unknown"} and never throws', () => {
-      const { adapter } = makeAdapter();
-      expect(adapter.parseWebhook({ type: 'item_updated' })).toEqual({
-        type: 'unknown',
-        raw: { type: 'item_updated' },
-      });
-      expect(adapter.parseWebhook(null)).toEqual({ type: 'unknown', raw: null });
+      expect(adapter.parseWebhook({ type: 'push' })).toMatchObject({ type: 'unknown' });
+      expect(adapter.parseWebhook(null)).toMatchObject({ type: 'unknown', raw: null });
     });
   });
 
@@ -384,6 +361,191 @@ describe('GitHubProjectsAdapter', () => {
       const { adapter, gql } = makeAdapter();
       gql.mockRejectedValueOnce(makeApiError(404));
       await expect(adapter.getItem('issue_1')).rejects.toThrow(GitHubNotFoundError);
+    });
+  });
+
+  describe('write operations', () => {
+    /** Seeds item cache with one issue so node maps are populated. */
+    function seedCache(gql: Mock): void {
+      gql
+        .mockResolvedValueOnce(projectRes())
+        .mockResolvedValueOnce(fieldsRes('Helm Stage'))
+        .mockResolvedValueOnce(
+          itemsPage(
+            [{ number: 1, title: 'Item', state: 'OPEN', optionId: 'opt-disc' }],
+            false,
+            null,
+          ),
+        );
+    }
+
+    describe('setSubStage', () => {
+      it('calls updateProjectV2ItemFieldValue with correct args and invalidates cache', async () => {
+        const { adapter, gql } = makeAdapter();
+        seedCache(gql);
+        // Populate cache (and node maps)
+        await adapter.getItem('issue_1');
+        // Mock the mutation
+        gql.mockResolvedValueOnce({
+          updateProjectV2ItemFieldValue: { projectV2Item: { id: 'PVTI_1' } },
+        });
+
+        await adapter.setSubStage('issue_1', 'spec-ready');
+
+        expect(gql.mock.calls.at(-1)![0]).toContain('updateProjectV2ItemFieldValue');
+        expect(gql.mock.calls.at(-1)![1]).toMatchObject({
+          itemId: 'PVTI_1',
+          fieldId: FIELD_ID,
+          value: { singleSelectOptionId: 'opt-spec' },
+        });
+        // Cache should be invalidated
+        expect((adapter as unknown as { cache: unknown }).cache).toBeNull();
+      });
+
+      it('throws GitHubNotFoundError when externalId not in cache', async () => {
+        const { adapter, gql } = makeAdapter();
+        seedCache(gql);
+        await adapter.getItem('issue_1'); // populate cache
+        await expect(adapter.setSubStage('issue_999', 'discovery')).rejects.toThrow(
+          GitHubNotFoundError,
+        );
+      });
+
+      it('throws GitHubNotFoundError when stage has no option ID (maps not populated)', async () => {
+        const { adapter, gql } = makeAdapter();
+        // Seed with empty fields so stageToOptionId stays empty
+        gql
+          .mockResolvedValueOnce(projectRes())
+          .mockResolvedValueOnce(fieldsRes()) // no Helm Stage field
+          .mockResolvedValueOnce(
+            itemsPage([{ number: 1, title: 'X', state: 'OPEN' }], false, null),
+          );
+        await adapter.getItem('issue_1');
+        await expect(adapter.setSubStage('issue_1', 'discovery')).rejects.toThrow(
+          GitHubNotFoundError,
+        );
+      });
+    });
+
+    describe('setStatus', () => {
+      it('calls closeIssue when status is closed', async () => {
+        const { adapter, gql } = makeAdapter();
+        seedCache(gql);
+        await adapter.getItem('issue_1');
+        gql.mockResolvedValueOnce({ closeIssue: { issue: { state: 'CLOSED' } } });
+
+        await adapter.setStatus('issue_1', 'closed');
+
+        expect(gql.mock.calls.at(-1)![0]).toContain('closeIssue');
+        expect(gql.mock.calls.at(-1)![1]).toMatchObject({ issueId: 'I_1' });
+      });
+
+      it('calls reopenIssue when status is open', async () => {
+        const { adapter, gql } = makeAdapter();
+        seedCache(gql);
+        await adapter.getItem('issue_1');
+        gql.mockResolvedValueOnce({ reopenIssue: { issue: { state: 'OPEN' } } });
+
+        await adapter.setStatus('issue_1', 'open');
+
+        expect(gql.mock.calls.at(-1)![0]).toContain('reopenIssue');
+      });
+    });
+
+    describe('comment', () => {
+      it('calls addComment with the issue node ID and body', async () => {
+        const { adapter, gql } = makeAdapter();
+        seedCache(gql);
+        await adapter.getItem('issue_1');
+        gql.mockResolvedValueOnce({ addComment: { commentEdge: { node: { id: 'comment_1' } } } });
+
+        await adapter.comment('issue_1', 'LGTM');
+
+        expect(gql.mock.calls.at(-1)![0]).toContain('addComment');
+        expect(gql.mock.calls.at(-1)![1]).toMatchObject({ subjectId: 'I_1', body: 'LGTM' });
+      });
+
+      it('throws GitHubNotFoundError when externalId not found', async () => {
+        const { adapter, gql } = makeAdapter();
+        seedCache(gql);
+        await adapter.getItem('issue_1');
+        await expect(adapter.comment('issue_999', 'hi')).rejects.toThrow(GitHubNotFoundError);
+      });
+    });
+
+    describe('registerWebhook', () => {
+      it('POSTs to the GitHub org hooks endpoint with correct payload', async () => {
+        const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, status: 201 });
+        const adapterWithWebhook = new GitHubProjectsAdapter(CONFIG, 'test-token', {
+          _graphql: vi.fn() as unknown as GraphqlFn,
+          _fetch: fetchMock as unknown as FetchFn,
+          webhookSecret: 'my-secret',
+        });
+
+        await adapterWithWebhook.registerWebhook('https://example.com/hook');
+
+        expect(fetchMock).toHaveBeenCalledOnce();
+        const [url, init] = fetchMock.mock.calls[0]!;
+        expect(url).toContain('/orgs/test-org/hooks');
+        const body = JSON.parse(init.body as string);
+        expect(body.events).toContain('projects_v2_item');
+        expect(body.config.url).toBe('https://example.com/hook');
+      });
+
+      it('throws GitHubConfigError when webhookSecret is not set', async () => {
+        const { adapter } = makeAdapter();
+        await expect(adapter.registerWebhook('https://example.com/hook')).rejects.toThrow(
+          GitHubConfigError,
+        );
+      });
+    });
+
+    describe('parseWebhook (projects_v2_item.edited)', () => {
+      it('resolves subStage from internal map when cache is seeded', async () => {
+        const { adapter, gql } = makeAdapter();
+        seedCache(gql);
+        await adapter.getItem('issue_1'); // populates issueNodeIdToExternalId
+
+        const raw = {
+          eventType: 'projects_v2_item',
+          payload: {
+            action: 'edited',
+            changes: {
+              field_value: {
+                field_node_id: FIELD_ID,
+                field_type: 'single_select',
+                to: { id: 'opt-disc', name: 'discovery' },
+              },
+            },
+            projects_v2_item: { content_node_id: 'I_1', content_type: 'Issue' },
+          },
+        };
+        const event = adapter.parseWebhook(raw);
+        expect(event).toMatchObject({
+          type: 'item_updated',
+          externalId: 'issue_1',
+          subStage: 'discovery',
+        });
+      });
+
+      it('returns unknown when issueNodeIdToExternalId map is empty (cache not seeded)', () => {
+        const { adapter } = makeAdapter();
+        const raw = {
+          eventType: 'projects_v2_item',
+          payload: {
+            action: 'edited',
+            changes: {
+              field_value: {
+                field_node_id: FIELD_ID,
+                field_type: 'single_select',
+                to: { id: 'opt-disc', name: 'discovery' },
+              },
+            },
+            projects_v2_item: { content_node_id: 'I_unknown', content_type: 'Issue' },
+          },
+        };
+        expect(adapter.parseWebhook(raw).type).toBe('unknown');
+      });
     });
   });
 });

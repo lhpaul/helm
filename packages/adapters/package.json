@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@helm/shared": "workspace:*",
-    "@helm/workflow": "workspace:*"
+    "@helm/workflow": "workspace:*",
+    "@octokit/graphql": "^9.0.3"
   },
   "devDependencies": {
     "vitest": "^2.1.9"

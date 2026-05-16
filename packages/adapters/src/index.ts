@@ -8,4 +8,6 @@ export {
   GitHubNotFoundError,
   GitHubAPIError,
   GitHubConfigError,
+  verifyGitHubSignature,
+  parseGitHubWebhook,
 } from './github-projects/index.js';

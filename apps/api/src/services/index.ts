@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { ensureDataDir } from '@helm/storage';
 import { parseProductConfigFromFile } from '@helm/shared';
 import type { Product } from '@helm/shared';
+import { GitHubProjectsAdapter } from '@helm/adapters';
 import { ItemStore } from './item-store.js';
 
 // ── ItemStore singleton ───────────────────────────────────────────────────────
@@ -65,6 +66,41 @@ export async function getProductConfig(): Promise<Product> {
   }
 }
 
+// ── GitHubProjectsAdapter singleton ──────────────────────────────────────────
+
+let _githubAdapter: GitHubProjectsAdapter | null = null;
+let _githubAdapterPromise: Promise<GitHubProjectsAdapter> | null = null;
+
+/**
+ * Returns the shared GitHubProjectsAdapter, initializing it on first call.
+ * Single-flight: concurrent callers await the same initialization promise.
+ * Reads GITHUB_TOKEN from env; requires issue_tracker.provider === 'github_projects'.
+ */
+export async function getGitHubAdapter(): Promise<GitHubProjectsAdapter> {
+  if (_githubAdapter !== null) return _githubAdapter;
+  if (_githubAdapterPromise !== null) return _githubAdapterPromise;
+
+  _githubAdapterPromise = (async () => {
+    const token = process.env.GITHUB_TOKEN?.trim();
+    if (!token) throw new Error('GITHUB_TOKEN environment variable is not set or blank');
+
+    const config = await getProductConfig();
+    if (config.issue_tracker.provider !== 'github_projects') {
+      throw new Error(
+        `getGitHubAdapter requires provider 'github_projects', got '${config.issue_tracker.provider}'`,
+      );
+    }
+    _githubAdapter = new GitHubProjectsAdapter(config.issue_tracker, token);
+    return _githubAdapter;
+  })();
+
+  try {
+    return await _githubAdapterPromise;
+  } finally {
+    _githubAdapterPromise = null;
+  }
+}
+
 // ── Test utilities ────────────────────────────────────────────────────────────
 
 /**
@@ -76,4 +112,6 @@ export function _resetForTests(): void {
   _itemInitPromise = null;
   _productConfig = null;
   _productInitPromise = null;
+  _githubAdapter = null;
+  _githubAdapterPromise = null;
 }

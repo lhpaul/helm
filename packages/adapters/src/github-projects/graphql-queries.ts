@@ -60,6 +60,58 @@ export const CREATE_SINGLE_SELECT_FIELD = `
   }
 `;
 
+export const UPDATE_PROJECT_ITEM_FIELD = `
+  mutation UpdateProjectItemField(
+    $projectId: ID!
+    $itemId: ID!
+    $fieldId: ID!
+    $value: ProjectV2FieldValue!
+  ) {
+    updateProjectV2ItemFieldValue(input: {
+      projectId: $projectId
+      itemId: $itemId
+      fieldId: $fieldId
+      value: $value
+    }) {
+      projectV2Item {
+        id
+      }
+    }
+  }
+`;
+
+export const CLOSE_ISSUE = `
+  mutation CloseIssue($issueId: ID!) {
+    closeIssue(input: { issueId: $issueId }) {
+      issue {
+        state
+      }
+    }
+  }
+`;
+
+export const REOPEN_ISSUE = `
+  mutation ReopenIssue($issueId: ID!) {
+    reopenIssue(input: { issueId: $issueId }) {
+      issue {
+        state
+      }
+    }
+  }
+`;
+
+export const ADD_COMMENT = `
+  mutation AddComment($subjectId: ID!, $body: String!) {
+    addComment(input: { subjectId: $subjectId, body: $body }) {
+      commentEdge {
+        node {
+          id
+        }
+      }
+    }
+  }
+`;
+
 export const GET_PROJECT_ITEMS = `
   query GetProjectItems($projectId: ID!, $first: Int!, $after: String) {
     node(id: $projectId) {

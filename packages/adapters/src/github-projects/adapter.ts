@@ -1,4 +1,5 @@
 import { graphql as graphqlLib } from '@octokit/graphql';
+import { z } from 'zod';
 import type { WorkflowStage } from '@helm/workflow';
 import { WORKFLOW_STAGES } from '@helm/workflow';
 import type { IssueTracker } from '@helm/shared';
@@ -15,29 +16,60 @@ import {
   GET_PROJECT_FIELDS,
   CREATE_SINGLE_SELECT_FIELD,
   GET_PROJECT_ITEMS,
+  UPDATE_PROJECT_ITEM_FIELD,
+  CLOSE_ISSUE,
+  REOPEN_ISSUE,
+  ADD_COMMENT,
 } from './graphql-queries.js';
 import type {
   GetProjectResponse,
   GetProjectFieldsResponse,
   CreateSingleSelectFieldResponse,
   GetProjectItemsResponse,
+  UpdateProjectItemFieldResponse,
+  CloseIssueResponse,
+  ReopenIssueResponse,
+  AddCommentResponse,
   GitHubSingleSelectField,
   GitHubFieldOption,
   GitHubProjectItemNode,
 } from './graphql-types.js';
 import { isSingleSelectField, isSingleSelectValue, isIssueContent } from './graphql-types.js';
+import { parseGitHubWebhook } from './webhook-parser.js';
 
 export type GitHubProjectsConfig = Extract<IssueTracker, { provider: 'github_projects' }>;
 
 // Callable signature shared between the real @octokit/graphql and test doubles.
 export type GraphqlFn = <T>(query: string, variables?: Record<string, unknown>) => Promise<T>;
 
+// Minimal fetch signature for REST calls — injectable for tests.
+export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
+
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
+
+// Zod schema for projects_v2_item.edited webhook payloads.
+const ProjectsV2ItemEditedSchema = z.object({
+  action: z.literal('edited'),
+  changes: z.object({
+    field_value: z.object({
+      field_node_id: z.string(),
+      field_type: z.string(),
+      to: z.object({ id: z.string(), name: z.string() }).nullable().optional(),
+    }),
+  }),
+  projects_v2_item: z.object({
+    content_node_id: z.string(),
+    content_type: z.string(),
+  }),
+});
 
 export class GitHubProjectsAdapter implements IssueTrackerAdapter {
   private readonly graphql: GraphqlFn;
   private readonly config: GitHubProjectsConfig;
   private readonly ttlMs: number;
+  private readonly token: string;
+  private readonly fetchFn: FetchFn;
+  private readonly webhookSecret: string | undefined;
 
   // Stable metadata (fetched once, not TTL-evicted)
   private projectId: string | null = null;
@@ -47,6 +79,10 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
   private mapsReady = false;
   private setupPromise: Promise<void> | null = null;
 
+  // Internal maps for write ops and parseWebhook — rebuilt on each fetchAll
+  private readonly externalIdToNodeIds = new Map<string, { itemId: string; issueId: string }>();
+  private readonly issueNodeIdToExternalId = new Map<string, string>();
+
   // Item cache (TTL-evicted)
   private cache: { items: NormalizedItem[]; expiresAt: number } | null = null;
   private refreshPromise: Promise<void> | null = null;
@@ -54,7 +90,7 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
   constructor(
     config: GitHubProjectsConfig,
     token: string,
-    options?: { ttlMs?: number; _graphql?: GraphqlFn },
+    options?: { ttlMs?: number; _graphql?: GraphqlFn; _fetch?: FetchFn; webhookSecret?: string },
   ) {
     if (!token.trim()) {
       throw new GitHubAuthError(
@@ -62,12 +98,26 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
       );
     }
     this.config = config;
+    this.token = token;
     this.ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
+    this.webhookSecret = options?.webhookSecret;
     this.graphql =
       options?._graphql ??
       (graphqlLib.defaults({
         headers: { authorization: `token ${token}` },
       }) as unknown as GraphqlFn);
+    this.fetchFn =
+      options?._fetch ??
+      ((url, init) =>
+        fetch(url, {
+          ...init,
+          headers: {
+            Authorization: `token ${token}`,
+            Accept: 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+            ...init?.headers,
+          },
+        }));
   }
 
   // ── IssueTrackerAdapter: ensureSubStages ────────────────────────────────────
@@ -88,7 +138,6 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
       this.populateMaps(created);
     }
     this.mapsReady = true;
-    // Invalidate item cache — field options may have changed
     this.cache = null;
   }
 
@@ -113,28 +162,162 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
     return filtered.map((item) => ({ ...item }));
   }
 
-  // ── IssueTrackerAdapter: Block 3 stubs ─────────────────────────────────────
+  // ── IssueTrackerAdapter: writes ─────────────────────────────────────────────
 
-  async setSubStage(): Promise<void> {
-    throw new Error('Not implemented yet — Block 3');
+  async setSubStage(externalId: string, subStage: WorkflowStage): Promise<void> {
+    await this.ensureItemCache();
+    const nodeIds = this.externalIdToNodeIds.get(externalId);
+    if (!nodeIds) throw new GitHubNotFoundError(`Item not found in project: ${externalId}`);
+
+    await this.ensureSetup();
+    const optionId = this.stageToOptionId.get(subStage);
+    if (!optionId) {
+      throw new GitHubNotFoundError(
+        `Stage '${subStage}' has no option ID — call ensureSubStages first`,
+      );
+    }
+    if (!this.fieldId) {
+      throw new GitHubAPIError('Helm Stage field ID not set — call ensureSubStages first');
+    }
+
+    try {
+      await this.graphql<UpdateProjectItemFieldResponse>(UPDATE_PROJECT_ITEM_FIELD, {
+        projectId: this.projectId,
+        itemId: nodeIds.itemId,
+        fieldId: this.fieldId,
+        value: { singleSelectOptionId: optionId },
+      });
+    } catch (err) {
+      this.mapError(err);
+    }
+    // Intentional full-cache invalidation — per-item invalidation is v1.
+    this.cache = null;
   }
 
-  async setStatus(): Promise<void> {
-    throw new Error('Not implemented yet — Block 3');
+  async setStatus(externalId: string, status: 'open' | 'closed'): Promise<void> {
+    await this.ensureItemCache();
+    const nodeIds = this.externalIdToNodeIds.get(externalId);
+    if (!nodeIds) throw new GitHubNotFoundError(`Item not found in project: ${externalId}`);
+
+    try {
+      if (status === 'closed') {
+        await this.graphql<CloseIssueResponse>(CLOSE_ISSUE, { issueId: nodeIds.issueId });
+      } else {
+        await this.graphql<ReopenIssueResponse>(REOPEN_ISSUE, { issueId: nodeIds.issueId });
+      }
+    } catch (err) {
+      this.mapError(err);
+    }
+    this.cache = null;
   }
 
-  async comment(): Promise<void> {
-    throw new Error('Not implemented yet — Block 3');
+  async comment(externalId: string, body: string): Promise<void> {
+    await this.ensureItemCache();
+    const nodeIds = this.externalIdToNodeIds.get(externalId);
+    if (!nodeIds) throw new GitHubNotFoundError(`Item not found in project: ${externalId}`);
+
+    try {
+      await this.graphql<AddCommentResponse>(ADD_COMMENT, {
+        subjectId: nodeIds.issueId,
+        body,
+      });
+    } catch (err) {
+      this.mapError(err);
+    }
+    // Comments don't affect item state — no cache invalidation.
   }
 
-  // NOTE: parseWebhook must never throw per the IssueTrackerAdapter contract.
-  // Block 3 will implement full webhook parsing with Zod validation.
+  async registerWebhook(callbackUrl: string): Promise<void> {
+    if (!this.webhookSecret) {
+      throw new GitHubConfigError(
+        'webhookSecret is required for registerWebhook — pass it in constructor options',
+      );
+    }
+    const url = `https://api.github.com/orgs/${this.config.org}/hooks`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    let res: Response;
+    try {
+      res = await this.fetchFn(url, {
+        method: 'POST',
+        signal: controller.signal,
+        body: JSON.stringify({
+          name: 'web',
+          active: true,
+          events: ['projects_v2_item', 'issues', 'issue_comment'],
+          config: {
+            url: callbackUrl,
+            content_type: 'json',
+            secret: this.webhookSecret,
+          },
+        }),
+      });
+    } catch {
+      console.error('[GitHubProjectsAdapter] registerWebhook: network or timeout error');
+      throw new GitHubAPIError('GitHub webhook registration failed — network error or timeout');
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!res.ok) {
+      if (res.status === 401) {
+        console.error('[GitHubProjectsAdapter] registerWebhook: authentication failed');
+        throw new GitHubAuthError('GitHub API authentication failed during webhook registration');
+      }
+      console.error(`[GitHubProjectsAdapter] registerWebhook: HTTP ${res.status}`);
+      throw new GitHubAPIError('GitHub webhook registration failed', res.status);
+    }
+  }
+
+  // ── IssueTrackerAdapter: parseWebhook ───────────────────────────────────────
+
+  // Never throws per IssueTrackerAdapter contract.
   parseWebhook(rawEvent: unknown): NormalizedEvent {
-    return { type: 'unknown', raw: rawEvent };
+    try {
+      // Route projects_v2_item events through the stateful handler that can
+      // resolve content_node_id → externalId via the internal map.
+      const ctx = this.extractContext(rawEvent);
+      if (ctx?.eventType === 'projects_v2_item') {
+        return this.parseProjectsV2ItemEvent(ctx.payload, rawEvent);
+      }
+      // Delegate issues.* and issue_comment.* to the pure parser.
+      return parseGitHubWebhook(rawEvent);
+    } catch {
+      return { type: 'unknown', raw: rawEvent };
+    }
   }
 
-  async registerWebhook(): Promise<void> {
-    throw new Error('Not implemented yet — Block 3');
+  // ── Private: parseWebhook helpers ──────────────────────────────────────────
+
+  private extractContext(raw: unknown): { eventType: string; payload: unknown } | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const obj = raw as Record<string, unknown>;
+    if (typeof obj.eventType !== 'string') return null;
+    return { eventType: obj.eventType, payload: obj.payload };
+  }
+
+  private parseProjectsV2ItemEvent(payload: unknown, rawEvent: unknown): NormalizedEvent {
+    const parsed = ProjectsV2ItemEditedSchema.safeParse(payload);
+    if (!parsed.success) return { type: 'unknown', raw: rawEvent };
+
+    const { changes, projects_v2_item: item } = parsed.data;
+    const toOptionId = changes.field_value.to?.id;
+    if (!toOptionId) return { type: 'unknown', raw: rawEvent };
+
+    // Only emit if this optionId belongs to the Helm Stage field.
+    const subStage = this.optionIdToStage.get(toOptionId);
+    if (!subStage) return { type: 'unknown', raw: rawEvent };
+
+    // Resolve externalId from the internal map (populated by fetchAll).
+    // Returns unknown if the cache hasn't been seeded yet — known limitation, v1 TODO.
+    const externalId = this.issueNodeIdToExternalId.get(item.content_node_id);
+    if (!externalId) return { type: 'unknown', raw: rawEvent };
+
+    return {
+      type: 'item_updated',
+      externalId,
+      subStage,
+      timestamp: new Date().toISOString(),
+    };
   }
 
   // ── Private: lazy setup (projectId + field maps) ────────────────────────────
@@ -236,6 +419,10 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
   private async fetchAll(): Promise<void> {
     await this.ensureSetup();
     const items: NormalizedItem[] = [];
+    // Build into temporary maps so parseWebhook always sees consistent state.
+    // The swap below is atomic from JS's single-threaded perspective.
+    const nextExtIdToNodeIds = new Map<string, { itemId: string; issueId: string }>();
+    const nextIssueNodeIdToExtId = new Map<string, string>();
     let cursor: string | null = null;
     do {
       const page: GetProjectItemsResponse = await this.graphql<GetProjectItemsResponse>(
@@ -248,7 +435,7 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
       );
       const nodes = page.node?.items.nodes ?? [];
       for (const node of nodes) {
-        const item = this.normalizeItem(node);
+        const item = this.normalizeItem(node, nextExtIdToNodeIds, nextIssueNodeIdToExtId);
         if (item) items.push(item);
       }
       cursor =
@@ -256,12 +443,27 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
           ? (page.node.items.pageInfo.endCursor ?? null)
           : null;
     } while (cursor !== null);
+    // Atomic swap — replace live maps only after all pages are fetched.
+    this.externalIdToNodeIds.clear();
+    for (const [k, v] of nextExtIdToNodeIds) this.externalIdToNodeIds.set(k, v);
+    this.issueNodeIdToExternalId.clear();
+    for (const [k, v] of nextIssueNodeIdToExtId) this.issueNodeIdToExternalId.set(k, v);
     this.cache = { items, expiresAt: Date.now() + this.ttlMs };
   }
 
-  private normalizeItem(node: GitHubProjectItemNode): NormalizedItem | null {
+  private normalizeItem(
+    node: GitHubProjectItemNode,
+    extIdToNodeIds: Map<string, { itemId: string; issueId: string }>,
+    issueNodeIdToExtId: Map<string, string>,
+  ): NormalizedItem | null {
     if (!isIssueContent(node.content)) return null;
     const issue = node.content;
+    const externalId = `issue_${issue.number}`;
+
+    // Populate write-op and parseWebhook lookup maps into the provided accumulators.
+    extIdToNodeIds.set(externalId, { itemId: node.id, issueId: issue.id });
+    issueNodeIdToExtId.set(issue.id, externalId);
+
     let subStage: WorkflowStage | null = null;
     for (const fv of node.fieldValues.nodes) {
       if (isSingleSelectValue(fv) && this.optionIdToStage.has(fv.optionId)) {
@@ -270,7 +472,7 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
       }
     }
     return {
-      externalId: `issue_${issue.number}`,
+      externalId,
       title: issue.title,
       subStage,
       status: issue.state === 'OPEN' ? 'open' : 'closed',
@@ -298,7 +500,6 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
     throw new GitHubAPIError('GitHub API request failed');
   }
 
-  // Expose option lookup for Block 3 (write operations)
   getOptionId(stage: WorkflowStage): string | undefined {
     return this.stageToOptionId.get(stage);
   }
@@ -308,5 +509,4 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
   }
 }
 
-// Re-export field option type for callers that need it
 export type { GitHubFieldOption };

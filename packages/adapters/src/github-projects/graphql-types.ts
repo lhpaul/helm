@@ -97,6 +97,41 @@ export type GetProjectItemsResponse = {
   } | null;
 };
 
+// ── Mutation responses ────────────────────────────────────────────────────────
+
+export type UpdateProjectItemFieldResponse = {
+  updateProjectV2ItemFieldValue: { projectV2Item: { id: string } };
+};
+
+export type CloseIssueResponse = {
+  closeIssue: { issue: { state: string } };
+};
+
+export type ReopenIssueResponse = {
+  reopenIssue: { issue: { state: string } };
+};
+
+export type AddCommentResponse = {
+  addComment: { commentEdge: { node: { id: string } } };
+};
+
+// ── projects_v2_item webhook payload ─────────────────────────────────────────
+
+export type ProjectsV2ItemEditedPayload = {
+  action: 'edited';
+  changes: {
+    field_value: {
+      field_node_id: string;
+      field_type: string;
+      to: { id: string; name: string } | null | undefined;
+    };
+  };
+  projects_v2_item: {
+    content_node_id: string;
+    content_type: string;
+  };
+};
+
 // ── Type guards ───────────────────────────────────────────────────────────────
 
 export function isSingleSelectField(node: GitHubProjectFieldNode): node is GitHubSingleSelectField {

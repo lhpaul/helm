@@ -141,8 +141,9 @@ Cuando CodeRabbit detecta uno de estos patrones, Claude Code puede aplicar el fi
 - **Race condition en singleton lazy-init**: check-then-await sin single-flight pattern. Fix: shared in-flight promise + finally cleanup.
 - **Race condition en create-if-not-exists**: read-then-write sin atomicidad. Fix: `writeFile(path, content, { flag: 'wx' })` o equivalente.
 - **Validación laxa de body de API**: schemas Zod sin `.strict()`. Fix: agregar `.strict()` al schema.
-- **Empty string en env var**: `??` solo cubre null/undefined. Fix: `?.trim()` + truthiness check.
+- **Empty string en input externo**: el `??` (nullish coalescing) y los truthy checks (`if (value)`) no atrapan empty strings. Aplica a env vars, body fields de API, query params, headers, payloads de webhook. Fix: `?.trim()` + truthiness check explícito, o `typeof === 'string' && value.length > 0` cuando matters. Si downstream usa el valor para filesystem operations o lookups, no asumir que truthy === válido.
 - **Mutable internal state returned by reference**: getter retorna array/object interno. Fix: spread copy `[...arr]` o `{...obj}` antes de retornar.
 - **Never-throw contract violations**: cuando una interfaz/contrato dice "esta función nunca debe lanzar" (típicamente para handlers de webhooks, eventos, error-paths críticos), envolver implementaciones en try-catch defensivo. Aplica a parseWebhook de cualquier adapter, callbacks de error handlers, y métodos que se llamen desde paths donde no hay recovery posible.
+- **Network operations without timeout / abort**: cualquier `fetch()`, `axios()`, request HTTP a sistema externo sin `AbortController` o timeout explícito puede colgar el proceso indefinidamente si el remote no responde. Fix: `AbortController` con timeout razonable (5-30s según el caso), `try/catch` que mapea errores de red a un tipo específico del dominio (e.g., `GitHubAPIError` con mensaje "request timeout"). Aplica a clientes HTTP custom, NO a clientes que ya manejan timeouts (Octokit con plugin de retry, fetch con `signal` configurado upstream).
 
 Si CodeRabbit reporta algo que NO está en esta lista, parar y pedir input humano.

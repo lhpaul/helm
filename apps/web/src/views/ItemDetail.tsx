@@ -54,7 +54,9 @@ export function ItemDetail() {
     );
   }
 
-  if (error) {
+  // Full-page error only when there's no prior data — transient poll failures
+  // show an inline warning so the last-known content stays visible.
+  if (error && !item) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50">
         <div className="text-center">
@@ -90,6 +92,11 @@ export function ItemDetail() {
 
       {/* History table */}
       <main className="mx-auto max-w-4xl p-6">
+        {error && (
+          <p className="mb-3 rounded bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            ⚠ {error} — showing last known data.
+          </p>
+        )}
         <h2 className="mb-3 text-sm font-semibold text-gray-700">Transition history</h2>
         <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
           <table className="min-w-full">

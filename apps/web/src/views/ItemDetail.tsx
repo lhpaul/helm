@@ -5,7 +5,9 @@ import type { WorkflowEvent } from '../lib/api.js';
 import { usePolling } from '../hooks/usePolling.js';
 
 function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return 'unknown';
+  return date.toLocaleString(undefined, {
     dateStyle: 'short',
     timeStyle: 'short',
   });
@@ -103,7 +105,11 @@ export function ItemDetail() {
             </thead>
             <tbody>
               {[...item.history].reverse().map((event, i) => (
-                <HistoryRow key={`${event.at}-${event.toStage}`} event={event} index={i} />
+                <HistoryRow
+                  key={`${event.at}-${event.fromStage ?? 'created'}-${event.toStage}-${event.triggeredBy}`}
+                  event={event}
+                  index={i}
+                />
               ))}
             </tbody>
           </table>

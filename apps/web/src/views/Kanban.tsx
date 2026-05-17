@@ -8,7 +8,9 @@ import { usePolling } from '../hooks/usePolling.js';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
+  const date = new Date(iso);
+  if (isNaN(date.getTime())) return 'unknown';
+  const diff = Date.now() - date.getTime();
   const mins = Math.floor(diff / 60_000);
   if (mins < 1) return 'just now';
   if (mins < 60) return `${mins}m ago`;
@@ -26,8 +28,8 @@ function ItemCard({ item }: { item: ItemState }) {
       to={`/items/${item.externalId}`}
       className="block rounded-lg border border-gray-200 bg-white p-3 shadow-sm transition-shadow hover:shadow-md"
     >
-      <p className="truncate text-sm font-medium text-gray-900">{item.externalId}</p>
-      <p className="mt-0.5 line-clamp-2 text-xs text-gray-500">{item.externalId}</p>
+      <p className="truncate font-mono text-sm font-medium text-gray-900">{item.externalId}</p>
+      <p className="mt-0.5 text-xs text-gray-500">{item.currentStage}</p>
       <p className="mt-2 text-xs text-gray-400">{relativeTime(item.createdAt)}</p>
     </Link>
   );

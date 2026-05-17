@@ -79,8 +79,8 @@ export function ItemDetail() {
         </Link>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-gray-900">{item.externalId}</h1>
-            <p className="mt-1 font-mono text-xs text-gray-400">{item.externalId}</p>
+            <h1 className="font-mono text-xl font-semibold text-gray-900">{item.externalId}</h1>
+            <p className="mt-1 text-xs text-gray-400">{item.productSlug}</p>
           </div>
           <StageBadge stage={item.currentStage} />
         </div>

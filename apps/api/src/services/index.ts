@@ -132,8 +132,18 @@ export async function getProductRegistry(): Promise<Product[]> {
     try {
       products = await loadProductRegistry(registryFilePath, baseDir);
     } catch (err) {
-      // ENOENT → products.yaml doesn't exist → backward-compat single-product fallback
-      if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
+      // Fall back to single-product mode ONLY when the registry file itself is absent.
+      // Any other ENOENT (e.g., a referenced product.yaml is missing) must propagate so
+      // the operator can diagnose the broken registry entry instead of silently losing it.
+      const isMissingRegistryFile =
+        err !== null &&
+        typeof err === 'object' &&
+        'code' in err &&
+        err.code === 'ENOENT' &&
+        'path' in err &&
+        (err as { path: string }).path === registryFilePath;
+
+      if (isMissingRegistryFile) {
         products = [await getProductConfig()];
       } else {
         throw err;

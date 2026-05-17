@@ -118,7 +118,7 @@ let _productRegistryPromise: Promise<Product[]> | null = null;
  * (the "sibling layout" — see ADR-004).
  */
 export async function getProductRegistry(): Promise<Product[]> {
-  if (_productRegistry !== null) return _productRegistry;
+  if (_productRegistry !== null) return _productRegistry.map((p) => ({ ...p }));
   if (_productRegistryPromise !== null) return _productRegistryPromise;
 
   _productRegistryPromise = (async () => {
@@ -140,12 +140,13 @@ export async function getProductRegistry(): Promise<Product[]> {
       }
     }
 
-    _productRegistry = products;
-    return products;
+    _productRegistry = products.map((p) => ({ ...p }));
+    return _productRegistry.map((p) => ({ ...p }));
   })();
 
   try {
-    return await _productRegistryPromise;
+    const products = await _productRegistryPromise;
+    return products.map((p) => ({ ...p }));
   } finally {
     _productRegistryPromise = null;
   }

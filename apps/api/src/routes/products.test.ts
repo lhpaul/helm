@@ -92,6 +92,11 @@ describe('GET /api/products', () => {
   });
 
   describe('GET /api/products/:slug', () => {
+    it('returns 400 for invalid slug format', async () => {
+      const res = await app.request('/api/products/INVALID_SLUG!');
+      expect(res.status).toBe(400);
+    });
+
     it('returns the matching product', async () => {
       mockGetProductRegistry.mockResolvedValue([HELM_PRODUCT, PLAYGROUND_PRODUCT]);
       const res = await app.request('/api/products/helm-playground');
@@ -143,6 +148,11 @@ describe('GET /api/products', () => {
       const res = await app.request('/api/products/helm-playground/items');
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual([]);
+    });
+
+    it('returns 400 for invalid slug format', async () => {
+      const res = await app.request('/api/products/BAD_SLUG!/items');
+      expect(res.status).toBe(400);
     });
 
     it('returns 404 when the product slug does not exist', async () => {

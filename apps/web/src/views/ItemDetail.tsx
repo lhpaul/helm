@@ -1,0 +1,111 @@
+import { useCallback } from 'react';
+import { Link, useParams } from 'react-router-dom';
+import { api } from '../lib/api.js';
+import type { WorkflowEvent } from '../lib/api.js';
+import { usePolling } from '../hooks/usePolling.js';
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  });
+}
+
+function StageBadge({ stage }: { stage: string }) {
+  return (
+    <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-700">
+      {stage}
+    </span>
+  );
+}
+
+function HistoryRow({ event, index }: { event: WorkflowEvent; index: number }) {
+  return (
+    <tr className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+      <td className="whitespace-nowrap px-4 py-2 text-xs text-gray-500">
+        {event.fromStage ?? <span className="italic text-gray-300">created</span>}
+      </td>
+      <td className="px-2 py-2 text-xs text-gray-400">→</td>
+      <td className="whitespace-nowrap px-4 py-2 text-xs font-medium text-gray-900">
+        {event.toStage}
+      </td>
+      <td className="whitespace-nowrap px-4 py-2 text-xs text-gray-500">{formatDate(event.at)}</td>
+      <td className="px-4 py-2 text-xs text-gray-400">{event.triggeredBy}</td>
+      {event.note && <td className="px-4 py-2 text-xs text-gray-400 italic">{event.note}</td>}
+    </tr>
+  );
+}
+
+export function ItemDetail() {
+  const { id } = useParams<{ id: string }>();
+
+  const fetcher = useCallback(() => api.getItem(id ?? ''), [id]);
+  const { data: item, error, loading } = usePolling(fetcher, 5_000);
+
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-50">
+        <p className="text-sm text-gray-400">Loading…</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{error}</p>
+          <Link to="/" className="mt-4 block text-sm text-indigo-600 hover:text-indigo-800">
+            ← Back to board
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (!item) return null;
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <header className="border-b border-gray-200 bg-white px-6 py-4">
+        <Link
+          to="/"
+          className="mb-3 block text-xs font-medium text-indigo-600 hover:text-indigo-800"
+        >
+          ← Back to board
+        </Link>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-semibold text-gray-900">{item.externalId}</h1>
+            <p className="mt-1 font-mono text-xs text-gray-400">{item.externalId}</p>
+          </div>
+          <StageBadge stage={item.currentStage} />
+        </div>
+      </header>
+
+      {/* History table */}
+      <main className="mx-auto max-w-4xl p-6">
+        <h2 className="mb-3 text-sm font-semibold text-gray-700">Transition history</h2>
+        <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+          <table className="min-w-full">
+            <thead>
+              <tr className="border-b border-gray-200 bg-gray-50">
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">From</th>
+                <th className="px-2 py-2" />
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">To</th>
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">When</th>
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Actor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...item.history].reverse().map((event, i) => (
+                <HistoryRow key={`${event.at}-${event.toStage}`} event={event} index={i} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+  );
+}

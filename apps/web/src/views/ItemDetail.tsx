@@ -43,8 +43,16 @@ function HistoryRow({ event, index }: { event: WorkflowEvent; index: number }) {
 export function ItemDetail() {
   const { id } = useParams<{ id: string }>();
 
-  const fetcher = useCallback(() => api.getItem(id ?? ''), [id]);
-  const { data: item, error, loading } = usePolling(fetcher, 5_000);
+  const fetcher = useCallback((): ReturnType<typeof api.getItem> => {
+    if (!id) {
+      return Promise.resolve({
+        ok: false,
+        error: { type: 'network', message: 'Missing item id in route.' },
+      });
+    }
+    return api.getItem(id);
+  }, [id]);
+  const { data: item, error, loading } = usePolling(fetcher, id ? 5_000 : null);
 
   if (loading) {
     return (

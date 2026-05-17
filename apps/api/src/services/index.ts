@@ -1,6 +1,6 @@
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { ensureDataDir } from '@helm/storage';
-import { parseProductConfigFromFile } from '@helm/shared';
+import { parseProductConfigFromFile, loadProductRegistry } from '@helm/shared';
 import type { Product } from '@helm/shared';
 import { GitHubProjectsAdapter } from '@helm/adapters';
 import { ItemStore } from './item-store.js';
@@ -101,6 +101,56 @@ export async function getGitHubAdapter(): Promise<GitHubProjectsAdapter> {
   }
 }
 
+// ── Product registry (multi-product) ─────────────────────────────────────────
+
+let _productRegistry: Product[] | null = null;
+let _productRegistryPromise: Promise<Product[]> | null = null;
+
+/**
+ * Returns all registered Products, initializing from the registry on first call.
+ * Single-flight: concurrent callers await the same promise.
+ *
+ * Discovery order:
+ *   1. If $HELM_KNOWLEDGE_REPO_PATH/.helm/products.yaml exists → load all products listed there.
+ *   2. Otherwise (ENOENT) → fall back to [getProductConfig()] for single-product backward compat.
+ *
+ * Paths in products.yaml are resolved relative to dirname(HELM_KNOWLEDGE_REPO_PATH)
+ * (the "sibling layout" — see ADR-004).
+ */
+export async function getProductRegistry(): Promise<Product[]> {
+  if (_productRegistry !== null) return _productRegistry;
+  if (_productRegistryPromise !== null) return _productRegistryPromise;
+
+  _productRegistryPromise = (async () => {
+    const knowledgePath = process.env.HELM_KNOWLEDGE_REPO_PATH?.trim();
+    if (!knowledgePath) throw new Error('HELM_KNOWLEDGE_REPO_PATH environment variable not set');
+
+    const registryFilePath = join(knowledgePath, '.helm', 'products.yaml');
+    const baseDir = dirname(knowledgePath);
+
+    let products: Product[];
+    try {
+      products = await loadProductRegistry(registryFilePath, baseDir);
+    } catch (err) {
+      // ENOENT → products.yaml doesn't exist → backward-compat single-product fallback
+      if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
+        products = [await getProductConfig()];
+      } else {
+        throw err;
+      }
+    }
+
+    _productRegistry = products;
+    return products;
+  })();
+
+  try {
+    return await _productRegistryPromise;
+  } finally {
+    _productRegistryPromise = null;
+  }
+}
+
 // ── Test utilities ────────────────────────────────────────────────────────────
 
 /**
@@ -114,4 +164,6 @@ export function _resetForTests(): void {
   _productInitPromise = null;
   _githubAdapter = null;
   _githubAdapterPromise = null;
+  _productRegistry = null;
+  _productRegistryPromise = null;
 }

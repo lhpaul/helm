@@ -37,7 +37,8 @@ export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: ApiError 
 
 // ── Fetch helper ──────────────────────────────────────────────────────────────
 
-const BASE_URL = (import.meta as { env?: { VITE_API_URL?: string } }).env?.VITE_API_URL ?? '';
+const rawApiUrl = (import.meta as { env?: { VITE_API_URL?: string } }).env?.VITE_API_URL;
+const BASE_URL = rawApiUrl && rawApiUrl.trim() ? rawApiUrl.trim() : '';
 
 async function fetchJson<T>(path: string): Promise<ApiResult<T>> {
   try {

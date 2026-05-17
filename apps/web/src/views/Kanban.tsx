@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import type { ItemState } from '../lib/api.js';
@@ -80,6 +80,16 @@ export function Kanban() {
   const stages = product?.workflow.stages_enabled ?? [];
   const allItems = items ?? [];
 
+  const itemsByStage = useMemo(() => {
+    const grouped = new Map<string, ItemState[]>();
+    for (const item of allItems) {
+      const list = grouped.get(item.currentStage) ?? [];
+      list.push(item);
+      grouped.set(item.currentStage, list);
+    }
+    return grouped;
+  }, [allItems]);
+
   return (
     <div className="flex min-h-screen flex-col bg-gray-50">
       {/* Header */}
@@ -100,11 +110,7 @@ export function Kanban() {
       {/* Board */}
       <main className="flex flex-1 gap-4 overflow-x-auto p-6">
         {stages.map((stage) => (
-          <KanbanColumn
-            key={stage}
-            stage={stage}
-            items={allItems.filter((i) => i.currentStage === stage)}
-          />
+          <KanbanColumn key={stage} stage={stage} items={itemsByStage.get(stage) ?? []} />
         ))}
       </main>
     </div>

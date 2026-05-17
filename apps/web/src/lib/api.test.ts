@@ -64,11 +64,12 @@ describe('api.listItems', () => {
 });
 
 describe('api.getItem', () => {
-  it('URL-encodes the externalId', async () => {
-    mockFetch.mockResolvedValueOnce(mockOk({ externalId: 'issue_1' }));
-    await api.getItem('issue_1');
+  it('URL-encodes special characters in externalId', async () => {
+    const externalId = 'issue/1 with space';
+    mockFetch.mockResolvedValueOnce(mockOk({ externalId }));
+    await api.getItem(externalId);
     const calledUrl = mockFetch.mock.calls[0]?.[0] as string;
-    expect(calledUrl).toContain('issue_1');
+    expect(calledUrl).toContain(encodeURIComponent(externalId));
   });
 
   it('returns http error on 404', async () => {

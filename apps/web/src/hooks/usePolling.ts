@@ -12,6 +12,12 @@ export type PollingState<T> = {
  * Pass `intervalMs = null` to fetch once and skip polling.
  * The fetcher reference is kept stable via a ref so callers can pass
  * inline arrow functions without causing the effect to re-run.
+ *
+ * Guards:
+ * - `inFlight`: skips a tick if the previous request is still pending,
+ *   preventing overlapping requests and out-of-order state writes.
+ * - try-catch: maps thrown errors (not just { ok: false } returns) to the
+ *   error state so unhandled rejections never bubble up.
  */
 export function usePolling<T>(
   fetcher: () => Promise<ApiResult<T>>,
@@ -26,17 +32,27 @@ export function usePolling<T>(
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
 
     const doFetch = async () => {
-      const result = await fetcherRef.current();
-      if (cancelled) return;
-      if (result.ok) {
-        setData(result.data);
-        setError(null);
-      } else {
-        setError(result.error.message);
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const result = await fetcherRef.current();
+        if (cancelled) return;
+        if (result.ok) {
+          setData(result.data);
+          setError(null);
+        } else {
+          setError(result.error.message);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : 'Unexpected polling error');
+      } finally {
+        inFlight = false;
+        setLoading(false);
       }
-      setLoading(false);
     };
 
     void doFetch();

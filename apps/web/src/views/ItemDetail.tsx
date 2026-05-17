@@ -31,7 +31,9 @@ function HistoryRow({ event, index }: { event: WorkflowEvent; index: number }) {
       </td>
       <td className="whitespace-nowrap px-4 py-2 text-xs text-gray-500">{formatDate(event.at)}</td>
       <td className="px-4 py-2 text-xs text-gray-400">{event.triggeredBy}</td>
-      {event.note && <td className="px-4 py-2 text-xs text-gray-400 italic">{event.note}</td>}
+      <td className="px-4 py-2 text-xs text-gray-400 italic">
+        {event.note ?? <span className="not-italic text-gray-300">—</span>}
+      </td>
     </tr>
   );
 }
@@ -96,6 +98,7 @@ export function ItemDetail() {
                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">To</th>
                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">When</th>
                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Actor</th>
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Note</th>
               </tr>
             </thead>
             <tbody>

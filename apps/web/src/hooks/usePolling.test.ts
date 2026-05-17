@@ -110,6 +110,19 @@ describe('usePolling', () => {
     expect(result.current.data).toEqual({ value: 42 });
   });
 
+  it('handles a rejected fetcher promise and sets error state', async () => {
+    const fetcher = vi.fn().mockRejectedValue(new Error('boom'));
+    const { result } = renderHook(() => usePolling(fetcher, 5_000));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBe('boom');
+    expect(result.current.data).toBeNull();
+  });
+
   it('fetches once and does not poll when intervalMs is null', async () => {
     const fetcher = vi.fn().mockResolvedValue(ok({}));
     renderHook(() => usePolling(fetcher, null));

@@ -118,7 +118,7 @@ let _productRegistryPromise: Promise<Product[]> | null = null;
  * (the "sibling layout" — see ADR-004).
  */
 export async function getProductRegistry(): Promise<Product[]> {
-  if (_productRegistry !== null) return _productRegistry.map((p) => ({ ...p }));
+  if (_productRegistry !== null) return _productRegistry.map((p) => structuredClone(p));
   if (_productRegistryPromise !== null) return _productRegistryPromise;
 
   _productRegistryPromise = (async () => {
@@ -150,13 +150,13 @@ export async function getProductRegistry(): Promise<Product[]> {
       }
     }
 
-    _productRegistry = products.map((p) => ({ ...p }));
-    return _productRegistry.map((p) => ({ ...p }));
+    _productRegistry = products.map((p) => structuredClone(p));
+    return _productRegistry.map((p) => structuredClone(p));
   })();
 
   try {
     const products = await _productRegistryPromise;
-    return products.map((p) => ({ ...p }));
+    return products.map((p) => structuredClone(p));
   } finally {
     _productRegistryPromise = null;
   }

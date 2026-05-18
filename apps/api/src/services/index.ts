@@ -1,6 +1,6 @@
 import { join, dirname } from 'node:path';
 import { ensureDataDir } from '@helm/storage';
-import { parseProductConfigFromFile, loadProductRegistry } from '@helm/shared';
+import { parseProductConfigFromFile, loadProductRegistry, ProductConfigError } from '@helm/shared';
 import type { Product } from '@helm/shared';
 import { GitHubProjectsAdapter } from '@helm/adapters';
 import { ItemStore } from './item-store.js';
@@ -139,15 +139,14 @@ export async function getProductRegistry(): Promise<Product[]> {
       products = await loadProductRegistry(registryFilePath, baseDir);
     } catch (err) {
       // Fall back to single-product mode ONLY when the registry file itself is absent.
-      // Any other ENOENT (e.g., a referenced product.yaml is missing) must propagate so
-      // the operator can diagnose the broken registry entry instead of silently losing it.
+      // ProductConfigError wraps the fs error: .code is preserved directly, but .path
+      // lives on .cause (the original NodeJS.ErrnoException). Checking .cause.path
+      // ensures we don't swallow ENOENT errors from a referenced product.yaml being
+      // missing — those must propagate so the operator can diagnose the broken entry.
       const isMissingRegistryFile =
-        err !== null &&
-        typeof err === 'object' &&
-        'code' in err &&
+        err instanceof ProductConfigError &&
         err.code === 'ENOENT' &&
-        'path' in err &&
-        (err as { path: string }).path === registryFilePath;
+        (err.cause as NodeJS.ErrnoException | undefined)?.path === registryFilePath;
 
       if (isMissingRegistryFile) {
         products = [await getProductConfig()];

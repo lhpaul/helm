@@ -74,6 +74,8 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
   // Stable metadata (fetched once, not TTL-evicted)
   private projectId: string | null = null;
   private fieldId: string | null = null;
+  /** True when the project was resolved via user(login:) — personal accounts don't support org-level webhooks. */
+  private isPersonalAccount = false;
   private readonly stageToOptionId = new Map<WorkflowStage, string>();
   private readonly optionIdToStage = new Map<string, WorkflowStage>();
   private mapsReady = false;
@@ -233,6 +235,15 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
         'webhookSecret is required for registerWebhook — pass it in constructor options',
       );
     }
+    // Ensure project owner is known before attempting webhook registration.
+    await this.ensureProjectId();
+    if (this.isPersonalAccount) {
+      throw new GitHubConfigError(
+        `registerWebhook is not supported for personal account projects — ` +
+          `GitHub's REST API only allows webhook creation on organization accounts. ` +
+          `Use a smee.io channel and configure the webhook manually in your GitHub Project settings instead.`,
+      );
+    }
     const url = `https://api.github.com/orgs/${this.config.org}/hooks`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000);
@@ -349,12 +360,16 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
         login: this.config.org,
         number: this.config.project_number,
       });
-      if (!res.organization?.projectV2) {
+      // repositoryOwner resolves for both orgs and users without partial-data errors.
+      const owner = res.repositoryOwner;
+      const projectV2 = owner?.projectV2 ?? null;
+      if (!owner || !projectV2) {
         throw new GitHubNotFoundError(
-          `GitHub project #${this.config.project_number} not found in org '${this.config.org}'`,
+          `GitHub project #${this.config.project_number} not found for owner '${this.config.org}'`,
         );
       }
-      this.projectId = res.organization.projectV2.id;
+      this.isPersonalAccount = owner.__typename === 'User';
+      this.projectId = projectV2.id;
     } catch (err) {
       if (err instanceof GitHubNotFoundError) throw err;
       this.mapError(err);
@@ -484,20 +499,27 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
 
   private mapError(err: unknown): never {
     if (err !== null && typeof err === 'object' && 'response' in err) {
-      const status = (err as { response: { status: number } }).response.status;
+      const e = err as { response: { status: number }; errors?: Array<{ message: string }> };
+      const status = e.response.status;
+      // Include the first GraphQL error message for actionable diagnostics.
+      const gqlMessage = e.errors?.[0]?.message;
+      const detail = gqlMessage ? ` — ${gqlMessage}` : '';
       if (status === 401) {
         console.error('[GitHubProjectsAdapter] Authentication error:', err);
-        throw new GitHubAuthError('GitHub API authentication failed — verify the token is valid');
+        throw new GitHubAuthError(
+          `GitHub API authentication failed — verify the token is valid${detail}`,
+        );
       }
       if (status === 404) {
         console.error('[GitHubProjectsAdapter] Resource not found:', err);
-        throw new GitHubNotFoundError('GitHub resource not found');
+        throw new GitHubNotFoundError(`GitHub resource not found${detail}`);
       }
       console.error(`[GitHubProjectsAdapter] API error (${status}):`, err);
-      throw new GitHubAPIError(`GitHub API error`, status);
+      throw new GitHubAPIError(`GitHub API error${detail}`, status);
     }
+    const message = err instanceof Error ? err.message : String(err);
     console.error('[GitHubProjectsAdapter] Unexpected error:', err);
-    throw new GitHubAPIError('GitHub API request failed');
+    throw new GitHubAPIError(`GitHub API request failed — ${message}`);
   }
 
   getOptionId(stage: WorkflowStage): string | undefined {

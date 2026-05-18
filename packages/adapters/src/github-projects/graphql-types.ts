@@ -6,13 +6,13 @@ export type GitHubFieldOption = {
 };
 
 // ── GET_PROJECT ───────────────────────────────────────────────────────────────
+// Uses repositoryOwner(login:) with inline fragments so a single query works
+// for both GitHub org and personal (user) accounts without partial-data errors.
 
 export type GetProjectResponse = {
-  organization: {
-    projectV2: {
-      id: string;
-      title: string;
-    } | null;
+  repositoryOwner: {
+    __typename: 'Organization' | 'User' | string;
+    projectV2: { id: string; title: string } | null;
   } | null;
 };
 

@@ -6,7 +6,8 @@
     "dev": "bun run --watch src/index.ts",
     "build": "tsc --noEmit && bun build src/index.ts --outdir dist --target bun",
     "test": "vitest run",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "sync": "bun run src/scripts/sync.ts"
   },
   "dependencies": {
     "@helm/adapters": "workspace:*",

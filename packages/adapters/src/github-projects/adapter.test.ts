@@ -30,7 +30,7 @@ const OPTION_DISCOVERY = { id: 'opt-disc', name: 'discovery' };
 const OPTION_SPEC_READY = { id: 'opt-spec', name: 'spec-ready' };
 
 function projectRes(): GetProjectResponse {
-  return { organization: { projectV2: { id: PROJECT_ID, title: 'Helm' } } };
+  return { organization: { projectV2: { id: PROJECT_ID, title: 'Helm' } }, user: null };
 }
 
 function fieldsRes(fieldName?: string): GetProjectFieldsResponse {

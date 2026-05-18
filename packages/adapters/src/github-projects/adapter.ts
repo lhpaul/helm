@@ -349,12 +349,14 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
         login: this.config.org,
         number: this.config.project_number,
       });
-      if (!res.organization?.projectV2) {
+      // Try org first, then user — supports both GitHub org and personal accounts.
+      const projectV2 = res.organization?.projectV2 ?? res.user?.projectV2;
+      if (!projectV2) {
         throw new GitHubNotFoundError(
-          `GitHub project #${this.config.project_number} not found in org '${this.config.org}'`,
+          `GitHub project #${this.config.project_number} not found for owner '${this.config.org}' (tried org and user)`,
         );
       }
-      this.projectId = res.organization.projectV2.id;
+      this.projectId = projectV2.id;
     } catch (err) {
       if (err instanceof GitHubNotFoundError) throw err;
       this.mapError(err);

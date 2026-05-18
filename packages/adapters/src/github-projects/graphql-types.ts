@@ -7,13 +7,13 @@ export type GitHubFieldOption = {
 
 // ── GET_PROJECT ───────────────────────────────────────────────────────────────
 
+type ProjectV2Node = { projectV2: { id: string; title: string } | null } | null;
+
 export type GetProjectResponse = {
-  organization: {
-    projectV2: {
-      id: string;
-      title: string;
-    } | null;
-  } | null;
+  /** Non-null for GitHub org accounts. */
+  organization: ProjectV2Node;
+  /** Non-null for GitHub personal (user) accounts. */
+  user: ProjectV2Node;
 };
 
 // ── GET_PROJECT_FIELDS ────────────────────────────────────────────────────────

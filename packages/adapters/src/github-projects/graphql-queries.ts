@@ -6,6 +6,12 @@ export const GET_PROJECT = `
         title
       }
     }
+    user(login: $login) {
+      projectV2(number: $number) {
+        id
+        title
+      }
+    }
   }
 `;
 

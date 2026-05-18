@@ -126,6 +126,10 @@ export async function getProductRegistry(): Promise<Product[]> {
   _productRegistryPromise = (async () => {
     const knowledgePath = process.env.HELM_KNOWLEDGE_REPO_PATH?.trim();
     if (!knowledgePath) throw new Error('HELM_KNOWLEDGE_REPO_PATH environment variable not set');
+    const SAFE_FS_PATH_REGEX = /^[A-Za-z0-9._/\-]+$/;
+    if (!SAFE_FS_PATH_REGEX.test(knowledgePath)) {
+      throw new Error('HELM_KNOWLEDGE_REPO_PATH contains invalid characters');
+    }
 
     const registryFilePath = join(knowledgePath, '.helm', 'products.yaml');
     const baseDir = dirname(knowledgePath);

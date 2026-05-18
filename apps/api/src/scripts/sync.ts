@@ -28,6 +28,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const knowledgeRepoPath = process.env.HELM_KNOWLEDGE_REPO_PATH?.trim();
+  if (!knowledgeRepoPath) {
+    console.error('Error: HELM_KNOWLEDGE_REPO_PATH environment variable is not set or blank');
+    process.exit(1);
+  }
+
   const envDataDir = process.env.HELM_DATA_DIR?.trim();
   const dataRoot = envDataDir || join(process.cwd(), 'data');
 

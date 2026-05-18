@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { GitHubProjectsAdapter } from '@helm/adapters';
 import type { NormalizedItem } from '@helm/adapters';
-import { ensureDataDir, writeJsonAtomic } from '@helm/storage';
+import { ensureDataDir, writeJsonAtomic, readJson } from '@helm/storage';
 import { INITIAL_STAGE } from '@helm/workflow';
 import type { WorkflowStage } from '@helm/workflow';
 import type { Product } from '@helm/shared';
@@ -17,12 +17,15 @@ export type SyncResult = {
 // Injectable interfaces for testing without filesystem or network.
 type ListItemsFn = () => Promise<NormalizedItem[]>;
 type WriteJsonFn = (filePath: string, data: unknown) => Promise<void>;
+type ReadJsonFn = <T>(filePath: string) => Promise<T | null>;
 
 export type SyncOptions = {
-  /** Injectable adapter — defaults to a fresh GitHubProjectsAdapter. */
+  /** Injectable adapter list function — defaults to a fresh GitHubProjectsAdapter. */
   _listItems?: ListItemsFn;
   /** Injectable writer — defaults to writeJsonAtomic. */
   _writeJson?: WriteJsonFn;
+  /** Injectable reader — defaults to readJson (used to preserve existing createdAt). */
+  _readJson?: ReadJsonFn;
 };
 
 /**
@@ -30,11 +33,11 @@ export type SyncOptions = {
  * them to `data/items/{externalId}.json` using the same ItemState shape that
  * the webhook handler produces.
  *
- * Idempotent: running twice overwrites files with identical content.
+ * Idempotency: if an item file already exists, its `createdAt` is preserved
+ * and `updatedAt` is only advanced when the stage actually changes.
  * Items with invalid externalIds are skipped with a warning.
  *
- * Uses the adapter's listItems() which paginates automatically up to GitHub's
- * 100-item-per-page cap. Supports both org and personal (user) GitHub accounts.
+ * Supports both GitHub org and personal (user) accounts.
  *
  * @param product   - Product whose issue_tracker will be queried.
  * @param token     - GitHub PAT with read access to the project.
@@ -58,8 +61,6 @@ export async function syncProductItems(
   const slug = product.product.slug;
   const start = Date.now();
 
-  // Build the list function — real adapter with no caching (ttlMs:0) in production,
-  // or a test double injected via options.
   const listItems: ListItemsFn =
     options?._listItems ??
     (() => {
@@ -68,12 +69,11 @@ export async function syncProductItems(
     });
 
   const writeJson: WriteJsonFn = options?._writeJson ?? writeJsonAtomic;
+  const readJsonFn: ReadJsonFn = options?._readJson ?? readJson;
 
   const items = await listItems();
-
   const paths = await ensureDataDir(dataRoot);
 
-  const now = new Date().toISOString();
   let synced = 0;
   let skipped = 0;
 
@@ -86,26 +86,55 @@ export async function syncProductItems(
       continue;
     }
 
-    const currentStage: WorkflowStage = item.subStage ?? INITIAL_STAGE;
-    const creationEvent: WorkflowEvent = {
-      fromStage: null,
-      toStage: currentStage,
-      triggeredBy: 'sync:github-projects',
-      at: now,
-    };
-
-    const state: ItemState = {
-      externalId: item.externalId,
-      productSlug: slug,
-      currentStage,
-      history: [creationEvent],
-      createdAt: now,
-      updatedAt: now,
-    };
-
     const filePath = join(paths.items, `${item.externalId}.json`);
-    await writeJson(filePath, state);
+    const currentStage: WorkflowStage = item.subStage ?? INITIAL_STAGE;
 
+    // Read existing state to preserve createdAt and avoid spurious timestamp drift.
+    const existing = await readJsonFn<ItemState>(filePath);
+    const now = new Date().toISOString();
+
+    let state: ItemState;
+    if (existing !== null) {
+      if (existing.currentStage === currentStage) {
+        // Stage unchanged — preserve file as-is (true idempotency, no write needed).
+        synced++;
+        console.log(
+          `[sync] product=${slug} item=${item.externalId} title="${item.title}" stage=${currentStage} (unchanged)`,
+        );
+        continue;
+      }
+      // Stage changed — append transition event, preserve original createdAt.
+      const event: WorkflowEvent = {
+        fromStage: existing.currentStage,
+        toStage: currentStage,
+        triggeredBy: 'sync:github-projects',
+        at: now,
+      };
+      state = {
+        ...existing,
+        currentStage,
+        history: [...existing.history, event],
+        updatedAt: now,
+      };
+    } else {
+      // New item — create fresh.
+      const creationEvent: WorkflowEvent = {
+        fromStage: null,
+        toStage: currentStage,
+        triggeredBy: 'sync:github-projects',
+        at: now,
+      };
+      state = {
+        externalId: item.externalId,
+        productSlug: slug,
+        currentStage,
+        history: [creationEvent],
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
+
+    await writeJson(filePath, state);
     console.log(
       `[sync] product=${slug} item=${item.externalId} title="${item.title}" stage=${currentStage}`,
     );

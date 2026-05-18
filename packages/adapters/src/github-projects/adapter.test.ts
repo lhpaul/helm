@@ -144,6 +144,30 @@ describe('GitHubProjectsAdapter', () => {
     });
   });
 
+  describe('personal account fallback (user vs organization)', () => {
+    it('resolves projectId from user when organization is null', async () => {
+      const { adapter, gql } = makeAdapter();
+      gql
+        .mockResolvedValueOnce({
+          organization: null,
+          user: { projectV2: { id: PROJECT_ID, title: 'Helm' } },
+        })
+        .mockResolvedValueOnce(fieldsRes('Helm Stage'))
+        .mockResolvedValueOnce(
+          itemsPage([{ number: 1, title: 'Item', state: 'OPEN' }], false, null),
+        );
+
+      const item = await adapter.getItem('issue_1');
+      expect(item?.externalId).toBe('issue_1');
+    });
+
+    it('throws GitHubNotFoundError when both organization and user return null', async () => {
+      const { adapter, gql } = makeAdapter();
+      gql.mockResolvedValueOnce({ organization: null, user: null });
+      await expect(adapter.getItem('issue_1')).rejects.toThrow(GitHubNotFoundError);
+    });
+  });
+
   describe('ensureSubStages', () => {
     it('creates the Helm Stage field when it does not exist', async () => {
       const { adapter, gql } = makeAdapter();
@@ -476,8 +500,9 @@ describe('GitHubProjectsAdapter', () => {
     describe('registerWebhook', () => {
       it('POSTs to the GitHub org hooks endpoint with correct payload', async () => {
         const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, status: 201 });
+        const gqlMock = vi.fn().mockResolvedValueOnce(projectRes()); // ensureProjectId call
         const adapterWithWebhook = new GitHubProjectsAdapter(CONFIG, 'test-token', {
-          _graphql: vi.fn() as unknown as GraphqlFn,
+          _graphql: gqlMock as unknown as GraphqlFn,
           _fetch: fetchMock as unknown as FetchFn,
           webhookSecret: 'my-secret',
         });
@@ -490,6 +515,21 @@ describe('GitHubProjectsAdapter', () => {
         const body = JSON.parse(init.body as string);
         expect(body.events).toContain('projects_v2_item');
         expect(body.config.url).toBe('https://example.com/hook');
+      });
+
+      it('throws GitHubConfigError for personal account (user) projects', async () => {
+        const gqlMock = vi.fn().mockResolvedValueOnce({
+          organization: null,
+          user: { projectV2: { id: PROJECT_ID, title: 'Helm' } },
+        });
+        const adapterPersonal = new GitHubProjectsAdapter(CONFIG, 'test-token', {
+          _graphql: gqlMock as unknown as GraphqlFn,
+          _fetch: vi.fn() as unknown as FetchFn,
+          webhookSecret: 'my-secret',
+        });
+        await expect(adapterPersonal.registerWebhook('https://example.com/hook')).rejects.toThrow(
+          /personal account/,
+        );
       });
 
       it('throws GitHubConfigError when webhookSecret is not set', async () => {

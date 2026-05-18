@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { mkdir, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ItemState } from './types.js';
 import { syncProductItems } from './sync.js';
 import type { SyncOptions } from './sync.js';
 import type { NormalizedItem } from '@helm/adapters';
@@ -59,11 +60,16 @@ function makeItem(overrides: Partial<NormalizedItem> = {}): NormalizedItem {
 function makeOptions(
   items: NormalizedItem[],
   capturedWrites: Array<{ path: string; data: unknown }> = [],
+  existingState: Record<string, ItemState> = {},
 ): SyncOptions {
   return {
     _listItems: () => Promise.resolve(items),
     _writeJson: async (filePath, data) => {
       capturedWrites.push({ path: filePath, data });
+    },
+    _readJson: async <T>(filePath: string): Promise<T | null> => {
+      const key = filePath.split('/').at(-1)!.replace('.json', '');
+      return (existingState[key] ?? null) as T | null;
     },
   };
 }
@@ -79,6 +85,7 @@ describe('syncProductItems', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -172,22 +179,44 @@ describe('syncProductItems', () => {
   });
 
   describe('idempotency', () => {
-    it('writes the same data on two successive runs', async () => {
-      const writes1: Array<{ path: string; data: unknown }> = [];
-      const writes2: Array<{ path: string; data: unknown }> = [];
+    it('skips the write on second run when stage is unchanged (no file drift)', async () => {
       const item = makeItem({ externalId: 'issue_7', subStage: 'discovery' });
-      const opts1 = makeOptions([item], writes1);
-      const opts2 = makeOptions([item], writes2);
+      const writes1: Array<{ path: string; data: unknown }> = [];
 
-      await syncProductItems(BASE_PRODUCT, 'token', tmpDir, opts1);
-      await syncProductItems(BASE_PRODUCT, 'token', tmpDir, opts2);
-
+      // First run: no existing state → creates fresh
+      await syncProductItems(BASE_PRODUCT, 'token', tmpDir, makeOptions([item], writes1));
       expect(writes1).toHaveLength(1);
+      const firstState = writes1[0]!.data as ItemState;
+
+      // Second run: existing state has same stage → skip write (continue)
+      const writes2: Array<{ path: string; data: unknown }> = [];
+      const existing: Record<string, ItemState> = { issue_7: firstState };
+      await syncProductItems(BASE_PRODUCT, 'token', tmpDir, makeOptions([item], writes2, existing));
+      expect(writes2).toHaveLength(0); // no write — content unchanged
+    });
+
+    it('preserves createdAt and appends to history when stage changes on re-sync', async () => {
+      const item = makeItem({ externalId: 'issue_8', subStage: 'discovery' });
+      const writes1: Array<{ path: string; data: unknown }> = [];
+      await syncProductItems(BASE_PRODUCT, 'token', tmpDir, makeOptions([item], writes1));
+      const firstState = writes1[0]!.data as ItemState;
+
+      // Re-sync with a different stage
+      const updatedItem = makeItem({ externalId: 'issue_8', subStage: 'spec-ready' });
+      const writes2: Array<{ path: string; data: unknown }> = [];
+      const existing: Record<string, ItemState> = { issue_8: firstState };
+      await syncProductItems(
+        BASE_PRODUCT,
+        'token',
+        tmpDir,
+        makeOptions([updatedItem], writes2, existing),
+      );
+
       expect(writes2).toHaveLength(1);
-      const s1 = writes1[0]!.data as Record<string, unknown>;
-      const s2 = writes2[0]!.data as Record<string, unknown>;
-      expect(s1.externalId).toBe(s2.externalId);
-      expect(s1.currentStage).toBe(s2.currentStage);
+      const secondState = writes2[0]!.data as ItemState;
+      expect(secondState.createdAt).toBe(firstState.createdAt); // preserved
+      expect(secondState.currentStage).toBe('spec-ready');
+      expect(secondState.history).toHaveLength(2); // creation + transition
     });
   });
 
@@ -209,7 +238,7 @@ describe('syncProductItems', () => {
     });
 
     it('skips items with invalid externalIds and increments skipped count', async () => {
-      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
       const writes: Array<{ path: string; data: unknown }> = [];
       const items = [
         makeItem({ externalId: 'issue_1' }), // valid
@@ -228,7 +257,6 @@ describe('syncProductItems', () => {
       expect(result.synced).toBe(2);
       expect(result.skipped).toBe(2);
       expect(writes).toHaveLength(2);
-      consoleSpy.mockRestore();
     });
 
     it('returns synced=0 when adapter returns empty list', async () => {

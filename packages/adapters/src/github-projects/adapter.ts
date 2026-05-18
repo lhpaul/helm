@@ -74,6 +74,8 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
   // Stable metadata (fetched once, not TTL-evicted)
   private projectId: string | null = null;
   private fieldId: string | null = null;
+  /** True when the project was resolved via user(login:) — personal accounts don't support org-level webhooks. */
+  private isPersonalAccount = false;
   private readonly stageToOptionId = new Map<WorkflowStage, string>();
   private readonly optionIdToStage = new Map<string, WorkflowStage>();
   private mapsReady = false;
@@ -233,6 +235,15 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
         'webhookSecret is required for registerWebhook — pass it in constructor options',
       );
     }
+    // Ensure project owner is known before attempting webhook registration.
+    await this.ensureProjectId();
+    if (this.isPersonalAccount) {
+      throw new GitHubConfigError(
+        `registerWebhook is not supported for personal account projects — ` +
+          `GitHub's REST API only allows webhook creation on organization accounts. ` +
+          `Use a smee.io channel and configure the webhook manually in your GitHub Project settings instead.`,
+      );
+    }
     const url = `https://api.github.com/orgs/${this.config.org}/hooks`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000);
@@ -350,12 +361,15 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
         number: this.config.project_number,
       });
       // Try org first, then user — supports both GitHub org and personal accounts.
-      const projectV2 = res.organization?.projectV2 ?? res.user?.projectV2;
+      const fromOrg = res.organization?.projectV2 ?? null;
+      const fromUser = res.user?.projectV2 ?? null;
+      const projectV2 = fromOrg ?? fromUser;
       if (!projectV2) {
         throw new GitHubNotFoundError(
           `GitHub project #${this.config.project_number} not found for owner '${this.config.org}' (tried org and user)`,
         );
       }
+      this.isPersonalAccount = fromOrg === null && fromUser !== null;
       this.projectId = projectV2.id;
     } catch (err) {
       if (err instanceof GitHubNotFoundError) throw err;

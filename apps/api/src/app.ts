@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { HELM_VERSION } from '@helm/shared';
 import { itemsRouter } from './routes/items.js';
 import { productRouter } from './routes/product.js';
+import { productsRouter } from './routes/products.js';
 import { webhooksRouter } from './routes/webhooks.js';
 
 export const app = new Hono();
@@ -16,5 +17,6 @@ app.get('/health', (c) =>
 );
 
 app.route('/api', productRouter);
+app.route('/api', productsRouter);
 app.route('/api', itemsRouter);
 app.route('/api', webhooksRouter);

@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { ensureDataDir } from '@helm/storage';
-import { parseProductConfigFromFile } from '@helm/shared';
+import { parseProductConfigFromFile, loadProductRegistry, ProductConfigError } from '@helm/shared';
 import type { Product } from '@helm/shared';
 import { GitHubProjectsAdapter } from '@helm/adapters';
 import { ItemStore } from './item-store.js';
@@ -101,6 +101,73 @@ export async function getGitHubAdapter(): Promise<GitHubProjectsAdapter> {
   }
 }
 
+// ── Product registry (multi-product) ─────────────────────────────────────────
+
+let _productRegistry: Product[] | null = null;
+let _productRegistryPromise: Promise<Product[]> | null = null;
+
+/**
+ * Returns all registered Products, initializing from the registry on first call.
+ * Single-flight: concurrent callers await the same promise.
+ *
+ * Discovery order:
+ *   1. If $HELM_KNOWLEDGE_REPO_PATH/.helm/products.yaml exists → load all products listed there.
+ *   2. Otherwise (ENOENT) → fall back to [getProductConfig()] for single-product backward compat.
+ *
+ * Paths in products.yaml are resolved relative to HELM_KNOWLEDGE_REPO_PATH itself
+ * (the knowledge repo root). Example: path "." → the repo itself; path
+ * "../helm-playground-knowledge" → a sibling repo. See ADR-004.
+ */
+export async function getProductRegistry(): Promise<Product[]> {
+  if (_productRegistry !== null) return _productRegistry.map((p) => structuredClone(p));
+  if (_productRegistryPromise !== null) {
+    return _productRegistryPromise.then((products) => products.map((p) => structuredClone(p)));
+  }
+
+  _productRegistryPromise = (async () => {
+    const knowledgePath = process.env.HELM_KNOWLEDGE_REPO_PATH?.trim();
+    if (!knowledgePath) throw new Error('HELM_KNOWLEDGE_REPO_PATH environment variable not set');
+    const SAFE_FS_PATH_REGEX = /^[A-Za-z0-9._/\-]+$/;
+    if (!SAFE_FS_PATH_REGEX.test(knowledgePath)) {
+      throw new Error('HELM_KNOWLEDGE_REPO_PATH contains invalid characters');
+    }
+
+    const registryFilePath = join(knowledgePath, '.helm', 'products.yaml');
+    const baseDir = knowledgePath; // paths in products.yaml are relative to the knowledge repo itself
+
+    let products: Product[];
+    try {
+      products = await loadProductRegistry(registryFilePath, baseDir);
+    } catch (err) {
+      // Fall back to single-product mode ONLY when the registry file itself is absent.
+      // ProductConfigError wraps the fs error: .code is preserved directly, but .path
+      // lives on .cause (the original NodeJS.ErrnoException). Checking .cause.path
+      // ensures we don't swallow ENOENT errors from a referenced product.yaml being
+      // missing — those must propagate so the operator can diagnose the broken entry.
+      const isMissingRegistryFile =
+        err instanceof ProductConfigError &&
+        err.code === 'ENOENT' &&
+        (err.cause as NodeJS.ErrnoException | undefined)?.path === registryFilePath;
+
+      if (isMissingRegistryFile) {
+        products = [await getProductConfig()];
+      } else {
+        throw err;
+      }
+    }
+
+    _productRegistry = products.map((p) => structuredClone(p));
+    return _productRegistry.map((p) => structuredClone(p));
+  })();
+
+  try {
+    const products = await _productRegistryPromise;
+    return products.map((p) => structuredClone(p));
+  } finally {
+    _productRegistryPromise = null;
+  }
+}
+
 // ── Test utilities ────────────────────────────────────────────────────────────
 
 /**
@@ -114,4 +181,6 @@ export function _resetForTests(): void {
   _productInitPromise = null;
   _githubAdapter = null;
   _githubAdapterPromise = null;
+  _productRegistry = null;
+  _productRegistryPromise = null;
 }

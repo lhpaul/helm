@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { z } from 'zod';
 import { GitHubProjectsAdapter } from '@helm/adapters';
 import type { NormalizedItem } from '@helm/adapters';
 import { ensureDataDir, writeJsonAtomic, readJson } from '@helm/storage';
@@ -7,6 +8,28 @@ import type { WorkflowStage } from '@helm/workflow';
 import type { Product } from '@helm/shared';
 import { EXTERNAL_ID_REGEX } from './types.js';
 import type { ItemState, WorkflowEvent } from './types.js';
+
+// Runtime guard for ItemState read from disk — malformed JSON should rebuild rather than crash.
+const WorkflowEventSchema = z.object({
+  fromStage: z.string().nullable(),
+  toStage: z.string(),
+  triggeredBy: z.string(),
+  at: z.string(),
+  note: z.string().optional(),
+});
+const ItemStateSchema = z.object({
+  externalId: z.string(),
+  productSlug: z.string(),
+  currentStage: z.string(),
+  history: z.array(WorkflowEventSchema),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+function parseExistingState(raw: unknown): ItemState | null {
+  const result = ItemStateSchema.safeParse(raw);
+  return result.success ? (result.data as ItemState) : null;
+}
 
 export type SyncResult = {
   synced: number;
@@ -89,8 +112,9 @@ export async function syncProductItems(
     const filePath = join(paths.items, `${item.externalId}.json`);
     const currentStage: WorkflowStage = item.subStage ?? INITIAL_STAGE;
 
-    // Read existing state to preserve createdAt and avoid spurious timestamp drift.
-    const existing = await readJsonFn<ItemState>(filePath);
+    // Read and validate existing state — treat malformed disk data as absent (rebuild).
+    const rawExisting = await readJsonFn<unknown>(filePath);
+    const existing = rawExisting !== null ? parseExistingState(rawExisting) : null;
     const now = new Date().toISOString();
 
     let state: ItemState;

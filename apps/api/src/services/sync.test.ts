@@ -1,5 +1,5 @@
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { mkdir, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -68,7 +68,7 @@ function makeOptions(
       capturedWrites.push({ path: filePath, data });
     },
     _readJson: async <T>(filePath: string): Promise<T | null> => {
-      const key = filePath.split('/').at(-1)!.replace('.json', '');
+      const key = basename(filePath).replace('.json', '');
       return (existingState[key] ?? null) as T | null;
     },
   };

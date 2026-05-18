@@ -34,7 +34,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const SAFE_FS_PATH_REGEX = /^[A-Za-z0-9._/\-]+$/;
+  if (!SAFE_FS_PATH_REGEX.test(knowledgeRepoPath)) {
+    console.error('Error: HELM_KNOWLEDGE_REPO_PATH contains invalid characters');
+    process.exit(1);
+  }
+
   const envDataDir = process.env.HELM_DATA_DIR?.trim();
+  if (envDataDir && !SAFE_FS_PATH_REGEX.test(envDataDir)) {
+    console.error('Error: HELM_DATA_DIR contains invalid characters');
+    process.exit(1);
+  }
   const dataRoot = envDataDir || join(process.cwd(), 'data');
 
   let products;

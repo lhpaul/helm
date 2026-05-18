@@ -1,15 +1,18 @@
 export const GET_PROJECT = `
   query GetProject($login: String!, $number: Int!) {
-    organization(login: $login) {
-      projectV2(number: $number) {
-        id
-        title
+    repositoryOwner(login: $login) {
+      __typename
+      ... on Organization {
+        projectV2(number: $number) {
+          id
+          title
+        }
       }
-    }
-    user(login: $login) {
-      projectV2(number: $number) {
-        id
-        title
+      ... on User {
+        projectV2(number: $number) {
+          id
+          title
+        }
       }
     }
   }

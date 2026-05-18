@@ -6,14 +6,14 @@ export type GitHubFieldOption = {
 };
 
 // ── GET_PROJECT ───────────────────────────────────────────────────────────────
-
-type ProjectV2Node = { projectV2: { id: string; title: string } | null } | null;
+// Uses repositoryOwner(login:) with inline fragments so a single query works
+// for both GitHub org and personal (user) accounts without partial-data errors.
 
 export type GetProjectResponse = {
-  /** Non-null for GitHub org accounts. */
-  organization: ProjectV2Node;
-  /** Non-null for GitHub personal (user) accounts. */
-  user: ProjectV2Node;
+  repositoryOwner: {
+    __typename: 'Organization' | 'User' | string;
+    projectV2: { id: string; title: string } | null;
+  } | null;
 };
 
 // ── GET_PROJECT_FIELDS ────────────────────────────────────────────────────────

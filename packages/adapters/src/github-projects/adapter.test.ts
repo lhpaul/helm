@@ -30,7 +30,13 @@ const OPTION_DISCOVERY = { id: 'opt-disc', name: 'discovery' };
 const OPTION_SPEC_READY = { id: 'opt-spec', name: 'spec-ready' };
 
 function projectRes(): GetProjectResponse {
-  return { organization: { projectV2: { id: PROJECT_ID, title: 'Helm' } }, user: null };
+  return {
+    repositoryOwner: { __typename: 'Organization', projectV2: { id: PROJECT_ID, title: 'Helm' } },
+  };
+}
+
+function projectResUser(): GetProjectResponse {
+  return { repositoryOwner: { __typename: 'User', projectV2: { id: PROJECT_ID, title: 'Helm' } } };
 }
 
 function fieldsRes(fieldName?: string): GetProjectFieldsResponse {
@@ -144,14 +150,11 @@ describe('GitHubProjectsAdapter', () => {
     });
   });
 
-  describe('personal account fallback (user vs organization)', () => {
-    it('resolves projectId from user when organization is null', async () => {
+  describe('personal account support (repositoryOwner polymorphic query)', () => {
+    it('resolves projectId for a personal (User) account', async () => {
       const { adapter, gql } = makeAdapter();
       gql
-        .mockResolvedValueOnce({
-          organization: null,
-          user: { projectV2: { id: PROJECT_ID, title: 'Helm' } },
-        })
+        .mockResolvedValueOnce(projectResUser())
         .mockResolvedValueOnce(fieldsRes('Helm Stage'))
         .mockResolvedValueOnce(
           itemsPage([{ number: 1, title: 'Item', state: 'OPEN' }], false, null),
@@ -161,10 +164,47 @@ describe('GitHubProjectsAdapter', () => {
       expect(item?.externalId).toBe('issue_1');
     });
 
-    it('throws GitHubNotFoundError when both organization and user return null', async () => {
+    it('resolves projectId for an org (Organization) account', async () => {
       const { adapter, gql } = makeAdapter();
-      gql.mockResolvedValueOnce({ organization: null, user: null });
+      gql
+        .mockResolvedValueOnce(projectRes())
+        .mockResolvedValueOnce(fieldsRes('Helm Stage'))
+        .mockResolvedValueOnce(
+          itemsPage([{ number: 1, title: 'Item', state: 'OPEN' }], false, null),
+        );
+
+      const item = await adapter.getItem('issue_1');
+      expect(item?.externalId).toBe('issue_1');
+    });
+
+    it('throws GitHubNotFoundError when repositoryOwner is null', async () => {
+      const { adapter, gql } = makeAdapter();
+      gql.mockResolvedValueOnce({ repositoryOwner: null });
       await expect(adapter.getItem('issue_1')).rejects.toThrow(GitHubNotFoundError);
+    });
+
+    it('throws GitHubNotFoundError when project is not found under the owner', async () => {
+      const { adapter, gql } = makeAdapter();
+      gql.mockResolvedValueOnce({ repositoryOwner: { __typename: 'User', projectV2: null } });
+      await expect(adapter.getItem('issue_1')).rejects.toThrow(GitHubNotFoundError);
+    });
+
+    it('regression: dual org+user query threw partial-data error on personal accounts — repositoryOwner fixes this', async () => {
+      // The previous GET_PROJECT queried `organization` + `user` in parallel.
+      // When `organization(login: 'lhpaul')` fails, GitHub returns BOTH data AND errors[].
+      // @octokit/graphql throws GraphqlResponseError on any errors[], so the user fallback
+      // was never reached. repositoryOwner resolves without errors for personal accounts.
+      const { adapter, gql } = makeAdapter();
+      gql
+        .mockResolvedValueOnce(projectResUser())
+        .mockResolvedValueOnce(fieldsRes('Helm Stage'))
+        .mockResolvedValueOnce(
+          itemsPage([{ number: 5, title: 'Hello world endpoint', state: 'OPEN' }], false, null),
+        );
+
+      const item = await adapter.getItem('issue_5');
+      expect(item?.externalId).toBe('issue_5');
+      expect(item?.title).toBe('Hello world endpoint');
     });
   });
 
@@ -518,10 +558,7 @@ describe('GitHubProjectsAdapter', () => {
       });
 
       it('throws GitHubConfigError for personal account (user) projects', async () => {
-        const gqlMock = vi.fn().mockResolvedValueOnce({
-          organization: null,
-          user: { projectV2: { id: PROJECT_ID, title: 'Helm' } },
-        });
+        const gqlMock = vi.fn().mockResolvedValueOnce(projectResUser());
         const adapterPersonal = new GitHubProjectsAdapter(CONFIG, 'test-token', {
           _graphql: gqlMock as unknown as GraphqlFn,
           _fetch: vi.fn() as unknown as FetchFn,

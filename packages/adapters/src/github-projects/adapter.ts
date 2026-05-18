@@ -360,16 +360,15 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
         login: this.config.org,
         number: this.config.project_number,
       });
-      // Try org first, then user — supports both GitHub org and personal accounts.
-      const fromOrg = res.organization?.projectV2 ?? null;
-      const fromUser = res.user?.projectV2 ?? null;
-      const projectV2 = fromOrg ?? fromUser;
-      if (!projectV2) {
+      // repositoryOwner resolves for both orgs and users without partial-data errors.
+      const owner = res.repositoryOwner;
+      const projectV2 = owner?.projectV2 ?? null;
+      if (!owner || !projectV2) {
         throw new GitHubNotFoundError(
-          `GitHub project #${this.config.project_number} not found for owner '${this.config.org}' (tried org and user)`,
+          `GitHub project #${this.config.project_number} not found for owner '${this.config.org}'`,
         );
       }
-      this.isPersonalAccount = fromOrg === null && fromUser !== null;
+      this.isPersonalAccount = owner.__typename === 'User';
       this.projectId = projectV2.id;
     } catch (err) {
       if (err instanceof GitHubNotFoundError) throw err;
@@ -500,20 +499,27 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
 
   private mapError(err: unknown): never {
     if (err !== null && typeof err === 'object' && 'response' in err) {
-      const status = (err as { response: { status: number } }).response.status;
+      const e = err as { response: { status: number }; errors?: Array<{ message: string }> };
+      const status = e.response.status;
+      // Include the first GraphQL error message for actionable diagnostics.
+      const gqlMessage = e.errors?.[0]?.message;
+      const detail = gqlMessage ? ` — ${gqlMessage}` : '';
       if (status === 401) {
         console.error('[GitHubProjectsAdapter] Authentication error:', err);
-        throw new GitHubAuthError('GitHub API authentication failed — verify the token is valid');
+        throw new GitHubAuthError(
+          `GitHub API authentication failed — verify the token is valid${detail}`,
+        );
       }
       if (status === 404) {
         console.error('[GitHubProjectsAdapter] Resource not found:', err);
-        throw new GitHubNotFoundError('GitHub resource not found');
+        throw new GitHubNotFoundError(`GitHub resource not found${detail}`);
       }
       console.error(`[GitHubProjectsAdapter] API error (${status}):`, err);
-      throw new GitHubAPIError(`GitHub API error`, status);
+      throw new GitHubAPIError(`GitHub API error${detail}`, status);
     }
+    const message = err instanceof Error ? err.message : String(err);
     console.error('[GitHubProjectsAdapter] Unexpected error:', err);
-    throw new GitHubAPIError('GitHub API request failed');
+    throw new GitHubAPIError(`GitHub API request failed — ${message}`);
   }
 
   getOptionId(stage: WorkflowStage): string | undefined {

@@ -119,7 +119,9 @@ let _productRegistryPromise: Promise<Product[]> | null = null;
  */
 export async function getProductRegistry(): Promise<Product[]> {
   if (_productRegistry !== null) return _productRegistry.map((p) => structuredClone(p));
-  if (_productRegistryPromise !== null) return _productRegistryPromise;
+  if (_productRegistryPromise !== null) {
+    return _productRegistryPromise.then((products) => products.map((p) => structuredClone(p)));
+  }
 
   _productRegistryPromise = (async () => {
     const knowledgePath = process.env.HELM_KNOWLEDGE_REPO_PATH?.trim();

@@ -1,4 +1,4 @@
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import { ensureDataDir } from '@helm/storage';
 import { parseProductConfigFromFile, loadProductRegistry, ProductConfigError } from '@helm/shared';
 import type { Product } from '@helm/shared';
@@ -114,8 +114,9 @@ let _productRegistryPromise: Promise<Product[]> | null = null;
  *   1. If $HELM_KNOWLEDGE_REPO_PATH/.helm/products.yaml exists → load all products listed there.
  *   2. Otherwise (ENOENT) → fall back to [getProductConfig()] for single-product backward compat.
  *
- * Paths in products.yaml are resolved relative to dirname(HELM_KNOWLEDGE_REPO_PATH)
- * (the "sibling layout" — see ADR-004).
+ * Paths in products.yaml are resolved relative to HELM_KNOWLEDGE_REPO_PATH itself
+ * (the knowledge repo root). Example: path "." → the repo itself; path
+ * "../helm-playground-knowledge" → a sibling repo. See ADR-004.
  */
 export async function getProductRegistry(): Promise<Product[]> {
   if (_productRegistry !== null) return _productRegistry.map((p) => structuredClone(p));
@@ -132,7 +133,7 @@ export async function getProductRegistry(): Promise<Product[]> {
     }
 
     const registryFilePath = join(knowledgePath, '.helm', 'products.yaml');
-    const baseDir = dirname(knowledgePath);
+    const baseDir = knowledgePath; // paths in products.yaml are relative to the knowledge repo itself
 
     let products: Product[];
     try {

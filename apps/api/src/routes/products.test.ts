@@ -48,9 +48,10 @@ const PLAYGROUND_ITEMS = [
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-const { mockGetProductRegistry, mockList } = vi.hoisted(() => ({
+const { mockGetProductRegistry, mockList, mockGet } = vi.hoisted(() => ({
   mockGetProductRegistry: vi.fn(),
   mockList: vi.fn(),
+  mockGet: vi.fn(),
 }));
 
 vi.mock('../services/index.js', async (importOriginal) => {
@@ -58,7 +59,7 @@ vi.mock('../services/index.js', async (importOriginal) => {
   return {
     ...real,
     getProductRegistry: mockGetProductRegistry,
-    getItemStore: vi.fn().mockResolvedValue({ list: mockList }),
+    getItemStore: vi.fn().mockResolvedValue({ list: mockList, get: mockGet }),
   };
 });
 
@@ -165,6 +166,73 @@ describe('GET /api/products', () => {
       mockGetProductRegistry.mockResolvedValue([HELM_PRODUCT]);
       mockList.mockRejectedValue(new Error('disk error'));
       const res = await app.request('/api/products/helm/items');
+      expect(res.status).toBe(500);
+    });
+  });
+
+  describe('GET /api/products/:slug/items/:externalId', () => {
+    const ITEM = {
+      externalId: 'issue_1',
+      productSlug: 'helm',
+      currentStage: 'discovery',
+      history: [],
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+
+    it('returns the item when product and item both exist and match', async () => {
+      mockGetProductRegistry.mockResolvedValue([HELM_PRODUCT]);
+      mockGet.mockResolvedValue(ITEM);
+
+      const res = await app.request('/api/products/helm/items/issue_1');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as typeof ITEM;
+      expect(body.externalId).toBe('issue_1');
+      expect(body.currentStage).toBe('discovery');
+    });
+
+    it('returns 400 for invalid slug format', async () => {
+      const res = await app.request('/api/products/BAD_SLUG!/items/issue_1');
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 for invalid externalId characters', async () => {
+      const res = await app.request('/api/products/helm/items/HLM:invalid');
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('externalId');
+    });
+
+    it('returns 404 when product slug does not exist', async () => {
+      mockGetProductRegistry.mockResolvedValue([HELM_PRODUCT]);
+      mockGet.mockResolvedValue(ITEM);
+
+      const res = await app.request('/api/products/ghost/items/issue_1');
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 404 when item does not exist', async () => {
+      mockGetProductRegistry.mockResolvedValue([HELM_PRODUCT]);
+      mockGet.mockResolvedValue(null);
+
+      const res = await app.request('/api/products/helm/items/issue_999');
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 404 when item belongs to a different product (cross-product leak protection)', async () => {
+      mockGetProductRegistry.mockResolvedValue([HELM_PRODUCT, PLAYGROUND_PRODUCT]);
+      // issue_1 belongs to helm-playground, not helm
+      mockGet.mockResolvedValue({ ...ITEM, productSlug: 'helm-playground' });
+
+      const res = await app.request('/api/products/helm/items/issue_1');
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 500 when store throws', async () => {
+      mockGetProductRegistry.mockResolvedValue([HELM_PRODUCT]);
+      mockGet.mockRejectedValue(new Error('disk error'));
+
+      const res = await app.request('/api/products/helm/items/issue_1');
       expect(res.status).toBe(500);
     });
   });

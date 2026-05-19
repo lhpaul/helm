@@ -26,7 +26,18 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
     return c.json({ error: `Invalid externalId: "${externalId}"` }, 400);
   }
 
-  const bodyResult = BodySchema.safeParse(await c.req.json().catch(() => ({})));
+  // Parse JSON body explicitly so malformed JSON returns 400 instead of
+  // being silently swallowed as an empty object.
+  let parsedBody: unknown = {};
+  const rawBody = await c.req.text();
+  if (rawBody.trim().length > 0) {
+    try {
+      parsedBody = JSON.parse(rawBody) as unknown;
+    } catch {
+      return c.json({ error: 'Invalid JSON body' }, 400);
+    }
+  }
+  const bodyResult = BodySchema.safeParse(parsedBody);
   if (!bodyResult.success) {
     return c.json({ error: 'Invalid request body', details: bodyResult.error.issues }, 400);
   }

@@ -67,7 +67,8 @@ class MockAgentSession implements AgentSession {
   }
 
   async cancel(): Promise<void> {
-    if (this.cancelled) return;
+    // No-op if already in a terminal state (done/error/cancelled).
+    if (this.cancelled || this.status === 'done' || this.status === 'error') return;
     this.cancelled = true;
     this.status = 'cancelled';
     // startMs is 0 until run() begins; clamp to avoid a nonsensical large duration.

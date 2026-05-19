@@ -148,6 +148,15 @@ describe('MockAgentRuntime', () => {
     expect(r2.status).toBe('done');
   });
 
+  it('cancel() is a no-op when session has already completed', async () => {
+    const runtime = new MockAgentRuntime({ messages: [msg('done')] });
+    const session = await runtime.spawn(makeParams(workdir));
+    await session.wait(); // let it complete naturally
+
+    await session.cancel(); // must not overwrite status
+    expect(session.status).toBe('done');
+  });
+
   it('resolves with error status when script outcome is error', async () => {
     const runtime = new MockAgentRuntime({
       messages: [msg('failed')],

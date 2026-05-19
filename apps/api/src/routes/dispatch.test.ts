@@ -163,6 +163,18 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     expect(body.error).toContain('Invalid request body');
   });
 
+  it('returns 400 when request body is malformed JSON', async () => {
+    const res = await app.request('/api/products/test-product/items/issue_1/dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"specialistId":', // truncated / invalid JSON
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('Invalid JSON');
+    expect(mockTransition).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when product slug does not exist in registry', async () => {
     mockGetProductRegistry.mockResolvedValue([makeProduct('other-product')]);
 

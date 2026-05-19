@@ -22,7 +22,10 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   if (!SlugSchema.safeParse(slug).success) {
     return c.json({ error: 'Invalid product slug' }, 400);
   }
-  if (!EXTERNAL_ID_REGEX.test(externalId)) {
+  // Defense-in-depth: EXTERNAL_ID_REGEX already blocks leading dots (via the
+  // (?!\.) lookahead), so '.' and '..' fail the regex too. The explicit check
+  // below makes the intent clear and guards against future regex relaxations.
+  if (!EXTERNAL_ID_REGEX.test(externalId) || externalId === '.' || externalId === '..') {
     return c.json({ error: `Invalid externalId: "${externalId}"` }, 400);
   }
 

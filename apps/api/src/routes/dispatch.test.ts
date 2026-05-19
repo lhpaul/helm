@@ -156,6 +156,19 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     expect(body.error).toContain('externalId');
   });
 
+  it('rejects dot-segment externalIds', async () => {
+    // Hono normalizes '.' and '..' URL segments before the handler runs, so
+    // these requests reach a 404 (no route match) rather than the 400 guard.
+    // The explicit check in dispatch.ts provides defense-in-depth for any
+    // non-HTTP code path that could supply a raw '.' or '..' value.
+    // EXTERNAL_ID_REGEX also already rejects both via its (?!\.) lookahead.
+    const resDot = await dispatch('test-product', '.');
+    expect(resDot.status).not.toBe(200);
+
+    const resDotDot = await dispatch('test-product', '..');
+    expect(resDotDot.status).not.toBe(200);
+  });
+
   it('returns 400 when request body has unexpected fields', async () => {
     const res = await dispatch('test-product', 'issue_1', { unknown: 'field' });
     expect(res.status).toBe(400);

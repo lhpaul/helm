@@ -2,7 +2,7 @@ import type { Product } from '@helm/shared';
 import type { WorkflowStage } from '@helm/workflow';
 
 // ── Types mirroring apps/api/src/services/types.ts ───────────────────────────
-// These match the JSON shape returned by GET /api/items and GET /api/items/:id.
+// These match the JSON shape returned by the API item endpoints.
 // Keep in sync when the API response shape changes.
 
 export type WorkflowEvent = {

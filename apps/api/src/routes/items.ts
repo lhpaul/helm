@@ -80,22 +80,6 @@ itemsRouter.get('/items', async (c) => {
   return c.json(items);
 });
 
-// ── GET /api/items/:externalId ────────────────────────────────────────────────
-
-itemsRouter.get('/items/:externalId', async (c) => {
-  const externalId = c.req.param('externalId');
-  if (!EXTERNAL_ID_REGEX.test(externalId)) {
-    return c.json({ error: `Invalid externalId: "${externalId}"` }, 400);
-  }
-
-  const store = await getItemStore();
-  const item = await store.get(externalId);
-  if (item === null) {
-    return c.json({ error: `Item not found: ${externalId}` }, 404);
-  }
-  return c.json(item);
-});
-
 // ── POST /api/items/:externalId/transitions ───────────────────────────────────
 
 itemsRouter.post('/items/:externalId/transitions', async (c) => {

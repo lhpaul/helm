@@ -68,6 +68,16 @@ async function fetchJson<T>(path: string): Promise<ApiResult<T>> {
 // ── API client ────────────────────────────────────────────────────────────────
 
 export const api = {
+  // ── Multi-product routes (Session 8+) ──────────────────────────────────────
+  listProducts: (): Promise<ApiResult<Product[]>> => fetchJson<Product[]>('/api/products'),
+
+  getProductBySlug: (slug: string): Promise<ApiResult<Product>> =>
+    fetchJson<Product>(`/api/products/${encodeURIComponent(slug)}`),
+
+  listItemsForProduct: (slug: string): Promise<ApiResult<ItemState[]>> =>
+    fetchJson<ItemState[]>(`/api/products/${encodeURIComponent(slug)}/items`),
+
+  // ── Legacy single-product routes — kept for backward compat, remove after cleanup PR ──
   getProduct: (): Promise<ApiResult<Product>> => fetchJson<Product>('/api/product'),
   listItems: (): Promise<ApiResult<ItemState[]>> => fetchJson<ItemState[]>('/api/items'),
   getItem: (id: string): Promise<ApiResult<ItemState>> =>

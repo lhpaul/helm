@@ -41,18 +41,21 @@ function HistoryRow({ event, index }: { event: WorkflowEvent; index: number }) {
 }
 
 export function ItemDetail() {
-  const { id } = useParams<{ id: string }>();
+  const { slug, externalId } = useParams<{ slug: string; externalId: string }>();
 
   const fetcher = useCallback((): ReturnType<typeof api.getItem> => {
-    if (!id) {
+    if (!externalId) {
       return Promise.resolve({
         ok: false,
         error: { type: 'network', message: 'Missing item id in route.' },
       });
     }
-    return api.getItem(id);
-  }, [id]);
-  const { data: item, error, loading } = usePolling(fetcher, id ? 5_000 : null);
+    return api.getItem(externalId);
+  }, [externalId]);
+
+  const { data: item, error, loading } = usePolling(fetcher, externalId ? 5_000 : null);
+
+  const backLink = slug ? `/products/${slug}` : '/products';
 
   if (loading) {
     return (
@@ -69,7 +72,7 @@ export function ItemDetail() {
       <div className="flex min-h-screen items-center justify-center bg-gray-50">
         <div className="text-center">
           <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{error}</p>
-          <Link to="/" className="mt-4 block text-sm text-indigo-600 hover:text-indigo-800">
+          <Link to={backLink} className="mt-4 block text-sm text-indigo-600 hover:text-indigo-800">
             ← Back to board
           </Link>
         </div>
@@ -84,7 +87,7 @@ export function ItemDetail() {
       {/* Header */}
       <header className="border-b border-gray-200 bg-white px-6 py-4">
         <Link
-          to="/"
+          to={backLink}
           className="mb-3 block text-xs font-medium text-indigo-600 hover:text-indigo-800"
         >
           ← Back to board

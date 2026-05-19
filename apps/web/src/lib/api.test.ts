@@ -117,12 +117,13 @@ describe('api.getProductBySlug', () => {
 });
 
 describe('api.listItemsForProduct', () => {
-  it('fetches from the product-scoped items endpoint', async () => {
-    const items = [{ externalId: 'issue_1', productSlug: 'helm-playground' }];
+  it('fetches from the product-scoped items endpoint and URL-encodes the slug', async () => {
+    const slug = 'helm/playground with space';
+    const items = [{ externalId: 'issue_1', productSlug: slug }];
     mockFetch.mockResolvedValueOnce(mockOk(items));
-    const result = await api.listItemsForProduct('helm-playground');
+    const result = await api.listItemsForProduct(slug);
     const calledUrl = mockFetch.mock.calls[0]?.[0] as string;
-    expect(calledUrl).toContain('/api/products/helm-playground/items');
+    expect(calledUrl).toContain(`/api/products/${encodeURIComponent(slug)}/items`);
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.data).toHaveLength(1);
   });

@@ -26,7 +26,13 @@ vi.mock('./lib/api.js', async (importOriginal) => {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function ok<T>(data: T) {
-  return { ok: true as const, data };
+  const safeData =
+    data && typeof data === 'object'
+      ? Array.isArray(data)
+        ? ([...data] as T)
+        : ({ ...data } as T)
+      : data;
+  return { ok: true as const, data: safeData };
 }
 
 const PRODUCTS = [

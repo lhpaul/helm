@@ -55,7 +55,7 @@ export function ItemDetail() {
 
   const { data: item, error, loading } = usePolling(fetcher, externalId ? 5_000 : null);
 
-  const backLink = slug ? `/products/${slug}` : '/products';
+  const backLink = slug ? `/products/${encodeURIComponent(slug)}` : '/products';
   // Guard against navigating to /products/A/items/X where X belongs to product B.
   const slugMismatch = Boolean(item && slug && item.productSlug !== slug);
 

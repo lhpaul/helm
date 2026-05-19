@@ -89,7 +89,7 @@ productsRouter.get('/products/:slug/items/:externalId', async (c) => {
     if (!item || item.productSlug !== slug) {
       return c.json({ error: 'Item not found' }, 404);
     }
-    return c.json(item);
+    return c.json({ ...item });
   } catch (err) {
     console.error(`[products] Failed to load item ${externalId} for ${slug}:`, err);
     return c.json({ error: 'Failed to load item' }, 500);

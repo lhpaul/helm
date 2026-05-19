@@ -20,6 +20,21 @@ function parseSlug(raw: string): string | null {
   return result.success ? result.data.slug : null;
 }
 
+// Params schema for product-scoped item endpoints.
+const ProductItemParamsSchema = z
+  .object({
+    slug: z
+      .string()
+      .min(1)
+      .regex(/^[a-z0-9-]+$/, 'Invalid product slug format'),
+    externalId: z
+      .string()
+      .min(1)
+      .refine((id) => EXTERNAL_ID_REGEX.test(id), 'Invalid externalId format')
+      .refine((id) => id !== '.' && id !== '..', 'Invalid externalId format'),
+  })
+  .strict();
+
 // ── GET /api/products ─────────────────────────────────────────────────────────
 
 productsRouter.get('/products', async (c) => {
@@ -52,13 +67,15 @@ productsRouter.get('/products/:slug', async (c) => {
 // ── GET /api/products/:slug/items/:externalId ─────────────────────────────────
 
 productsRouter.get('/products/:slug/items/:externalId', async (c) => {
-  const slug = parseSlug(c.req.param('slug'));
-  if (!slug) return c.json({ error: 'Invalid product slug' }, 400);
-
-  const externalId = c.req.param('externalId');
-  if (!EXTERNAL_ID_REGEX.test(externalId) || externalId === '.' || externalId === '..') {
-    return c.json({ error: `Invalid externalId: "${externalId}"` }, 400);
+  const parsed = ProductItemParamsSchema.safeParse({
+    slug: c.req.param('slug'),
+    externalId: c.req.param('externalId'),
+  });
+  if (!parsed.success) {
+    console.error('[products] Invalid request params:', parsed.error.issues);
+    return c.json({ error: 'Invalid request params' }, 400);
   }
+  const { slug, externalId } = parsed.data;
 
   try {
     const products = await getProductRegistry();

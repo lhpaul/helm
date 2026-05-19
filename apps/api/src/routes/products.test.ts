@@ -200,7 +200,19 @@ describe('GET /api/products', () => {
       const res = await app.request('/api/products/helm/items/HLM:invalid');
       expect(res.status).toBe(400);
       const body = (await res.json()) as { error: string };
-      expect(body.error).toContain('externalId');
+      expect(body.error).toBe('Invalid request params');
+    });
+
+    it('rejects dot-segment externalIds', async () => {
+      // Hono normalizes '.' and '..' URL segments before the handler runs, so
+      // these requests reach 404 (no route match) rather than 400 at the handler.
+      // ProductItemParamsSchema provides defense-in-depth for any non-HTTP path.
+      // EXTERNAL_ID_REGEX also already rejects both via its (?!\.) lookahead.
+      const resDot = await app.request('/api/products/helm/items/.');
+      expect(resDot.status).not.toBe(200);
+
+      const resDotDot = await app.request('/api/products/helm/items/..');
+      expect(resDotDot.status).not.toBe(200);
     });
 
     it('returns 404 when product slug does not exist', async () => {

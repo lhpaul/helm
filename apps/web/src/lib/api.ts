@@ -77,9 +77,12 @@ export const api = {
   listItemsForProduct: (slug: string): Promise<ApiResult<ItemState[]>> =>
     fetchJson<ItemState[]>(`/api/products/${encodeURIComponent(slug)}/items`),
 
+  getItemForProduct: (slug: string, externalId: string): Promise<ApiResult<ItemState>> =>
+    fetchJson<ItemState>(
+      `/api/products/${encodeURIComponent(slug)}/items/${encodeURIComponent(externalId)}`,
+    ),
+
   // ── Legacy single-product routes — kept for backward compat, remove after cleanup PR ──
   getProduct: (): Promise<ApiResult<Product>> => fetchJson<Product>('/api/product'),
   listItems: (): Promise<ApiResult<ItemState[]>> => fetchJson<ItemState[]>('/api/items'),
-  getItem: (id: string): Promise<ApiResult<ItemState>> =>
-    fetchJson<ItemState>(`/api/items/${encodeURIComponent(id)}`),
 };

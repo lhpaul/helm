@@ -43,17 +43,17 @@ function HistoryRow({ event, index }: { event: WorkflowEvent; index: number }) {
 export function ItemDetail() {
   const { slug, externalId } = useParams<{ slug: string; externalId: string }>();
 
-  const fetcher = useCallback((): ReturnType<typeof api.getItem> => {
-    if (!externalId) {
+  const fetcher = useCallback((): ReturnType<typeof api.getItemForProduct> => {
+    if (!slug || !externalId) {
       return Promise.resolve({
         ok: false,
-        error: { type: 'network', message: 'Missing item id in route.' },
+        error: { type: 'network', message: 'Missing product or item id in route.' },
       });
     }
-    return api.getItem(externalId);
-  }, [externalId]);
+    return api.getItemForProduct(slug, externalId);
+  }, [slug, externalId]);
 
-  const { data: item, error, loading } = usePolling(fetcher, externalId ? 5_000 : null);
+  const { data: item, error, loading } = usePolling(fetcher, slug && externalId ? 5_000 : null);
 
   const backLink = slug ? `/products/${encodeURIComponent(slug)}` : '/products';
   // Guard against navigating to /products/A/items/X where X belongs to product B.

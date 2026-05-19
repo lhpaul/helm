@@ -63,19 +63,31 @@ describe('api.listItems', () => {
   });
 });
 
-describe('api.getItem', () => {
-  it('URL-encodes special characters in externalId', async () => {
+describe('api.getItemForProduct', () => {
+  it('calls the product-scoped item endpoint with URL-encoded slug and externalId', async () => {
+    const slug = 'helm/playground with space';
     const externalId = 'issue/1 with space';
-    mockFetch.mockResolvedValueOnce(mockOk({ externalId }));
-    await api.getItem(externalId);
+    mockFetch.mockResolvedValueOnce(mockOk({ externalId, productSlug: slug }));
+    await api.getItemForProduct(slug, externalId);
     const calledUrl = mockFetch.mock.calls[0]?.[0] as string;
-    expect(calledUrl).toContain(encodeURIComponent(externalId));
+    expect(calledUrl).toContain(
+      `/api/products/${encodeURIComponent(slug)}/items/${encodeURIComponent(externalId)}`,
+    );
+  });
+
+  it('returns ok result with item data on success', async () => {
+    const item = { externalId: 'issue_1', productSlug: 'helm', currentStage: 'discovery' };
+    mockFetch.mockResolvedValueOnce(mockOk(item));
+    const result = await api.getItemForProduct('helm', 'issue_1');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.externalId).toBe('issue_1');
   });
 
   it('returns http error on 404', async () => {
-    mockFetch.mockResolvedValueOnce(mockErr(404, { error: 'Not found' }));
-    const result = await api.getItem('issue_999');
+    mockFetch.mockResolvedValueOnce(mockErr(404, { error: 'Item not found' }));
+    const result = await api.getItemForProduct('helm', 'issue_999');
     expect(result.ok).toBe(false);
+    if (!result.ok) expect((result.error as { status: number }).status).toBe(404);
   });
 });
 

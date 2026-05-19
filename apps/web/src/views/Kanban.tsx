@@ -89,6 +89,19 @@ export function Kanban() {
   const { data: product, error: productError, loading } = usePolling(fetchProduct, null);
   const { data: items, error: itemsError } = usePolling(fetchItems, 5_000);
 
+  // useMemo must be called unconditionally — before any early returns.
+  const stages = product?.workflow.stages_enabled ?? [];
+  const allItems = items ?? [];
+  const itemsByStage = useMemo(() => {
+    const grouped = new Map<string, ItemState[]>();
+    for (const item of allItems) {
+      const list = grouped.get(item.currentStage) ?? [];
+      list.push(item);
+      grouped.set(item.currentStage, list);
+    }
+    return grouped;
+  }, [allItems]);
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50">
@@ -115,19 +128,6 @@ export function Kanban() {
       </div>
     );
   }
-
-  const stages = product?.workflow.stages_enabled ?? [];
-  const allItems = items ?? [];
-
-  const itemsByStage = useMemo(() => {
-    const grouped = new Map<string, ItemState[]>();
-    for (const item of allItems) {
-      const list = grouped.get(item.currentStage) ?? [];
-      list.push(item);
-      grouped.set(item.currentStage, list);
-    }
-    return grouped;
-  }, [allItems]);
 
   return (
     <div className="flex min-h-screen flex-col bg-gray-50">

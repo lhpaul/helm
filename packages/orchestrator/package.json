@@ -1,0 +1,22 @@
+{
+  "name": "@helm/orchestrator",
+  "version": "0.0.0",
+  "private": true,
+  "description": "IAgentRuntime interface, MockAgentRuntime, specialists, and dispatcher.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "@helm/shared": "workspace:*",
+    "@helm/workflow": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "vitest": "^2.1.9"
+  }
+}

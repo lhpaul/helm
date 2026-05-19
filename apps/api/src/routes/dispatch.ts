@@ -108,11 +108,15 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
       { workdir, specialistId: bodyResult.data.specialistId },
     );
 
-    if (result.status === 'error' && result.error?.includes('No specialist mapped')) {
-      return c.json({ error: result.error }, 400);
+    if (result.status === 'error') {
+      if (result.error?.includes('No specialist mapped')) {
+        return c.json({ error: 'Unsupported stage for dispatch' }, 400);
+      }
+      console.error('[dispatch] Dispatch failed:', result.error);
+      return c.json({ error: 'Dispatch failed' }, 500);
     }
 
-    return c.json(result);
+    return c.json(result, 200);
   } catch (err) {
     if (err instanceof ItemNotFoundError) {
       return c.json({ error: `Item not found: ${err.externalId}` }, 404);

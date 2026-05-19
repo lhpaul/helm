@@ -221,7 +221,18 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     const res = await dispatch('test-product', 'issue_1');
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
-    expect(body.error).toContain('No specialist mapped');
+    // Generic client-safe message — raw orchestrator error is logged server-side
+    expect(body.error).toBe('Unsupported stage for dispatch');
+  });
+
+  it('returns 500 when dispatch fails for a reason other than missing specialist', async () => {
+    // plan-writer is in the specialist mapping but not yet implemented →
+    // dispatchStageHandler returns status:'error' with a non-"No specialist mapped" message
+    const res = await dispatch('test-product', 'issue_1', { specialistId: 'plan-writer' });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('Dispatch failed');
+    expect(mockTransition).not.toHaveBeenCalled();
   });
 
   it('accepts specialistId override in request body', async () => {

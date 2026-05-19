@@ -1,9 +1,10 @@
 import { useCallback, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import type { ItemState } from '../lib/api.js';
 import type { WorkflowStage } from '@helm/workflow';
 import { usePolling } from '../hooks/usePolling.js';
+import { ProductTabs } from '../components/ProductTabs.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -22,10 +23,10 @@ function relativeTime(iso: string): string {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function ItemCard({ item }: { item: ItemState }) {
+function ItemCard({ item, slug }: { item: ItemState; slug: string }) {
   return (
     <Link
-      to={`/items/${item.externalId}`}
+      to={`/products/${encodeURIComponent(slug)}/items/${encodeURIComponent(item.externalId)}`}
       className="block rounded-lg border border-gray-200 bg-white p-3 shadow-sm transition-shadow hover:shadow-md"
     >
       <p className="truncate font-mono text-sm font-medium text-gray-900">{item.externalId}</p>
@@ -35,7 +36,15 @@ function ItemCard({ item }: { item: ItemState }) {
   );
 }
 
-function KanbanColumn({ stage, items }: { stage: WorkflowStage; items: ItemState[] }) {
+function KanbanColumn({
+  stage,
+  items,
+  slug,
+}: {
+  stage: WorkflowStage;
+  items: ItemState[];
+  slug: string;
+}) {
   return (
     <div className="flex w-64 shrink-0 flex-col gap-2">
       <div className="flex items-center justify-between px-1">
@@ -46,7 +55,7 @@ function KanbanColumn({ stage, items }: { stage: WorkflowStage; items: ItemState
       </div>
       <div className="flex flex-col gap-2">
         {items.map((item) => (
-          <ItemCard key={item.externalId} item={item} />
+          <ItemCard key={item.externalId} item={item} slug={slug} />
         ))}
         {items.length === 0 && <p className="py-4 text-center text-xs text-gray-300">—</p>}
       </div>
@@ -57,11 +66,41 @@ function KanbanColumn({ stage, items }: { stage: WorkflowStage; items: ItemState
 // ── Main view ─────────────────────────────────────────────────────────────────
 
 export function Kanban() {
-  const fetchProduct = useCallback(() => api.getProduct(), []);
-  const fetchItems = useCallback(() => api.listItems(), []);
+  const { slug } = useParams<{ slug: string }>();
+
+  const fetchProduct = useCallback(
+    () =>
+      slug
+        ? api.getProductBySlug(slug)
+        : Promise.resolve({
+            ok: false as const,
+            error: { type: 'network' as const, message: 'Missing product slug in route.' },
+          }),
+    [slug],
+  );
+  const fetchItems = useCallback(
+    () =>
+      slug
+        ? api.listItemsForProduct(slug)
+        : Promise.resolve({ ok: true as const, data: [] as ItemState[] }),
+    [slug],
+  );
 
   const { data: product, error: productError, loading } = usePolling(fetchProduct, null);
   const { data: items, error: itemsError } = usePolling(fetchItems, 5_000);
+
+  // useMemo must be called unconditionally — before any early returns.
+  const stages = product?.workflow.stages_enabled ?? [];
+  const allItems = items ?? [];
+  const itemsByStage = useMemo(() => {
+    const grouped = new Map<string, ItemState[]>();
+    for (const item of allItems) {
+      const list = grouped.get(item.currentStage) ?? [];
+      list.push(item);
+      grouped.set(item.currentStage, list);
+    }
+    return grouped;
+  }, [allItems]);
 
   if (loading) {
     return (
@@ -73,24 +112,22 @@ export function Kanban() {
 
   if (productError) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50">
-        <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{productError}</p>
+      <div className="flex min-h-screen flex-col bg-gray-50">
+        <ProductTabs />
+        <div className="flex flex-1 items-center justify-center">
+          <div className="text-center">
+            <p className="text-sm text-gray-500">{productError}</p>
+            <Link
+              to="/products"
+              className="mt-3 block text-xs text-indigo-600 hover:text-indigo-800"
+            >
+              ← Back to products
+            </Link>
+          </div>
+        </div>
       </div>
     );
   }
-
-  const stages = product?.workflow.stages_enabled ?? [];
-  const allItems = items ?? [];
-
-  const itemsByStage = useMemo(() => {
-    const grouped = new Map<string, ItemState[]>();
-    for (const item of allItems) {
-      const list = grouped.get(item.currentStage) ?? [];
-      list.push(item);
-      grouped.set(item.currentStage, list);
-    }
-    return grouped;
-  }, [allItems]);
 
   return (
     <div className="flex min-h-screen flex-col bg-gray-50">
@@ -109,10 +146,18 @@ export function Kanban() {
         </div>
       </header>
 
+      {/* Product tabs */}
+      <ProductTabs />
+
       {/* Board */}
       <main className="flex flex-1 gap-4 overflow-x-auto p-6">
         {stages.map((stage) => (
-          <KanbanColumn key={stage} stage={stage} items={itemsByStage.get(stage) ?? []} />
+          <KanbanColumn
+            key={stage}
+            stage={stage}
+            items={itemsByStage.get(stage) ?? []}
+            slug={slug ?? ''}
+          />
         ))}
       </main>
     </div>

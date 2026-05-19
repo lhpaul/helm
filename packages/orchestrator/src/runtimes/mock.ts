@@ -92,38 +92,50 @@ class MockAgentSession implements AgentSession {
     let totalCost = 0;
     let lastContent = '';
 
-    for (const msg of this.script.messages) {
+    try {
+      for (const msg of this.script.messages) {
+        if (this.cancelled) return;
+        // Always await (even 0 ms) so spawn() can return and callers can register
+        // onMessage handlers before any messages are emitted.
+        await sleep(msg.delayMs ?? 0);
+        // Re-check after sleep: cancel() may have been called while we were waiting.
+        if (this.cancelled) return;
+        const clean: AgentMessage = {
+          role: msg.role,
+          content: msg.content,
+          costUsd: msg.costUsd,
+          timestamp: msg.timestamp,
+        };
+        this.emit(clean);
+        totalCost += clean.costUsd ?? 0;
+        lastContent = clean.content;
+      }
+
+      if (!this.cancelled && this.script.sideEffects) {
+        await this.script.sideEffects(this.params.workdir);
+      }
+
       if (this.cancelled) return;
-      // Always await (even 0 ms) so spawn() can return and callers can register
-      // onMessage handlers before any messages are emitted.
-      await sleep(msg.delayMs ?? 0);
-      // Re-check after sleep: cancel() may have been called while we were waiting.
-      if (this.cancelled) return;
-      const clean: AgentMessage = {
-        role: msg.role,
-        content: msg.content,
-        costUsd: msg.costUsd,
-        timestamp: msg.timestamp,
-      };
-      this.emit(clean);
-      totalCost += clean.costUsd ?? 0;
-      lastContent = clean.content;
+
+      const outcome = this.script.outcome ?? 'done';
+      this.status = outcome; // preserve 'done' | 'error' | 'cancelled' as-is
+      this.resolveResult({
+        status: outcome,
+        finalOutput: this.script.finalOutput ?? lastContent,
+        totalCostUsd: totalCost,
+        durationMs: Date.now() - this.startMs,
+      });
+    } catch {
+      // sideEffects or a message handler threw — ensure wait() always resolves.
+      if (this.cancelled) return; // cancel() already resolved the promise
+      this.status = 'error';
+      this.resolveResult({
+        status: 'error',
+        finalOutput: '',
+        totalCostUsd: totalCost,
+        durationMs: Date.now() - this.startMs,
+      });
     }
-
-    if (!this.cancelled && this.script.sideEffects) {
-      await this.script.sideEffects(this.params.workdir);
-    }
-
-    if (this.cancelled) return;
-
-    const outcome = this.script.outcome ?? 'done';
-    this.status = outcome; // preserve 'done' | 'error' | 'cancelled' as-is
-    this.resolveResult({
-      status: outcome,
-      finalOutput: this.script.finalOutput ?? lastContent,
-      totalCostUsd: totalCost,
-      durationMs: Date.now() - this.startMs,
-    });
   }
 
   private emit(msg: AgentMessage): void {

@@ -188,6 +188,20 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     expect(body.error).toContain('issue_1');
   });
 
+  it('returns 404 when item belongs to a different product (slug mismatch)', async () => {
+    mockGet.mockResolvedValue(makeItem('issue_1', 'discovery', 'other-product'));
+
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 500 when item store throws', async () => {
+    mockGet.mockRejectedValue(new Error('io error'));
+
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(500);
+  });
+
   it('returns 400 when item stage has no specialist mapped', async () => {
     // spec-draft has no mapping in STAGE_TO_SPECIALIST
     mockGet.mockResolvedValue(makeItem('issue_1', 'spec-draft'));

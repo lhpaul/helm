@@ -43,9 +43,19 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   }
 
   // Resolve item
-  const store = await getItemStore();
-  const item = await store.get(externalId);
-  if (!item) return c.json({ error: `Item not found: ${externalId}` }, 404);
+  let store;
+  let item;
+  try {
+    store = await getItemStore();
+    item = await store.get(externalId);
+  } catch (err) {
+    console.error('[dispatch] Failed to load item:', err);
+    return c.json({ error: 'Failed to load item' }, 500);
+  }
+  // Also reject when the item belongs to a different product than the URL slug.
+  if (!item || item.productSlug !== slug) {
+    return c.json({ error: `Item not found: ${externalId}` }, 404);
+  }
 
   // Determine workdir — sibling of the data/items directory
   const envDataDir = process.env.HELM_DATA_DIR?.trim();

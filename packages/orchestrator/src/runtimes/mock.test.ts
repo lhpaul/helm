@@ -159,4 +159,19 @@ describe('MockAgentRuntime', () => {
 
     expect(result.status).toBe('error');
   });
+
+  it('resolves wait() with error when sideEffects throws (never hangs)', async () => {
+    const runtime = new MockAgentRuntime({
+      messages: [msg('done')],
+      sideEffects: async () => {
+        throw new Error('disk full');
+      },
+    });
+
+    const session = await runtime.spawn(makeParams(workdir));
+    const result = await session.wait();
+
+    expect(result.status).toBe('error');
+    expect(result.finalOutput).toBe('');
+  });
 });

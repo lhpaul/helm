@@ -39,7 +39,8 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   }
   const bodyResult = BodySchema.safeParse(parsedBody);
   if (!bodyResult.success) {
-    return c.json({ error: 'Invalid request body', details: bodyResult.error.issues }, 400);
+    console.error('[dispatch] Invalid request body:', bodyResult.error.issues);
+    return c.json({ error: 'Invalid request body' }, 400);
   }
 
   // Resolve product

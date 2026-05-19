@@ -53,6 +53,23 @@ export async function dispatchStageHandler(
   transition: ItemTransitionFn,
   options?: DispatchOptions,
 ): Promise<DispatchResult> {
+  // Guard against path traversal when the default workdir is constructed from
+  // productSlug / externalId. The API layer validates these values before calling
+  // dispatchStageHandler, but the dispatcher is a library function — validate
+  // defensively here too. Only enforced when options.workdir is not provided.
+  if (!options?.workdir) {
+    const isSafePathPart = (v: string): boolean => /^[A-Za-z0-9._-]+$/.test(v);
+    if (!isSafePathPart(item.productSlug) || !isSafePathPart(item.externalId)) {
+      return {
+        specialistId: options?.specialistId ?? 'none',
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: 'Invalid productSlug or externalId for filesystem path',
+      };
+    }
+  }
+
   const specialistId = options?.specialistId ?? STAGE_TO_SPECIALIST[item.currentStage];
 
   if (!specialistId) {

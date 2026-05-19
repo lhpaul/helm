@@ -70,16 +70,19 @@ class MockAgentSession implements AgentSession {
     if (this.cancelled) return;
     this.cancelled = true;
     this.status = 'cancelled';
+    // startMs is 0 until run() begins; clamp to avoid a nonsensical large duration.
+    const startedAt = this.startMs > 0 ? this.startMs : Date.now();
     this.resolveResult({
       status: 'cancelled',
       finalOutput: '',
       totalCostUsd: 0,
-      durationMs: Date.now() - this.startMs,
+      durationMs: Date.now() - startedAt,
     });
   }
 
   wait(): Promise<AgentResult> {
-    return this.resultPromise;
+    // Return a defensive copy so concurrent callers receive independent objects.
+    return this.resultPromise.then((r) => ({ ...r }));
   }
 
   /** Called by MockAgentRuntime after returning the session to the caller. */
@@ -94,6 +97,8 @@ class MockAgentSession implements AgentSession {
       // Always await (even 0 ms) so spawn() can return and callers can register
       // onMessage handlers before any messages are emitted.
       await sleep(msg.delayMs ?? 0);
+      // Re-check after sleep: cancel() may have been called while we were waiting.
+      if (this.cancelled) return;
       const clean: AgentMessage = {
         role: msg.role,
         content: msg.content,
@@ -112,7 +117,7 @@ class MockAgentSession implements AgentSession {
     if (this.cancelled) return;
 
     const outcome = this.script.outcome ?? 'done';
-    this.status = outcome === 'done' ? 'done' : 'error';
+    this.status = outcome; // preserve 'done' | 'error' | 'cancelled' as-is
     this.resolveResult({
       status: outcome,
       finalOutput: this.script.finalOutput ?? lastContent,

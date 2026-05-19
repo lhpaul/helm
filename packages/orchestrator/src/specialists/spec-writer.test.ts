@@ -63,7 +63,7 @@ describe('handleSpecWriterResult', () => {
     );
 
     expect(result.transitioned).toBe(false);
-    expect(result.error).toContain('error');
+    expect(result.error).toContain("status 'error'");
     expect(transition).not.toHaveBeenCalled();
   });
 

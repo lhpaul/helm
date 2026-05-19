@@ -26,7 +26,7 @@ function relativeTime(iso: string): string {
 function ItemCard({ item, slug }: { item: ItemState; slug: string }) {
   return (
     <Link
-      to={`/products/${slug}/items/${item.externalId}`}
+      to={`/products/${encodeURIComponent(slug)}/items/${encodeURIComponent(item.externalId)}`}
       className="block rounded-lg border border-gray-200 bg-white p-3 shadow-sm transition-shadow hover:shadow-md"
     >
       <p className="truncate font-mono text-sm font-medium text-gray-900">{item.externalId}</p>

@@ -35,7 +35,7 @@ export function ProductTabs() {
           return (
             <Link
               key={product.product.slug}
-              to={`/products/${product.product.slug}`}
+              to={`/products/${encodeURIComponent(product.product.slug)}`}
               aria-current={isActive ? 'page' : undefined}
               className={[
                 'px-4 py-3 text-sm font-medium transition-colors',

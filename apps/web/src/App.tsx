@@ -13,12 +13,20 @@ import { usePolling } from './hooks/usePolling.js';
  */
 function ProductsRedirect() {
   const fetchProducts = useCallback(() => api.listProducts(), []);
-  const { data: products, loading } = usePolling(fetchProducts, null);
+  const { data: products, error, loading } = usePolling(fetchProducts, null);
 
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50">
         <p className="text-sm text-gray-400">Loading…</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-50">
+        <p className="text-sm text-red-500">Failed to load products: {error}</p>
       </div>
     );
   }
@@ -36,7 +44,7 @@ function ProductsRedirect() {
     );
   }
 
-  return <Navigate to={`/products/${products[0]!.product.slug}`} replace />;
+  return <Navigate to={`/products/${encodeURIComponent(products[0]!.product.slug)}`} replace />;
 }
 
 /**
@@ -45,7 +53,7 @@ function ProductsRedirect() {
 function LegacyItemRedirect() {
   const { id } = useParams<{ id: string }>();
   const fetchProducts = useCallback(() => api.listProducts(), []);
-  const { data: products, loading } = usePolling(fetchProducts, null);
+  const { data: products, error, loading } = usePolling(fetchProducts, null);
 
   if (loading) {
     return (
@@ -55,8 +63,14 @@ function LegacyItemRedirect() {
     );
   }
 
+  if (error) return <Navigate to="/" replace />;
   if (!products?.length || !id) return <Navigate to="/" replace />;
-  return <Navigate to={`/products/${products[0]!.product.slug}/items/${id}`} replace />;
+  return (
+    <Navigate
+      to={`/products/${encodeURIComponent(products[0]!.product.slug)}/items/${encodeURIComponent(id)}`}
+      replace
+    />
+  );
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────

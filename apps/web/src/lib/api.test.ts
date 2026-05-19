@@ -100,11 +100,12 @@ describe('api.listProducts', () => {
 });
 
 describe('api.getProductBySlug', () => {
-  it('URL-encodes the slug', async () => {
-    mockFetch.mockResolvedValueOnce(mockOk({ product: { slug: 'helm' } }));
-    await api.getProductBySlug('helm');
+  it('URL-encodes special characters in the slug', async () => {
+    const slug = 'helm/playground with space';
+    mockFetch.mockResolvedValueOnce(mockOk({ product: { slug } }));
+    await api.getProductBySlug(slug);
     const calledUrl = mockFetch.mock.calls[0]?.[0] as string;
-    expect(calledUrl).toContain('/api/products/helm');
+    expect(calledUrl).toContain(`/api/products/${encodeURIComponent(slug)}`);
   });
 
   it('returns http error on 404', async () => {

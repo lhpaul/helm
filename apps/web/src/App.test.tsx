@@ -61,7 +61,7 @@ describe('App routing', () => {
     render(<App />);
 
     await vi.waitFor(() => {
-      // After redirect, Kanban header renders "Helm / Helm" breadcrumb
+      expect(window.location.pathname).toBe('/products/helm');
       expect(screen.getByRole('heading', { name: /Helm/ })).toBeInTheDocument();
     });
   });

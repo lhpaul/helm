@@ -56,6 +56,8 @@ export function ItemDetail() {
   const { data: item, error, loading } = usePolling(fetcher, externalId ? 5_000 : null);
 
   const backLink = slug ? `/products/${slug}` : '/products';
+  // Guard against navigating to /products/A/items/X where X belongs to product B.
+  const slugMismatch = Boolean(item && slug && item.productSlug !== slug);
 
   if (loading) {
     return (
@@ -67,11 +69,13 @@ export function ItemDetail() {
 
   // Full-page error only when there's no prior data — transient poll failures
   // show an inline warning so the last-known content stays visible.
-  if (error && !item) {
+  if ((error && !item) || slugMismatch) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50">
         <div className="text-center">
-          <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{error}</p>
+          <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">
+            {slugMismatch ? 'Item does not belong to this product.' : error}
+          </p>
           <Link to={backLink} className="mt-4 block text-sm text-indigo-600 hover:text-indigo-800">
             ← Back to board
           </Link>

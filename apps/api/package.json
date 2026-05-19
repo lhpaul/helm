@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@helm/adapters": "workspace:*",
+    "@helm/orchestrator": "workspace:*",
     "@helm/shared": "workspace:*",
     "@helm/storage": "workspace:*",
     "@helm/workflow": "workspace:*",

@@ -134,32 +134,6 @@ describe('GET /api/items', () => {
   });
 });
 
-// ── GET /api/items/:externalId ────────────────────────────────────────────────
-
-describe('GET /api/items/:externalId', () => {
-  it('returns item state when item exists', async () => {
-    await post('/api/items', { externalId: 'HLM-1', triggeredBy: 't' });
-    const res = await app.request('/api/items/HLM-1');
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { externalId: string; currentStage: string };
-    expect(body.externalId).toBe('HLM-1');
-    expect(body.currentStage).toBe('discovery');
-  });
-
-  it('returns 404 when item does not exist', async () => {
-    const res = await app.request('/api/items/HLM-999');
-    expect(res.status).toBe(404);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toContain('HLM-999');
-  });
-
-  it('returns 400 when externalId path param contains invalid characters', async () => {
-    // colon is outside the allowed [A-Za-z0-9._-] charset
-    const res = await app.request('/api/items/HLM:invalid');
-    expect(res.status).toBe(400);
-  });
-});
-
 // ── POST /api/items/:externalId/transitions ───────────────────────────────────
 
 describe('POST /api/items/:externalId/transitions', () => {

@@ -2,7 +2,7 @@ import type { Product } from '@helm/shared';
 import type { WorkflowStage } from '@helm/workflow';
 
 // ── Types mirroring apps/api/src/services/types.ts ───────────────────────────
-// These match the JSON shape returned by GET /api/items and GET /api/items/:id.
+// These match the JSON shape returned by the API item endpoints.
 // Keep in sync when the API response shape changes.
 
 export type WorkflowEvent = {
@@ -77,9 +77,12 @@ export const api = {
   listItemsForProduct: (slug: string): Promise<ApiResult<ItemState[]>> =>
     fetchJson<ItemState[]>(`/api/products/${encodeURIComponent(slug)}/items`),
 
+  getItemForProduct: (slug: string, externalId: string): Promise<ApiResult<ItemState>> =>
+    fetchJson<ItemState>(
+      `/api/products/${encodeURIComponent(slug)}/items/${encodeURIComponent(externalId)}`,
+    ),
+
   // ── Legacy single-product routes — kept for backward compat, remove after cleanup PR ──
   getProduct: (): Promise<ApiResult<Product>> => fetchJson<Product>('/api/product'),
   listItems: (): Promise<ApiResult<ItemState[]>> => fetchJson<ItemState[]>('/api/items'),
-  getItem: (id: string): Promise<ApiResult<ItemState>> =>
-    fetchJson<ItemState>(`/api/items/${encodeURIComponent(id)}`),
 };

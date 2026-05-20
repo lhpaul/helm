@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { getProductRegistry, getItemStore } from '../services/index.js';
+import { EXTERNAL_ID_REGEX } from '../services/types.js';
 
 export const productsRouter = new Hono();
 
@@ -18,6 +19,21 @@ function parseSlug(raw: string): string | null {
   const result = SlugParamsSchema.safeParse({ slug: raw });
   return result.success ? result.data.slug : null;
 }
+
+// Params schema for product-scoped item endpoints.
+const ProductItemParamsSchema = z
+  .object({
+    slug: z
+      .string()
+      .min(1)
+      .regex(/^[a-z0-9-]+$/, 'Invalid product slug format'),
+    externalId: z
+      .string()
+      .min(1)
+      .refine((id) => EXTERNAL_ID_REGEX.test(id), 'Invalid externalId format')
+      .refine((id) => id !== '.' && id !== '..', 'Invalid externalId format'),
+  })
+  .strict();
 
 // ── GET /api/products ─────────────────────────────────────────────────────────
 
@@ -45,6 +61,38 @@ productsRouter.get('/products/:slug', async (c) => {
   } catch (err) {
     console.error(`[products] Failed to load product ${slug}:`, err);
     return c.json({ error: 'Failed to load product registry' }, 500);
+  }
+});
+
+// ── GET /api/products/:slug/items/:externalId ─────────────────────────────────
+
+productsRouter.get('/products/:slug/items/:externalId', async (c) => {
+  const parsed = ProductItemParamsSchema.safeParse({
+    slug: c.req.param('slug'),
+    externalId: c.req.param('externalId'),
+  });
+  if (!parsed.success) {
+    console.error('[products] Invalid request params:', parsed.error.issues);
+    return c.json({ error: 'Invalid request params' }, 400);
+  }
+  const { slug, externalId } = parsed.data;
+
+  try {
+    const products = await getProductRegistry();
+    const product = products.find((p) => p.product.slug === slug);
+    if (!product) return c.json({ error: 'Product not found' }, 404);
+
+    const store = await getItemStore();
+    const item = await store.get(externalId);
+    // Return 404 for missing items AND for items that belong to a different
+    // product — avoids leaking the existence of cross-product items.
+    if (!item || item.productSlug !== slug) {
+      return c.json({ error: 'Item not found' }, 404);
+    }
+    return c.json({ ...item });
+  } catch (err) {
+    console.error(`[products] Failed to load item ${externalId} for ${slug}:`, err);
+    return c.json({ error: 'Failed to load item' }, 500);
   }
 });
 

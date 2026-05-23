@@ -16,45 +16,123 @@ function loadFixture(name: string): string[] {
 }
 
 /**
- * Creates a fake SubprocessLike whose stdout emits the given lines as JSONL.
- * Lines are enqueued as microtasks so onMessage handlers registered after
- * spawn() can still capture the first message.
+ * Creates a fake SubprocessLike whose stdout emits the given JSONL lines and
+ * whose stderr emits optional diagnostic text. Lines are enqueued as
+ * microtasks so onMessage handlers registered after spawn() capture all events.
+ *
+ * Returns the process plus a `wasKilled` getter so tests can assert kill().
  */
-function makeFakeProcess(lines: string[]): SubprocessLike {
+function makeFakeProcess(
+  lines: string[],
+  options: { stderrContent?: string } = {},
+): SubprocessLike & { readonly wasKilled: boolean } {
   const encoder = new TextEncoder();
-  let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+  let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+  let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
   let exitResolve!: (code: number) => void;
+  let killed = false;
 
   const stdout = new ReadableStream<Uint8Array>({
     start(c) {
-      ctrl = c;
+      stdoutCtrl = c;
+    },
+  });
+  const stderr = new ReadableStream<Uint8Array>({
+    start(c) {
+      stderrCtrl = c;
     },
   });
   const exited = new Promise<number>((r) => {
     exitResolve = r;
   });
 
-  // Schedule emission as microtasks so the session can be fully set up first.
+  const closeAll = (code: number) => {
+    try {
+      stdoutCtrl.close();
+    } catch {
+      /* already closed */
+    }
+    try {
+      stderrCtrl.close();
+    } catch {
+      /* already closed */
+    }
+    exitResolve(code);
+  };
+
+  // Schedule emission as microtasks so the session can register handlers first.
   void Promise.resolve().then(() => {
     for (const line of lines) {
-      ctrl.enqueue(encoder.encode(line + '\n'));
+      stdoutCtrl.enqueue(encoder.encode(line + '\n'));
     }
-    ctrl.close();
-    exitResolve(0);
+    if (options.stderrContent) {
+      stderrCtrl.enqueue(encoder.encode(options.stderrContent));
+    }
+    closeAll(0);
   });
 
   return {
     stdout,
+    stderr,
     kill() {
+      killed = true;
+      closeAll(1);
+    },
+    get exited() {
+      return exited;
+    },
+    get wasKilled() {
+      return killed;
+    },
+  };
+}
+
+/**
+ * Creates a fake process whose stdout never closes — simulates a hung process.
+ * Useful for testing the timeout path.
+ */
+function makeHangingProcess(): SubprocessLike & { readonly wasKilled: boolean } {
+  let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+  let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+  let exitResolve!: (code: number) => void;
+  let killed = false;
+
+  const stdout = new ReadableStream<Uint8Array>({
+    start(c) {
+      stdoutCtrl = c;
+    },
+  });
+  const stderr = new ReadableStream<Uint8Array>({
+    start(c) {
+      stderrCtrl = c;
+    },
+  });
+  const exited = new Promise<number>((r) => {
+    exitResolve = r;
+  });
+
+  return {
+    stdout,
+    stderr,
+    kill() {
+      killed = true;
       try {
-        ctrl.close();
+        stdoutCtrl.close();
       } catch {
-        /* already closed */
+        /* */
+      }
+      try {
+        stderrCtrl.close();
+      } catch {
+        /* */
       }
       exitResolve(1);
     },
     get exited() {
       return exited;
+    },
+    get wasKilled() {
+      return killed;
     },
   };
 }
@@ -130,18 +208,23 @@ describe('ClaudeCodeRuntime', () => {
   it('handles partial-line buffering — splits a fixture across two unaligned chunks', async () => {
     const lines = loadFixture('write-success.jsonl');
     const combined = lines.join('\n') + '\n';
-    // Split deliberately at a non-newline position
     const splitAt = Math.floor(combined.length * 0.4);
     const chunk1 = combined.slice(0, splitAt);
     const chunk2 = combined.slice(splitAt);
 
     const encoder = new TextEncoder();
-    let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+    let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+    let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
     let exitResolve!: (code: number) => void;
 
     const stdout = new ReadableStream<Uint8Array>({
       start(c) {
-        ctrl = c;
+        stdoutCtrl = c;
+      },
+    });
+    const stderr = new ReadableStream<Uint8Array>({
+      start(c) {
+        stderrCtrl = c;
       },
     });
     const exited = new Promise<number>((r) => {
@@ -149,17 +232,24 @@ describe('ClaudeCodeRuntime', () => {
     });
 
     void Promise.resolve().then(() => {
-      ctrl.enqueue(encoder.encode(chunk1));
-      ctrl.enqueue(encoder.encode(chunk2));
-      ctrl.close();
+      stdoutCtrl.enqueue(encoder.encode(chunk1));
+      stdoutCtrl.enqueue(encoder.encode(chunk2));
+      stdoutCtrl.close();
+      stderrCtrl.close();
       exitResolve(0);
     });
 
     const proc: SubprocessLike = {
       stdout,
+      stderr,
       kill() {
         try {
-          ctrl.close();
+          stdoutCtrl.close();
+        } catch {
+          /* */
+        }
+        try {
+          stderrCtrl.close();
         } catch {
           /* */
         }
@@ -174,7 +264,6 @@ describe('ClaudeCodeRuntime', () => {
     const session = await runtime.spawn(makeParams());
     const result = await session.wait();
 
-    // If buffering works, the result line is fully parsed → status done
     expect(result.status).toBe('done');
     expect(result.totalCostUsd).toBeCloseTo(0.048494550000000004, 10);
   });
@@ -182,14 +271,13 @@ describe('ClaudeCodeRuntime', () => {
   it('skips malformed JSON lines without crashing', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const lines = loadFixture('write-success.jsonl');
-    // Inject garbage between lines 5 and 6
     const withJunk = [...lines.slice(0, 5), '!!not-json!!', ...lines.slice(5)];
 
     const runtime = new ClaudeCodeRuntime(() => makeFakeProcess(withJunk));
     const session = await runtime.spawn(makeParams());
     const result = await session.wait();
 
-    expect(result.status).toBe('done'); // session still completes
+    expect(result.status).toBe('done');
     expect(consoleSpy).toHaveBeenCalledWith(
       expect.stringContaining('[claude-code] Malformed JSON line'),
       expect.stringContaining('!!not-json!!'),
@@ -198,26 +286,36 @@ describe('ClaudeCodeRuntime', () => {
   });
 
   it('cancel() resolves wait() with cancelled status', async () => {
-    // Use a slow stream — lines only available after a delay
     const encoder = new TextEncoder();
-    let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+    let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+    let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
     let exitResolve!: (code: number) => void;
 
     const stdout = new ReadableStream<Uint8Array>({
       start(c) {
-        ctrl = c;
+        stdoutCtrl = c;
+      },
+    });
+    const stderr = new ReadableStream<Uint8Array>({
+      start(c) {
+        stderrCtrl = c;
       },
     });
     const exited = new Promise<number>((r) => {
       exitResolve = r;
     });
 
-    // Never enqueue anything — the session blocks on reader.read()
     const proc: SubprocessLike = {
       stdout,
+      stderr,
       kill() {
         try {
-          ctrl.close();
+          stdoutCtrl.close();
+        } catch {
+          /* */
+        }
+        try {
+          stderrCtrl.close();
         } catch {
           /* */
         }
@@ -230,18 +328,14 @@ describe('ClaudeCodeRuntime', () => {
 
     const runtime = new ClaudeCodeRuntime(() => proc);
     const session = await runtime.spawn(makeParams());
-    // Cancel immediately before any data arrives
     await session.cancel();
     const result = await session.wait();
 
     expect(result.status).toBe('cancelled');
-
-    // Prevent unused variable warning
-    void encoder;
+    void encoder; // suppress unused warning
   });
 
   it('resolves wait() with error when process exits without emitting a result line', async () => {
-    // Emit only system/hook lines — no result
     const noResultLines = loadFixture('write-success.jsonl').slice(0, 4);
     const runtime = new ClaudeCodeRuntime(() => makeFakeProcess(noResultLines));
 
@@ -267,5 +361,76 @@ describe('ClaudeCodeRuntime', () => {
     const modelIdx = args.indexOf('--model');
     expect(modelIdx).toBeGreaterThan(-1);
     expect(args[modelIdx + 1]).toBe('claude-sonnet-4-6');
+  });
+
+  // ── New robustness tests ───────────────────────────────────────────────────
+
+  it('includes stderr content in finalOutput when process exits without a result line', async () => {
+    // No stdout lines (process crashes immediately), stderr has a diagnostic message
+    const proc = makeFakeProcess([], {
+      stderrContent: 'claude: command not found\nError: ENOENT',
+    });
+    const runtime = new ClaudeCodeRuntime(() => proc);
+
+    const session = await runtime.spawn(makeParams());
+    const result = await session.wait();
+
+    expect(result.status).toBe('error');
+    expect(result.finalOutput).toContain('[stderr]');
+    expect(result.finalOutput).toContain('command not found');
+  });
+
+  it('stderr is NOT included in finalOutput when the process completes normally', async () => {
+    // Even if stderr has content, a successful result line takes precedence
+    const lines = loadFixture('write-success.jsonl');
+    const proc = makeFakeProcess(lines, { stderrContent: 'some warning on stderr' });
+    const runtime = new ClaudeCodeRuntime(() => proc);
+
+    const session = await runtime.spawn(makeParams());
+    const result = await session.wait();
+
+    // Happy path: finalOutput comes from result.result, not from stderr
+    expect(result.status).toBe('done');
+    expect(result.finalOutput).not.toContain('[stderr]');
+    expect(result.finalOutput).not.toContain('some warning on stderr');
+  });
+
+  it('timeout fires when process never emits a result line, kills the process', async () => {
+    const proc = makeHangingProcess();
+    // Use a very short timeout so the test runs quickly
+    const runtime = new ClaudeCodeRuntime(() => proc, { timeoutMs: 50 });
+
+    const session = await runtime.spawn(makeParams());
+    const result = await session.wait();
+
+    expect(result.status).toBe('error');
+    expect(result.finalOutput).toContain('[timeout]');
+    expect(result.finalOutput).toContain('50ms');
+    expect(proc.wasKilled).toBe(true);
+  });
+
+  it('timeout is cleared when the session completes normally (no dangling timer)', async () => {
+    const lines = loadFixture('write-success.jsonl');
+    // Short timeout — but the process completes before it fires
+    const runtime = new ClaudeCodeRuntime(() => makeFakeProcess(lines), { timeoutMs: 10_000 });
+
+    const session = await runtime.spawn(makeParams());
+    const result = await session.wait();
+
+    // Normal completion: timer should have been cleared, not fired
+    expect(result.status).toBe('done');
+  });
+
+  it('cancel() durationMs is non-negative when called before run() completes', async () => {
+    const proc = makeHangingProcess();
+    const runtime = new ClaudeCodeRuntime(() => proc, { timeoutMs: 30_000 });
+
+    const session = await runtime.spawn(makeParams());
+    // Cancel immediately — startMs was set in constructor, so durationMs >= 0
+    await session.cancel();
+    const result = await session.wait();
+
+    expect(result.status).toBe('cancelled');
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
 });

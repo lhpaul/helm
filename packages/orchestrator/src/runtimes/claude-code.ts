@@ -14,14 +14,19 @@ import type {
 
 export interface SubprocessLike {
   readonly stdout: ReadableStream<Uint8Array>;
+  /** Captured stderr — used for diagnostics when no result line is emitted. */
+  readonly stderr: ReadableStream<Uint8Array>;
   kill(): void;
   readonly exited: Promise<number>;
 }
 
 export type SpawnFn = (args: string[], cwd: string) => SubprocessLike;
 
+/** Default timeout: 5 minutes. Enough for a spec-writer run; override in tests. */
+const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+
 /**
- * Default spawn: delegates to Bun.spawn with stdout piped.
+ * Default spawn: delegates to Bun.spawn with stdout and stderr piped.
  * Using globalThis cast to avoid a bun-types dev-dependency in this package.
  */
 function defaultSpawn(args: string[], cwd: string): SubprocessLike {
@@ -29,12 +34,12 @@ function defaultSpawn(args: string[], cwd: string): SubprocessLike {
     | {
         spawn(
           args: string[],
-          options: { cwd: string; stdout: 'pipe'; stderr: 'ignore' },
+          options: { cwd: string; stdout: 'pipe'; stderr: 'pipe' },
         ): SubprocessLike;
       }
     | undefined;
   if (!bun) throw new Error('ClaudeCodeRuntime requires the Bun runtime');
-  return bun.spawn(args, { cwd, stdout: 'pipe', stderr: 'ignore' });
+  return bun.spawn(args, { cwd, stdout: 'pipe', stderr: 'pipe' });
 }
 
 // ── JSONL message shapes (minimal — only fields we act on) ────────────────────
@@ -70,11 +75,14 @@ class ClaudeCodeSession implements AgentSession {
   private readonly resultPromise: Promise<AgentResult>;
   private resolveResult!: (r: AgentResult) => void;
   private settled = false;
-  private startMs = 0;
+  // Initialized at construction so cancel() durationMs is correct even if
+  // cancel() is called before run() has a chance to set startMs itself.
+  private readonly startMs = Date.now();
 
   constructor(
     private readonly proc: SubprocessLike,
     private readonly params: SpawnParams,
+    private readonly timeoutMs: number,
   ) {
     this.id = `claude-code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     this.resultPromise = new Promise<AgentResult>((resolve) => {
@@ -112,10 +120,30 @@ class ClaudeCodeSession implements AgentSession {
 
   /** Called by ClaudeCodeRuntime after returning the session to the caller. */
   async run(): Promise<void> {
-    this.startMs = Date.now();
     this.status = 'running';
-    let buffer = '';
 
+    // ── Timeout guard ───────────────────────────────────────────────────────
+    // If no `result` line arrives within timeoutMs, kill the process and settle
+    // with an error so wait() is never left unresolved.
+    const timeoutHandle = setTimeout(() => {
+      if (!this.settled) {
+        this.proc.kill();
+        this.settle({
+          status: 'error',
+          finalOutput: `[timeout] No result received within ${this.timeoutMs}ms`,
+          totalCostUsd: 0,
+          durationMs: Date.now() - this.startMs,
+        });
+      }
+    }, this.timeoutMs);
+
+    // ── Read stderr concurrently ────────────────────────────────────────────
+    // Accumulated for diagnostics when the process exits without a result line
+    // (e.g. spawn failure, crash). Not included in the happy path.
+    const stderrPromise = this.readStderr();
+
+    // ── Read stdout (JSONL) ─────────────────────────────────────────────────
+    let buffer = '';
     try {
       const reader = this.proc.stdout.getReader();
       const decoder = new TextDecoder();
@@ -140,15 +168,22 @@ class ClaudeCodeSession implements AgentSession {
       const remaining = buffer.trim();
       if (remaining) this.processLine(remaining);
     } catch {
-      // Stderr / stream error (e.g., cancel() killed the process).
+      // Stream error — process was killed (timeout/cancel) or crashed.
     }
 
+    // Always clear the timeout so it does not fire after normal completion.
+    clearTimeout(timeoutHandle);
+
+    // Drain stderr before settling — ensures the stream is fully consumed
+    // and gives us diagnostic content when the process exited abnormally.
+    const stderrContent = await stderrPromise;
+
     // If the process ended without emitting a `result` line (unexpected exit,
-    // cancel, etc.), settle now so wait() always resolves.
+    // spawn failure, etc.), settle now and include stderr for diagnostics.
     if (!this.settled) {
       this.settle({
         status: 'error',
-        finalOutput: '',
+        finalOutput: stderrContent ? `[stderr] ${stderrContent}` : '',
         totalCostUsd: 0,
         durationMs: Date.now() - this.startMs,
       });
@@ -156,6 +191,22 @@ class ClaudeCodeSession implements AgentSession {
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────────
+
+  private async readStderr(): Promise<string> {
+    const reader = this.proc.stderr.getReader();
+    const decoder = new TextDecoder();
+    let content = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        content += decoder.decode(value, { stream: true });
+      }
+    } catch {
+      // Stream closed (process killed or exited).
+    }
+    return content.trim();
+  }
 
   private settle(result: AgentResult): void {
     if (this.settled) return;
@@ -266,13 +317,20 @@ class ClaudeCodeSession implements AgentSession {
  *   artifact check in handleSpecWriterResult — NOT by `result.subtype`.
  * - Cost comes from `result.total_cost_usd` directly (no per-model pricing table).
  *
+ * @param spawnFn   Override the subprocess factory (used in tests to inject
+ *                  fake processes without spawning the real `claude` binary).
+ * @param options   Runtime options. `timeoutMs` controls how long to wait for
+ *                  a result line before killing the process (default: 5 min).
+ *
  * Inject a custom `spawnFn` for tests to avoid spawning the real `claude` binary.
  */
 export class ClaudeCodeRuntime implements IAgentRuntime {
   private readonly spawnFn: SpawnFn;
+  private readonly timeoutMs: number;
 
-  constructor(spawnFn?: SpawnFn) {
+  constructor(spawnFn?: SpawnFn, options?: { timeoutMs?: number }) {
     this.spawnFn = spawnFn ?? defaultSpawn;
+    this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   async spawn(params: SpawnParams): Promise<AgentSession> {
@@ -292,7 +350,7 @@ export class ClaudeCodeRuntime implements IAgentRuntime {
     }
 
     const proc = this.spawnFn(args, params.workdir);
-    const session = new ClaudeCodeSession(proc, params);
+    const session = new ClaudeCodeSession(proc, params, this.timeoutMs);
     // Run asynchronously — same pattern as MockAgentRuntime.
     // The first `await reader.read()` in run() yields naturally, so callers
     // can register onMessage handlers before any messages are emitted.

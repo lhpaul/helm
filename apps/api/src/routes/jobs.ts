@@ -35,7 +35,7 @@ jobsRouter.get('/jobs/:jobId', async (c) => {
     return c.json({ error: `Job not found: ${jobId}` }, 404);
   }
 
-  return c.json(job, 200);
+  return c.json({ ...job }, 200);
 });
 
 /**
@@ -63,5 +63,8 @@ jobsRouter.get('/products/:slug/items/:externalId/jobs', async (c) => {
   }
 
   const jobs = await jobStore.listJobsForItem(slug, externalId);
-  return c.json(jobs, 200);
+  return c.json(
+    jobs.map((j) => ({ ...j })),
+    200,
+  );
 });

@@ -153,6 +153,18 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     expect(body.jobId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     );
+
+    // Wait for the background job to finish so afterEach cleanup doesn't race
+    // with sideEffects still writing files into dataDir.
+    const { getJobStore } = await import('../services/index.js');
+    const jobStore = await getJobStore();
+    await vi.waitFor(
+      async () => {
+        const job = await jobStore.getJob(body.jobId);
+        expect(job?.status).not.toBe('running');
+      },
+      { timeout: 5000 },
+    );
   });
 
   it('runs the dispatch job in background and calls store.transition', async () => {
@@ -200,31 +212,53 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
   });
 
   it('returns 409 when a dispatch job is already running for the item', async () => {
-    // First dispatch — immediately returns 202 while job runs in background
+    // Use a deferred promise to hold the first job's sideEffects open so the
+    // job is guaranteed to still be 'running' when the second dispatch arrives.
+    let releaseSideEffect!: () => void;
+    const sideEffectGate = new Promise<void>((resolve) => {
+      releaseSideEffect = resolve;
+    });
+
+    mockCreateRuntime.mockImplementationOnce(
+      (_product: Product, externalId: string, workdir: string) =>
+        new MockAgentRuntime({
+          messages: [
+            {
+              role: 'agent',
+              content: `[mock] Writing spec for ${externalId}`,
+              costUsd: 0,
+              timestamp: new Date().toISOString(),
+            },
+          ],
+          sideEffects: async (dir) => {
+            // Block until the test explicitly releases the gate.
+            await sideEffectGate;
+            const id = basename(dir);
+            await mkdir(join(dir, 'specs'), { recursive: true });
+            await writeFile(join(dir, 'specs', `${id}.md`), `# ${id}\n`);
+            void workdir;
+          },
+        }),
+    );
+
+    // First dispatch — job enters 'running' and stays there (gate is held).
     const res1 = await dispatch('test-product', 'issue_1');
     expect(res1.status).toBe(202);
     const { jobId: runningJobId } = (await res1.json()) as { jobId: string };
 
-    // Import real getJobStore to check job status
+    // Second dispatch while the first job is still running → must be 409.
+    const res2 = await dispatch('test-product', 'issue_1');
+    expect(res2.status).toBe(409);
+    const body2 = (await res2.json()) as { error: string; runningJobId: string };
+    expect(body2.error).toContain('already running');
+    expect(body2.runningJobId).toBe(runningJobId);
+
+    // Release the gate so the background job can complete and the test exits cleanly.
+    releaseSideEffect();
+
     const { getJobStore } = await import('../services/index.js');
     const jobStore = await getJobStore();
 
-    // Verify job is still running before the second dispatch
-    // (The mock runtime is fast but we're dispatching again immediately)
-    // We use a fresh job store in a fresh dispatch while the first is still running.
-    // To reliably test the 409, we'll manually update the job to ensure it's running.
-    // The first dispatch should result in a running job; let's check immediately.
-    const jobBeforeSecond = await jobStore.getJob(runningJobId);
-    // It may be running or done depending on timing; skip if already done
-    if (jobBeforeSecond?.status === 'running') {
-      const res2 = await dispatch('test-product', 'issue_1');
-      expect(res2.status).toBe(409);
-      const body2 = (await res2.json()) as { error: string; runningJobId: string };
-      expect(body2.error).toContain('already running');
-      expect(body2.runningJobId).toBe(runningJobId);
-    }
-
-    // Wait for background job to finish
     await vi.waitFor(
       async () => {
         const job = await jobStore.getJob(runningJobId);
@@ -380,8 +414,9 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     const res = await dispatch('test-product', 'issue_1');
     expect(res.status).toBe(202);
 
-    // Wait for background job to call createRuntimeForProduct
-    await vi.waitFor(() => expect(mockCreateRuntime).toHaveBeenCalled(), { timeout: 5000 });
+    // Wait for the background job to complete (transition is called after sideEffects
+    // finish, so this also ensures no files are still being written into dataDir).
+    await vi.waitFor(() => expect(mockTransition).toHaveBeenCalled(), { timeout: 5000 });
 
     expect(mockCreateRuntime).toHaveBeenCalledOnce();
     expect(mockCreateRuntime).toHaveBeenCalledWith(

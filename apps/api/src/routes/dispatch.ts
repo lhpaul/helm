@@ -49,7 +49,8 @@ async function runDispatchJob(
 
     const now = new Date().toISOString();
     await jobStore.updateJob(job.jobId, {
-      status: result.status === 'done' ? 'done' : 'error',
+      // Preserve all three DispatchResult statuses: done, error, cancelled.
+      status: result.status,
       result,
       finishedAt: now,
     });
@@ -139,25 +140,22 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
     return c.json({ error: 'Failed to load job store' }, 500);
   }
 
-  // Concurrency guard: one active job per item
-  const existingJobs = await jobStore.listJobsForItem(slug, externalId);
-  const runningJob = existingJobs.find((j) => j.status === 'running');
-  if (runningJob) {
-    return c.json(
-      {
-        error: 'A dispatch job is already running for this item',
-        runningJobId: runningJob.jobId,
-      },
-      409,
-    );
-  }
-
-  // Create job record
-  const job = await jobStore.createJob({
+  // Concurrency guard + job creation (atomic check-and-create via in-memory lock).
+  const outcome = await jobStore.createJobIfNoRunning({
     productSlug: slug,
     externalId,
     specialistId: bodyResult.data.specialistId ?? 'auto',
   });
+  if ('conflict' in outcome) {
+    return c.json(
+      {
+        error: 'A dispatch job is already running for this item',
+        runningJobId: outcome.runningJobId,
+      },
+      409,
+    );
+  }
+  const { job } = outcome;
 
   // Fire and forget — returns 202 immediately
   void runDispatchJob(job, {

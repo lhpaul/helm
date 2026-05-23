@@ -279,10 +279,16 @@ describe('ClaudeCodeRuntime', () => {
 
     expect(result.status).toBe('done');
     // Raw content is intentionally NOT logged (security: tool payloads must
-    // not appear in application logs). Assert only that the marker is emitted.
+    // not appear in application logs). Assert the marker was emitted AND that
+    // the raw payload never appears in any log argument.
     expect(consoleSpy).toHaveBeenCalledWith(
       expect.stringContaining('[claude-code] Malformed JSON line'),
     );
+    expect(
+      consoleSpy.mock.calls.some((call) =>
+        call.some((arg) => typeof arg === 'string' && arg.includes('!!not-json!!')),
+      ),
+    ).toBe(false);
     consoleSpy.mockRestore();
   });
 

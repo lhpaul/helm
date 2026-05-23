@@ -284,4 +284,27 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     const body = (await res.json()) as { specialistId: string };
     expect(body.specialistId).toBe('spec-writer');
   });
+
+  it('returns 500 when createRuntimeForProduct throws (unknown runtime config)', async () => {
+    mockCreateRuntime.mockImplementation(() => {
+      throw new Error("[runtime-factory] Unknown specialist runtime: 'bad_runtime'");
+    });
+
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('Dispatch failed');
+    expect(mockTransition).not.toHaveBeenCalled();
+  });
+
+  it('passes product, externalId, and workdir to createRuntimeForProduct', async () => {
+    await dispatch('test-product', 'issue_1');
+
+    expect(mockCreateRuntime).toHaveBeenCalledOnce();
+    expect(mockCreateRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ product: expect.objectContaining({ slug: 'test-product' }) }),
+      'issue_1',
+      expect.stringContaining(join('worktrees', 'test-product', 'issue_1')),
+    );
+  });
 });

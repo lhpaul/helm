@@ -2,6 +2,7 @@ import { ClaudeCodeRuntime, MockAgentRuntime } from '@helm/orchestrator';
 import type { IAgentRuntime } from '@helm/orchestrator';
 import type { Product } from '@helm/shared';
 import { join } from 'node:path';
+import { EXTERNAL_ID_REGEX } from './types.js';
 
 /**
  * Creates the appropriate IAgentRuntime for the given product's spec-writer
@@ -50,6 +51,12 @@ export function createRuntimeForProduct(
  * ANTHROPIC_API_KEY.
  */
 export function createMockRuntimeForSpec(externalId: string): IAgentRuntime {
+  // Validate before interpolating into a file path — mirrors the guard in
+  // dispatch.ts so path traversal is impossible even when this helper is
+  // called outside the HTTP layer (e.g. dev scripts or future CLIs).
+  if (!EXTERNAL_ID_REGEX.test(externalId) || externalId === '.' || externalId === '..') {
+    throw new Error(`[runtime-factory] Invalid externalId for spec path: "${externalId}"`);
+  }
   return new MockAgentRuntime({
     messages: [
       {

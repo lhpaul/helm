@@ -78,6 +78,12 @@ describe('createMockRuntimeForSpec', () => {
     expect(runtime).toBeInstanceOf(MockAgentRuntime);
   });
 
+  it('throws for an externalId that would enable path traversal', () => {
+    expect(() => createMockRuntimeForSpec('../escape')).toThrow(/Invalid externalId/);
+    expect(() => createMockRuntimeForSpec('.')).toThrow(/Invalid externalId/);
+    expect(() => createMockRuntimeForSpec('bad/slash')).toThrow(/Invalid externalId/);
+  });
+
   it('spawn() writes a spec file at specs/<externalId>.md inside workdir', async () => {
     tempDir = join(tmpdir(), `runtime-factory-test-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });

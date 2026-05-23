@@ -94,6 +94,37 @@ describe('handleSpecWriterResult', () => {
     expect(transition).not.toHaveBeenCalled();
   });
 
+  it('transitions successfully when finalOutput contains a denial note but artifact exists', async () => {
+    // Regression guard for the Session 10 smoke-test finding: permission_denials
+    // is NOT a verdict — the agent can deny one tool and succeed via another.
+    // The handler must not inspect finalOutput for denial notes; artifact
+    // existence on disk is the only success criterion.
+    await writeFile(join(workdir, 'specs', 'issue_1.md'), '# Spec');
+
+    const result = await handleSpecWriterResult(
+      'issue_1',
+      doneResult({ finalOutput: 'Done.\n[note] 1 permission denial(s) occurred during the run.' }),
+      workdir,
+      transition as ItemTransitionFn,
+    );
+
+    expect(result.transitioned).toBe(true);
+    expect(result.newStage).toBe('spec-draft');
+  });
+
+  it('error message includes finalOutput when agent failed (stderr / timeout captured)', async () => {
+    const result = await handleSpecWriterResult(
+      'issue_1',
+      doneResult({ status: 'error', finalOutput: '[stderr] claude: command not found' }),
+      workdir,
+      transition as ItemTransitionFn,
+    );
+
+    expect(result.transitioned).toBe(false);
+    expect(result.error).toContain("status 'error'");
+    expect(result.error).toContain('command not found');
+  });
+
   it('returns error when transition throws', async () => {
     await writeFile(join(workdir, 'specs', 'issue_1.md'), '# Spec');
     transition.mockRejectedValue(new Error('state machine rejected'));

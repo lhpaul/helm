@@ -276,17 +276,24 @@ class ClaudeCodeSession implements AgentSession {
 
       case 'result': {
         const r = msg as ClaudeResultMessage;
-        // SUCCESS DETERMINATION:
-        //   `subtype: 'success'` and `is_error: false` appear in BOTH the real
-        //   success case AND the permission-denied case (finding #2 from fixtures).
-        //   Actual success requires: is_error===false AND permission_denials empty.
-        const permissionDenied =
-          Array.isArray(r.permission_denials) && r.permission_denials.length > 0;
-        const status: AgentResult['status'] = r.is_error || permissionDenied ? 'error' : 'done';
+        // SUCCESS DETERMINATION (refined after Session 10 smoke test):
+        //   Neither `subtype` nor `permission_denials` are reliable failure
+        //   signals — an agent can be denied one tool yet complete the task via
+        //   another path (observed: spec-writer wrote the spec despite a denial).
+        //   The ONLY ground truth for success is whether the artifact exists,
+        //   which the specialist's post-completion handler verifies. The runtime
+        //   therefore reports only a hard protocol error (`is_error`). Permission
+        //   denials are surfaced in finalOutput for diagnostics, not as a verdict.
+        const denials = Array.isArray(r.permission_denials) ? r.permission_denials.length : 0;
+        const baseOutput = typeof r.result === 'string' ? r.result : '';
+        const finalOutput =
+          denials > 0
+            ? `${baseOutput}\n[note] ${denials} permission denial(s) occurred during the run.`
+            : baseOutput;
 
         this.settle({
-          status,
-          finalOutput: typeof r.result === 'string' ? r.result : '',
+          status: r.is_error ? 'error' : 'done',
+          finalOutput,
           totalCostUsd: typeof r.total_cost_usd === 'number' ? r.total_cost_usd : 0,
           durationMs: typeof r.duration_ms === 'number' ? r.duration_ms : 0,
         });

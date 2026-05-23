@@ -94,7 +94,11 @@ export async function handleSpecWriterResult(
   if (agentResult.status !== 'done') {
     return {
       transitioned: false,
-      error: `Agent ended with status '${agentResult.status}'`,
+      // Include finalOutput (which carries captured [stderr] on spawn/crash
+      // failures) so the operator can diagnose why the agent failed.
+      error: agentResult.finalOutput
+        ? `Agent ended with status '${agentResult.status}': ${agentResult.finalOutput}`
+        : `Agent ended with status '${agentResult.status}'`,
     };
   }
 

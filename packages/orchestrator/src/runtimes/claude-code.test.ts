@@ -162,18 +162,23 @@ describe('ClaudeCodeRuntime', () => {
     expect(result.finalOutput).toContain('hello.txt');
   });
 
-  it('resolves wait() with status error for permission-denied fixture (subtype:success is misleading)', async () => {
-    // CRITICAL: The permission-denied fixture has subtype:'success' and is_error:false
-    // in the result line — identical to the success case. Only permission_denials
-    // distinguishes them. Verify the runtime reads permission_denials correctly.
+  it('resolves wait() with status done for permission-denied fixture — denial is diagnostic, not verdict', async () => {
+    // REFINED after Session 10 smoke test: an agent can be denied one tool yet
+    // complete the task via another path. The runtime therefore does NOT treat
+    // permission_denials as a failure signal — only is_error:true is a hard
+    // protocol failure. Denials are appended to finalOutput for diagnostics.
+    // Ground truth for success is artifact existence, checked by the specialist
+    // handler (handleSpecWriterResult), not by ClaudeCodeRuntime.
     const lines = loadFixture('permission-denied.jsonl');
     const runtime = new ClaudeCodeRuntime(() => makeFakeProcess(lines));
 
     const session = await runtime.spawn(makeParams());
     const result = await session.wait();
 
-    expect(result.status).toBe('error');
-    // Cost is still reported even on permission denial
+    expect(result.status).toBe('done');
+    expect(result.finalOutput).toContain('[note]');
+    expect(result.finalOutput).toContain('1 permission denial');
+    // Cost is still reported even when a denial occurred
     expect(result.totalCostUsd).toBeGreaterThan(0);
   });
 

@@ -21,4 +21,11 @@ export default {
   port: 3001,
   fetch: app.fetch,
   websocket,
+  // Synchronous dispatch spawns Claude Code, which can run for minutes.
+  // Bun's default idleTimeout is 10s — raise to the max (255s) so the
+  // connection is held until the agent finishes.
+  // NOTE: stopgap. The proper fix is async dispatch (job id + poll/websocket);
+  // tracked for Session 11. Agent runs can exceed 255s, so this only unblocks
+  // short specialist runs.
+  idleTimeout: 255,
 };

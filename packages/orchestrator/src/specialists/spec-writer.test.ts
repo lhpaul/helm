@@ -112,17 +112,31 @@ describe('handleSpecWriterResult', () => {
     expect(result.newStage).toBe('spec-draft');
   });
 
-  it('error message includes finalOutput when agent failed (stderr / timeout captured)', async () => {
-    const result = await handleSpecWriterResult(
-      'issue_1',
-      doneResult({ status: 'error', finalOutput: '[stderr] claude: command not found' }),
-      workdir,
-      transition as ItemTransitionFn,
-    );
+  it('logs finalOutput server-side and returns a generic error message to caller', async () => {
+    // finalOutput (stderr, timeout details) must NOT be exposed to callers —
+    // it could contain internal paths or implementation details. It is logged
+    // server-side so operators can investigate without leaking it upstream.
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await handleSpecWriterResult(
+        'issue_1',
+        doneResult({ status: 'error', finalOutput: '[stderr] claude: command not found' }),
+        workdir,
+        transition as ItemTransitionFn,
+      );
 
-    expect(result.transitioned).toBe(false);
-    expect(result.error).toContain("status 'error'");
-    expect(result.error).toContain('command not found');
+      expect(result.transitioned).toBe(false);
+      expect(result.error).toContain("status 'error'");
+      // Raw finalOutput must NOT appear in the returned error string
+      expect(result.error).not.toContain('command not found');
+      // But it IS logged server-side for operator visibility
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[spec-writer]'),
+        expect.objectContaining({ finalOutput: expect.stringContaining('command not found') }),
+      );
+    } finally {
+      consoleSpy.mockRestore();
+    }
   });
 
   it('returns error when transition throws', async () => {

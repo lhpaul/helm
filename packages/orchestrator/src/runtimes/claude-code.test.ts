@@ -275,26 +275,29 @@ describe('ClaudeCodeRuntime', () => {
 
   it('skips malformed JSON lines without crashing', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const lines = loadFixture('write-success.jsonl');
-    const withJunk = [...lines.slice(0, 5), '!!not-json!!', ...lines.slice(5)];
+    try {
+      const lines = loadFixture('write-success.jsonl');
+      const withJunk = [...lines.slice(0, 5), '!!not-json!!', ...lines.slice(5)];
 
-    const runtime = new ClaudeCodeRuntime(() => makeFakeProcess(withJunk));
-    const session = await runtime.spawn(makeParams());
-    const result = await session.wait();
+      const runtime = new ClaudeCodeRuntime(() => makeFakeProcess(withJunk));
+      const session = await runtime.spawn(makeParams());
+      const result = await session.wait();
 
-    expect(result.status).toBe('done');
-    // Raw content is intentionally NOT logged (security: tool payloads must
-    // not appear in application logs). Assert the marker was emitted AND that
-    // the raw payload never appears in any log argument.
-    expect(consoleSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[claude-code] Malformed JSON line'),
-    );
-    expect(
-      consoleSpy.mock.calls.some((call) =>
-        call.some((arg) => typeof arg === 'string' && arg.includes('!!not-json!!')),
-      ),
-    ).toBe(false);
-    consoleSpy.mockRestore();
+      expect(result.status).toBe('done');
+      // Raw content is intentionally NOT logged (security: tool payloads must
+      // not appear in application logs). Assert the marker was emitted AND that
+      // the raw payload never appears in any log argument.
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[claude-code] Malformed JSON line'),
+      );
+      expect(
+        consoleSpy.mock.calls.some((call) =>
+          call.some((arg) => typeof arg === 'string' && arg.includes('!!not-json!!')),
+        ),
+      ).toBe(false);
+    } finally {
+      consoleSpy.mockRestore();
+    }
   });
 
   it('cancel() resolves wait() with cancelled status', async () => {

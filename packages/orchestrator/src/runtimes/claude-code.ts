@@ -322,8 +322,10 @@ class ClaudeCodeSession implements AgentSession {
  *   prompting, while still requiring explicit approval for arbitrary Bash.
  *   This is the minimum viable permission set for spec-writer (files only).
  * - `--output-format stream-json --verbose`: emits one JSONL line per event.
- * - Success is determined by `permission_denials.length === 0` AND the
- *   artifact check in handleSpecWriterResult — NOT by `result.subtype`.
+ * - Runtime verdict is driven by `result.is_error` only (`done` vs `error`).
+ *   `permission_denials` are diagnostic — appended to `finalOutput` as a note.
+ * - Artifact existence is the ground truth for task success; validated
+ *   downstream in `handleSpecWriterResult` via `fs.access` — NOT here.
  * - Cost comes from `result.total_cost_usd` directly (no per-model pricing table).
  *
  * @param spawnFn   Override the subprocess factory (used in tests to inject

@@ -92,13 +92,18 @@ export async function handleSpecWriterResult(
   transition: ItemTransitionFn,
 ): Promise<SpecWriterResult> {
   if (agentResult.status !== 'done') {
+    // Log diagnostics server-side (stderr content, timeout details, etc.) so
+    // operators can investigate without exposing internal details to callers.
+    if (agentResult.finalOutput) {
+      console.error('[spec-writer] Agent failure details', {
+        externalId,
+        status: agentResult.status,
+        finalOutput: agentResult.finalOutput,
+      });
+    }
     return {
       transitioned: false,
-      // Include finalOutput (which carries captured [stderr] on spawn/crash
-      // failures) so the operator can diagnose why the agent failed.
-      error: agentResult.finalOutput
-        ? `Agent ended with status '${agentResult.status}': ${agentResult.finalOutput}`
-        : `Agent ended with status '${agentResult.status}'`,
+      error: `Agent ended with status '${agentResult.status}'`,
     };
   }
 

@@ -221,7 +221,9 @@ class ClaudeCodeSession implements AgentSession {
       parsed = JSON.parse(line);
     } catch {
       // Malformed JSON — log and skip; do not crash the session.
-      console.error('[claude-code] Malformed JSON line (skipped):', line.slice(0, 120));
+      // Raw content is intentionally NOT logged: JSONL lines can contain prompt
+      // text or tool payloads that must not appear in application logs.
+      console.error('[claude-code] Malformed JSON line (skipped)');
       return;
     }
     this.handleMessage(parsed);

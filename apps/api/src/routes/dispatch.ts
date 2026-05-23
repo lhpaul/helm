@@ -77,12 +77,14 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   const dataRoot = envDataDir || join(process.cwd(), 'data');
   const workdir = join(dataRoot, 'worktrees', slug, externalId);
 
-  // Select runtime based on product specialist config.
-  // 'claude_code' → ClaudeCodeRuntime (real). Tests inject a mock via vi.mock
-  // on '../services/runtime-factory.js'. See runtime-factory.ts for details.
-  const runtime = createRuntimeForProduct(product, externalId, workdir);
-
   try {
+    // Select runtime based on product specialist config.
+    // 'claude_code' → ClaudeCodeRuntime (real). Tests inject a mock via vi.mock
+    // on '../services/runtime-factory.js'. See runtime-factory.ts for details.
+    // Kept inside the try/catch so a bad config (unknown runtime) surfaces as a
+    // structured JSON 500 rather than an unhandled Hono error.
+    const runtime = createRuntimeForProduct(product, externalId, workdir);
+
     const result = await dispatchStageHandler(
       { externalId, productSlug: item.productSlug, currentStage: item.currentStage },
       product,

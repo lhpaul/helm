@@ -1,0 +1,105 @@
+rules:
+  - id: "resolve-session-results-on-failure"
+    name: "Resolve session waits on runtime failure"
+    type: llm
+    severity: warning
+    category: "patterns"
+    message: "Stateful runtime/session methods must catch internal errors and resolve a terminal error result so waiters do not hang on rejected promises."
+    llm:
+      prompt: "Stateful runtime/session methods must catch internal errors and resolve a terminal error result so waiters do not hang on rejected promises."
+  - id: "non-2xx-on-domain-errors"
+    name: "Return non-2xx for application errors"
+    type: llm
+    severity: warning
+    category: "style"
+    message: "API handlers must return a non-2xx HTTP status whenever the domain result indicates an error instead of replying 200 with an error payload."
+    llm:
+      prompt: "API handlers must return a non-2xx HTTP status whenever the domain result indicates an error instead of replying 200 with an error payload."
+  - id: "sanitize-client-error-messages"
+    name: "Sanitize client-facing error responses"
+    type: llm
+    severity: warning
+    category: "security"
+    message: "Log detailed server errors internally but return generic safe error messages to clients without internal paths, tokens, stack traces, or implementation details."
+    llm:
+      prompt: "Log detailed server errors internally but return generic safe error messages to clients without internal paths, tokens, stack traces, or implementation details."
+  - id: "validate-filesystem-identifiers"
+    name: "Whitelist filesystem-bound identifiers"
+    type: llm
+    severity: warning
+    category: "security"
+    message: "Validate identifiers used in filesystem path construction with a strict allowlist and explicitly reject dot segments like \".\" and \"..\" before joining paths."
+    llm:
+      prompt: "Validate identifiers used in filesystem path construction with a strict allowlist and explicitly reject dot segments like \".\" and \"..\" before joining paths."
+  - id: "atomic-create-with-eexist-handling"
+    name: "Use atomic create-if-absent writes"
+    type: llm
+    severity: warning
+    category: "performance"
+    message: "For create-if-not-exists persistence, use OS-level exclusive create semantics (for example flag \"wx\") and map EEXIST explicitly instead of read-then-write checks."
+    llm:
+      prompt: "For create-if-not-exists persistence, use OS-level exclusive create semantics (for example flag \"wx\") and map EEXIST explicitly instead of read-then-write checks."
+  - id: "narrow-enoent-fallbacks"
+    name: "Limit ENOENT fallbacks to intended files"
+    type: llm
+    severity: warning
+    category: "patterns"
+    message: "Fallback behavior for missing files must only trigger for the exact expected path/code and rethrow other ENOENT cases to avoid masking real failures."
+    llm:
+      prompt: "Fallback behavior for missing files must only trigger for the exact expected path/code and rethrow other ENOENT cases to avoid masking real failures."
+  - id: "return-defensive-copies-from-caches"
+    name: "Do not expose mutable cached state"
+    type: llm
+    severity: warning
+    category: "patterns"
+    message: "Methods returning cached arrays or objects, including cached promise results, must return defensive copies so callers cannot mutate shared internal state."
+    llm:
+      prompt: "Methods returning cached arrays or objects, including cached promise results, must return defensive copies so callers cannot mutate shared internal state."
+  - id: "validate-env-derived-paths"
+    name: "Validate environment-derived filesystem paths"
+    type: llm
+    severity: warning
+    category: "security"
+    message: "Environment-provided filesystem paths must be trimmed and validated against a safe path pattern before deriving or joining local paths."
+    llm:
+      prompt: "Environment-provided filesystem paths must be trimmed and validated against a safe path pattern before deriving or joining local paths."
+  - id: "strict-zod-for-external-inputs"
+    name: "Use strict schemas for external inputs"
+    type: llm
+    severity: warning
+    category: "style"
+    message: "Validate route params and request bodies with Zod object schemas in strict mode so unknown keys and invalid inputs are rejected with 400 responses."
+    llm:
+      prompt: "Validate route params and request bodies with Zod object schemas in strict mode so unknown keys and invalid inputs are rejected with 400 responses."
+  - id: "explicit-invalid-json-400"
+    name: "Reject malformed JSON explicitly"
+    type: llm
+    severity: warning
+    category: "style"
+    message: "Route handlers must parse JSON bodies explicitly and return a clear 400 invalid-JSON response instead of swallowing parse errors into default objects."
+    llm:
+      prompt: "Route handlers must parse JSON bodies explicitly and return a clear 400 invalid-JSON response instead of swallowing parse errors into default objects."
+  - id: "inject-config-into-core-services"
+    name: "Keep core adapters free of direct env access"
+    type: llm
+    severity: warning
+    category: "patterns"
+    message: "Core adapters and services should receive config and secrets via dependency injection, with process environment reads centralized in composition wiring."
+    llm:
+      prompt: "Core adapters and services should receive config and secrets via dependency injection, with process environment reads centralized in composition wiring."
+  - id: "reuse-canonical-shared-types"
+    name: "Import canonical types from owning packages"
+    type: llm
+    severity: warning
+    category: "patterns"
+    message: "Use shared constants and types from their owning package as the single source of truth instead of redefining local duplicates."
+    llm:
+      prompt: "Use shared constants and types from their owning package as the single source of truth instead of redefining local duplicates."
+  - id: "api-client-never-throw-contract"
+    name: "Return typed API errors instead of throwing"
+    type: llm
+    severity: warning
+    category: "patterns"
+    message: "Web API client helpers should return the discriminated ApiResult ok/error shape and model network failures as returned errors rather than thrown exceptions."
+    llm:
+      prompt: "Web API client helpers should return the discriminated ApiResult ok/error shape and model network failures as returned errors rather than thrown exceptions."

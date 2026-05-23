@@ -1,5 +1,6 @@
 import { createBunWebSocket } from 'hono/bun';
 import { app } from './app.js';
+import { getJobStore } from './services/index.js';
 
 const { upgradeWebSocket, websocket } = createBunWebSocket();
 
@@ -17,16 +18,25 @@ app.get(
 
 console.log('API running at http://localhost:3001');
 
+// Reconcile orphaned jobs on startup (fire and forget).
+// Any job that was 'running' when the server last shut down is marked 'error'.
+void getJobStore()
+  .then((store) => store.reconcileOrphanedJobs())
+  .then((count) => {
+    if (count > 0) {
+      console.log(`[startup] Reconciled ${count} orphaned job(s) → status=error`);
+    }
+  })
+  .catch((err) => {
+    console.error('[startup] Failed to reconcile orphaned jobs:', err);
+  });
+
 export default {
   port: 3001,
   fetch: app.fetch,
   websocket,
-  // Synchronous dispatch spawns Claude Code, which can run for minutes.
-  // Bun's default idleTimeout is 10s — raise to 255s (Bun's MAXIMUM; values
-  // above 255 throw ERR_INVALID_ARG_TYPE at boot).
-  // KNOWN LIMITATION: the runtime's DEFAULT_TIMEOUT_MS is 300s, which exceeds
-  // this 255s HTTP cap. A run lasting 255-300s will drop the HTTP connection
-  // while the agent keeps running. This is inherent to synchronous dispatch and
-  // is resolved by async dispatch (job id + poll/websocket) — tracked for Session 11.
+  // Dispatch now returns in ms (async job); this timeout protects other
+  // long-polling endpoints. Bun's maximum is 255s — values above throw
+  // ERR_INVALID_ARG_TYPE at boot.
   idleTimeout: 255,
 };

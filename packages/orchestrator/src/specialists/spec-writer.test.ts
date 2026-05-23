@@ -94,6 +94,51 @@ describe('handleSpecWriterResult', () => {
     expect(transition).not.toHaveBeenCalled();
   });
 
+  it('transitions successfully when finalOutput contains a denial note but artifact exists', async () => {
+    // Regression guard for the Session 10 smoke-test finding: permission_denials
+    // is NOT a verdict — the agent can deny one tool and succeed via another.
+    // The handler must not inspect finalOutput for denial notes; artifact
+    // existence on disk is the only success criterion.
+    await writeFile(join(workdir, 'specs', 'issue_1.md'), '# Spec');
+
+    const result = await handleSpecWriterResult(
+      'issue_1',
+      doneResult({ finalOutput: 'Done.\n[note] 1 permission denial(s) occurred during the run.' }),
+      workdir,
+      transition as ItemTransitionFn,
+    );
+
+    expect(result.transitioned).toBe(true);
+    expect(result.newStage).toBe('spec-draft');
+  });
+
+  it('logs finalOutput server-side and returns a generic error message to caller', async () => {
+    // finalOutput (stderr, timeout details) must NOT be exposed to callers —
+    // it could contain internal paths or implementation details. It is logged
+    // server-side so operators can investigate without leaking it upstream.
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await handleSpecWriterResult(
+        'issue_1',
+        doneResult({ status: 'error', finalOutput: '[stderr] claude: command not found' }),
+        workdir,
+        transition as ItemTransitionFn,
+      );
+
+      expect(result.transitioned).toBe(false);
+      expect(result.error).toContain("status 'error'");
+      // Raw finalOutput must NOT appear in the returned error string
+      expect(result.error).not.toContain('command not found');
+      // But it IS logged server-side for operator visibility
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[spec-writer]'),
+        expect.objectContaining({ finalOutput: expect.stringContaining('command not found') }),
+      );
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
   it('returns error when transition throws', async () => {
     await writeFile(join(workdir, 'specs', 'issue_1.md'), '# Spec');
     transition.mockRejectedValue(new Error('state machine rejected'));

@@ -1,8 +1,9 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MockAgentRuntime } from '@helm/orchestrator';
 import { app } from '../app.js';
 import { _resetForTests } from '../services/index.js';
 import type { Product } from '@helm/shared';
@@ -51,10 +52,11 @@ const makeItem = (
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-const { mockGetProductRegistry, mockGet, mockTransition } = vi.hoisted(() => ({
+const { mockGetProductRegistry, mockGet, mockTransition, mockCreateRuntime } = vi.hoisted(() => ({
   mockGetProductRegistry: vi.fn(),
   mockGet: vi.fn(),
   mockTransition: vi.fn(),
+  mockCreateRuntime: vi.fn(),
 }));
 
 vi.mock('../services/index.js', async (importOriginal) => {
@@ -68,6 +70,12 @@ vi.mock('../services/index.js', async (importOriginal) => {
     }),
   };
 });
+
+// Replace ClaudeCodeRuntime with a MockAgentRuntime whose sideEffects write the
+// spec file the spec-writer handler expects to find on disk.
+vi.mock('../services/runtime-factory.js', () => ({
+  createRuntimeForProduct: mockCreateRuntime,
+}));
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
@@ -89,6 +97,28 @@ beforeEach(async () => {
   mockGetProductRegistry.mockResolvedValue([makeProduct()]);
   mockGet.mockResolvedValue(makeItem());
   mockTransition.mockResolvedValue({ currentStage: 'spec-draft' });
+
+  // Replace ClaudeCodeRuntime with a scriptable mock that writes the expected
+  // spec file. The externalId is derived from the workdir path (last segment).
+  mockCreateRuntime.mockImplementation(
+    (_product: Product, externalId: string, workdir: string) =>
+      new MockAgentRuntime({
+        messages: [
+          {
+            role: 'agent',
+            content: `[mock] Writing spec for ${externalId}`,
+            costUsd: 0,
+            timestamp: new Date().toISOString(),
+          },
+        ],
+        sideEffects: async (dir) => {
+          const id = basename(dir); // workdir last segment = externalId
+          await mkdir(join(dir, 'specs'), { recursive: true });
+          await writeFile(join(dir, 'specs', `${id}.md`), `# ${id}\n`);
+          void workdir; // explicitly consumed
+        },
+      }),
+  );
 });
 
 afterEach(async () => {
@@ -253,5 +283,28 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { specialistId: string };
     expect(body.specialistId).toBe('spec-writer');
+  });
+
+  it('returns 500 when createRuntimeForProduct throws (unknown runtime config)', async () => {
+    mockCreateRuntime.mockImplementation(() => {
+      throw new Error("[runtime-factory] Unknown specialist runtime: 'bad_runtime'");
+    });
+
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('Dispatch failed');
+    expect(mockTransition).not.toHaveBeenCalled();
+  });
+
+  it('passes product, externalId, and workdir to createRuntimeForProduct', async () => {
+    await dispatch('test-product', 'issue_1');
+
+    expect(mockCreateRuntime).toHaveBeenCalledOnce();
+    expect(mockCreateRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ product: expect.objectContaining({ slug: 'test-product' }) }),
+      'issue_1',
+      expect.stringContaining(join('worktrees', 'test-product', 'issue_1')),
+    );
   });
 });

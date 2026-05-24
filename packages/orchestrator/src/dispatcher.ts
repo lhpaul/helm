@@ -5,6 +5,9 @@ import type { Product } from '@helm/shared';
 import type { IAgentRuntime } from './runtime.js';
 import type { ItemTransitionFn } from './specialists/spec-writer.js';
 import { buildSpecWriterParams, handleSpecWriterResult } from './specialists/spec-writer.js';
+import { fetchProductContext } from './specialists/fetch-product-context.js';
+import type { FetchFn } from './specialists/fetch-product-context.js';
+import type { RunGit, RunGh } from './specialists/spec-publisher.js';
 
 // ── Stage → specialist mapping ────────────────────────────────────────────────
 // Expanded in later sessions (plan-writer, implementer, etc.)
@@ -27,6 +30,8 @@ export type DispatchResult = {
   newStage?: WorkflowStage;
   costUsd: number;
   durationMs: number;
+  /** URL of the knowledge-repo PR opened by the publish step, if applicable. */
+  prUrl?: string;
   error?: string;
 };
 
@@ -35,6 +40,32 @@ export type DispatchOptions = {
   workdir?: string;
   /** Override the specialist determined by stage mapping. */
   specialistId?: string;
+  /**
+   * Absolute path to the Helm data root (e.g. HELM_DATA_DIR or cwd/data).
+   * Reserved for future specialists; currently unused by the spec-writer path.
+   */
+  dataRoot?: string;
+  /**
+   * GitHub personal access token (repo scope).
+   * Required for product context fetching (Part A) and spec publishing (Part B).
+   * When absent, both features are silently skipped.
+   */
+  githubToken?: string;
+  /**
+   * Injectable HTTP fetch function — for testing the context-fetch path.
+   * Defaults to the global fetch.
+   */
+  fetchFn?: FetchFn;
+  /**
+   * Injectable git runner — for testing the publish path.
+   * Defaults to the real git binary via execFile.
+   */
+  runGit?: RunGit;
+  /**
+   * Injectable gh runner — for testing the publish path.
+   * Defaults to the real gh binary via execFile.
+   */
+  runGh?: RunGh;
 };
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
@@ -53,21 +84,19 @@ export async function dispatchStageHandler(
   transition: ItemTransitionFn,
   options?: DispatchOptions,
 ): Promise<DispatchResult> {
-  // Guard against path traversal when the default workdir is constructed from
-  // productSlug / externalId. The API layer validates these values before calling
-  // dispatchStageHandler, but the dispatcher is a library function — validate
-  // defensively here too. Only enforced when options.workdir is not provided.
-  if (!options?.workdir) {
-    const isSafePathPart = (v: string): boolean => /^[A-Za-z0-9._-]+$/.test(v);
-    if (!isSafePathPart(item.productSlug) || !isSafePathPart(item.externalId)) {
-      return {
-        specialistId: options?.specialistId ?? 'none',
-        status: 'error',
-        costUsd: 0,
-        durationMs: 0,
-        error: 'Invalid productSlug or externalId for filesystem path',
-      };
-    }
+  // Guard against path traversal — both productSlug (used in the publish path) and
+  // externalId (used in workdir + branch names) must be safe filesystem components.
+  // The (?!\.) lookahead blocks dot-segment values (`.`, `..`, `.hidden`, …) in
+  // addition to the character-class restriction.
+  const isSafePathPart = (v: string): boolean => /^(?!\.)[A-Za-z0-9._-]+$/.test(v);
+  if (!isSafePathPart(item.productSlug) || !isSafePathPart(item.externalId)) {
+    return {
+      specialistId: options?.specialistId ?? 'none',
+      status: 'error',
+      costUsd: 0,
+      durationMs: 0,
+      error: 'Invalid productSlug or externalId for filesystem path',
+    };
   }
 
   const specialistId = options?.specialistId ?? STAGE_TO_SPECIALIST[item.currentStage];
@@ -89,15 +118,41 @@ export async function dispatchStageHandler(
 
   // Route to specialist
   if (specialistId === 'spec-writer') {
-    const params = buildSpecWriterParams(item.externalId, product, workdir);
+    // ── Part A: Fetch product context (README + agent instructions) ──────────
+    // Skipped gracefully when no token is provided.
+    const context = options?.githubToken
+      ? await fetchProductContext(product, options.githubToken, options.fetchFn).catch((err) => {
+          console.error(
+            '[dispatcher] Failed to fetch product context (continuing without it):',
+            err,
+          );
+          return undefined;
+        })
+      : undefined;
+
+    const params = buildSpecWriterParams(item.externalId, product, workdir, context);
     const session = await runtime.spawn(params);
     const agentResult = await session.wait();
+
+    // ── Part B: Publish spec to knowledge repo (optional) ────────────────────
+    // publishSpecToPR internally clones to an isolated temp directory per call,
+    // so no knowledgeRepoLocalPath is needed here — concurrency safety is
+    // handled inside the function itself.
+    const publishOpts = options?.githubToken
+      ? {
+          product,
+          githubToken: options.githubToken,
+          runGit: options.runGit,
+          runGh: options.runGh,
+        }
+      : undefined;
 
     const specResult = await handleSpecWriterResult(
       item.externalId,
       agentResult,
       workdir,
       transition,
+      publishOpts,
     );
 
     return {
@@ -106,6 +161,7 @@ export async function dispatchStageHandler(
       newStage: specResult.newStage,
       costUsd: agentResult.totalCostUsd,
       durationMs: agentResult.durationMs,
+      prUrl: specResult.prUrl,
       error: specResult.error,
     };
   }

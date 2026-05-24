@@ -37,6 +37,7 @@ describe('ensureDataDir', () => {
     expect(await isDir(paths.reviewers)).toBe(true);
     expect(await isDir(paths.items)).toBe(true);
     expect(await isDir(paths.jobs)).toBe(true);
+    expect(await isDir(paths.knowledgeRepos)).toBe(true);
     // linear-cache/items/ is pre-created even though it's not a top-level DataPaths field
     expect(await isDir(join(testDir, 'linear-cache', 'items'))).toBe(true);
   });

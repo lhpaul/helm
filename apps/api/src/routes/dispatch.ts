@@ -29,7 +29,9 @@ async function runDispatchJob(
     item: ItemState;
     store: ItemStore;
     workdir: string;
+    dataRoot: string;
     specialistId: string | undefined;
+    githubToken: string | undefined;
   },
 ): Promise<void> {
   const jobStore = await getJobStore();
@@ -44,7 +46,12 @@ async function runDispatchJob(
       ctx.product,
       runtime,
       (input) => ctx.store.transition(input),
-      { workdir: ctx.workdir, specialistId: ctx.specialistId },
+      {
+        workdir: ctx.workdir,
+        dataRoot: ctx.dataRoot,
+        specialistId: ctx.specialistId,
+        githubToken: ctx.githubToken,
+      },
     );
 
     const now = new Date().toISOString();
@@ -163,7 +170,9 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
     item,
     store,
     workdir,
+    dataRoot,
     specialistId: bodyResult.data.specialistId,
+    githubToken: process.env.GITHUB_TOKEN?.trim(),
   });
 
   return c.json({ jobId: job.jobId, status: 'running' }, 202);

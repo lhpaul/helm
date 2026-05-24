@@ -22,6 +22,8 @@ export type DataPaths = {
   items: string;
   /** data/jobs/ — one JSON file per async dispatch job */
   jobs: string;
+  /** data/knowledge-repos/ — one subdir per product slug; cloned knowledge repos */
+  knowledgeRepos: string;
 };
 
 /**
@@ -39,6 +41,7 @@ export async function ensureDataDir(rootPath: string): Promise<DataPaths> {
     reviewers: join(rootPath, 'reviewers'),
     items: join(rootPath, 'items'),
     jobs: join(rootPath, 'jobs'),
+    knowledgeRepos: join(rootPath, 'knowledge-repos'),
   };
 
   await Promise.all([
@@ -49,6 +52,7 @@ export async function ensureDataDir(rootPath: string): Promise<DataPaths> {
     mkdir(paths.reviewers, { recursive: true }),
     mkdir(paths.items, { recursive: true }),
     mkdir(paths.jobs, { recursive: true }),
+    mkdir(paths.knowledgeRepos, { recursive: true }),
   ]);
 
   return paths;

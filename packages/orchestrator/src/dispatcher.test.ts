@@ -7,6 +7,8 @@ import { dispatchStageHandler } from './dispatcher.js';
 import { MockAgentRuntime } from './runtimes/mock.js';
 import type { Product } from '@helm/shared';
 import type { ItemTransitionFn } from './specialists/spec-writer.js';
+import type { FetchFn } from './specialists/fetch-product-context.js';
+import type { RunGit, RunGh } from './specialists/spec-publisher.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -184,5 +186,190 @@ describe('dispatchStageHandler', () => {
     expect(result.status).toBe('error');
     expect(result.error).toContain('not implemented');
     expect(result.specialistId).toBe('plan-writer');
+  });
+
+  it('calls fetchFn when githubToken is provided', async () => {
+    const mockFetch: FetchFn = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: () => Promise.resolve('Not Found'),
+    } as Response);
+
+    // Provide runner mocks so the publish step (also triggered by githubToken)
+    // doesn't attempt a real git clone during this context-fetch test.
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        await mkdir(join(args[2]!, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create')
+        return { stdout: 'https://github.com/test-org/knowledge/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn: mockFetch, runGit, runGh },
+    );
+
+    expect(mockFetch).toHaveBeenCalled();
+  });
+
+  it('does not call fetchFn when githubToken is absent', async () => {
+    const mockFetch: FetchFn = vi.fn();
+
+    await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir, fetchFn: mockFetch },
+    );
+
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('continues dispatch when context fetch throws (fallback to no context)', async () => {
+    const mockFetch: FetchFn = vi.fn().mockRejectedValue(new Error('network error'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Provide runner mocks so the publish step (also triggered by githubToken)
+    // succeeds and doesn't mask the context-fetch fallback being tested.
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        await mkdir(join(args[2]!, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create')
+        return { stdout: 'https://github.com/test-org/knowledge/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    try {
+      const result = await dispatchStageHandler(
+        { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+        makeProduct(),
+        makeSpecWriterRuntime('issue_1'),
+        transition as ItemTransitionFn,
+        { workdir, githubToken: 'test-token', fetchFn: mockFetch, runGit, runGh },
+      );
+
+      expect(result.status).toBe('done');
+      expect(result.newStage).toBe('spec-draft');
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[dispatcher]'),
+        expect.any(Error),
+      );
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('omits prUrl when githubToken is absent (publish step skipped)', async () => {
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir, dataRoot: '/some/data' }, // dataRoot present but no token
+    );
+
+    expect(result.status).toBe('done');
+    expect(result.prUrl).toBeUndefined();
+  });
+
+  it('returns error when productSlug starts with a dot (dot-segment traversal)', async () => {
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: '.hidden-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/Invalid productSlug or externalId/);
+  });
+
+  it('returns error when externalId is ".." (parent-directory traversal)', async () => {
+    const result = await dispatchStageHandler(
+      { externalId: '..', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/Invalid productSlug or externalId/);
+  });
+
+  it('path-validation fires before default workdir is computed (dot productSlug, no custom workdir)', async () => {
+    // Guard must reject before dispatcher tries to mkdir the default
+    // data/worktrees/{productSlug}/{externalId} path, which would embed the
+    // untrusted value directly into a filesystem path.
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: '.hidden', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      // intentionally no `workdir` option
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/Invalid productSlug or externalId/);
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('path-validation fires before default workdir is computed (dotdot externalId, no custom workdir)', async () => {
+    const result = await dispatchStageHandler(
+      { externalId: '..', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      // intentionally no `workdir` option
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/Invalid productSlug or externalId/);
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('propagates prUrl from publish step when token and dataRoot are provided', async () => {
+    const expectedPrUrl = 'https://github.com/test-org/test-knowledge/pull/5';
+
+    // Stub runners: clone creates a .git dir; gh create returns a PR URL.
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const cloneDest = args[2]!;
+        await mkdir(join(cloneDest, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create') return { stdout: `${expectedPrUrl}\n` };
+      return { stdout: '' };
+    });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', runGit, runGh },
+    );
+
+    expect(result.status).toBe('done');
+    expect(result.prUrl).toBe(expectedPrUrl);
   });
 });

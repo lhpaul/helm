@@ -76,7 +76,9 @@ export async function dispatchStageHandler(
 ): Promise<DispatchResult> {
   // Guard against path traversal — both productSlug (used in the publish path) and
   // externalId (used in workdir + branch names) must be safe filesystem components.
-  const isSafePathPart = (v: string): boolean => /^[A-Za-z0-9._-]+$/.test(v);
+  // The (?!\.) lookahead blocks dot-segment values (`.`, `..`, `.hidden`, …) in
+  // addition to the character-class restriction.
+  const isSafePathPart = (v: string): boolean => /^(?!\.)[A-Za-z0-9._-]+$/.test(v);
   if (!isSafePathPart(item.productSlug) || !isSafePathPart(item.externalId)) {
     return {
       specialistId: options?.specialistId ?? 'none',

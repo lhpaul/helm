@@ -45,7 +45,9 @@ export type RunGh = (
 // ── Default runners ───────────────────────────────────────────────────────────
 
 export const defaultRunGit: RunGit = async (args, opts) => {
-  const { stdout } = await execFileAsync('/usr/bin/git', args, {
+  // Resolve 'git' from PATH for portability (avoids hardcoding /usr/bin/git
+  // which may differ on Linux containers, NixOS, Windows, or Homebrew setups).
+  const { stdout } = await execFileAsync('git', args, {
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env, GIT_TERMINAL_PROMPT: '0' },
   });
@@ -114,7 +116,9 @@ export async function publishSpecToPR(
 ): Promise<PublishSpecResult> {
   const { externalId, product, specPath, knowledgeRepoLocalPath, githubToken } = opts;
 
-  const EXTERNAL_ID_SAFE = /^[A-Za-z0-9._-]+$/;
+  // The (?!\.) lookahead rejects dot-segment values (`.`, `..`, `.hidden`, …)
+  // in addition to the character-class restriction, preventing path traversal.
+  const EXTERNAL_ID_SAFE = /^(?!\.)[A-Za-z0-9._-]+$/;
   if (!EXTERNAL_ID_SAFE.test(externalId)) {
     throw new Error(`[spec-publisher] Invalid externalId: "${externalId}"`);
   }

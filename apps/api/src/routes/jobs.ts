@@ -30,7 +30,14 @@ jobsRouter.get('/jobs/:jobId', async (c) => {
     return c.json({ error: 'Failed to load job store' }, 500);
   }
 
-  const job = await jobStore.getJob(jobId);
+  let job;
+  try {
+    job = await jobStore.getJob(jobId);
+  } catch (err) {
+    console.error('[jobs] Failed to read job:', err);
+    return c.json({ error: 'Failed to read job' }, 500);
+  }
+
   if (!job) {
     return c.json({ error: `Job not found: ${jobId}` }, 404);
   }
@@ -62,7 +69,14 @@ jobsRouter.get('/products/:slug/items/:externalId/jobs', async (c) => {
     return c.json({ error: 'Failed to load job store' }, 500);
   }
 
-  const jobs = await jobStore.listJobsForItem(slug, externalId);
+  let jobs;
+  try {
+    jobs = await jobStore.listJobsForItem(slug, externalId);
+  } catch (err) {
+    console.error('[jobs] Failed to list jobs:', err);
+    return c.json({ error: 'Failed to list jobs' }, 500);
+  }
+
   return c.json(
     jobs.map((j) => ({ ...j })),
     200,

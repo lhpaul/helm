@@ -185,6 +185,17 @@ describe('GET /api/jobs/:jobId', () => {
     const res = await getJob('abc');
     expect(res.status).toBe(400);
   });
+
+  it('returns 500 when the job file is corrupted (invalid JSON)', async () => {
+    // Write a valid UUID filename with corrupt contents to trigger readJson to throw.
+    const jobsDir = join(dataDir, 'jobs');
+    await mkdir(jobsDir, { recursive: true });
+    const fakeId = '11111111-1111-4111-8111-111111111111';
+    await writeFile(join(jobsDir, `${fakeId}.json`), '{ invalid json }');
+
+    const res = await getJob(fakeId);
+    expect(res.status).toBe(500);
+  });
 });
 
 // ── GET /api/products/:slug/items/:externalId/jobs ────────────────────────────
@@ -233,6 +244,17 @@ describe('GET /api/products/:slug/items/:externalId/jobs', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain('externalId');
+  });
+
+  it('returns 500 when the jobs directory contains a corrupted file', async () => {
+    // Any corrupt JSON in the jobs dir causes listJobsForItem to throw.
+    const jobsDir = join(dataDir, 'jobs');
+    await mkdir(jobsDir, { recursive: true });
+    const fakeId = '22222222-2222-4222-8222-222222222222';
+    await writeFile(join(jobsDir, `${fakeId}.json`), '{ invalid json }');
+
+    const res = await listJobs('test-product', 'issue_1');
+    expect(res.status).toBe(500);
   });
 });
 

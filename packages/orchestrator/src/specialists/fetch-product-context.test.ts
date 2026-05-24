@@ -172,7 +172,7 @@ describe('fetchProductContext', () => {
       { headers: Record<string, string> },
     ][];
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls[0][1].headers.Authorization).toBe('Bearer my-token');
+    expect(calls[0]![1].headers.Authorization).toBe('Bearer my-token');
   });
 
   it('returns empty context when product has no code repos', async () => {

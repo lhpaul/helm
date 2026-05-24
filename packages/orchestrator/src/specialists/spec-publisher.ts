@@ -81,15 +81,21 @@ function buildAuthenticatedUrl(owner: string, repo: string, token: string): stri
 }
 
 /**
- * Redacts any occurrence of the token from a string so that git error messages
+ * Redacts ALL occurrences of the token from a string so that git error messages
  * (which may echo the remote URL) are safe to surface to operators.
  *
  * Replaces both:
- *   - `x-access-token:<token>@`  →  `x-access-token:***@`  (URL pattern)
- *   - the bare token string      →  `***`                    (safety net)
+ *   - every `x-access-token:<token>@`  →  `x-access-token:***@`  (URL pattern)
+ *   - every bare token string          →  `***`                    (safety net)
+ *
+ * Uses replaceAll so that multiple occurrences in a single message are all
+ * redacted (e.g. a git error that echoes the URL twice, or a stack trace that
+ * includes both the URL pattern and the raw token).
  */
 function sanitizeToken(text: string, token: string): string {
-  return text.replace(`x-access-token:${token}@`, 'x-access-token:***@').replace(token, '***');
+  return text
+    .replaceAll(`x-access-token:${token}@`, 'x-access-token:***@')
+    .replaceAll(token, '***');
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────

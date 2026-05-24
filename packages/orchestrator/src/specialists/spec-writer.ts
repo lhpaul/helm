@@ -182,6 +182,10 @@ export async function handleSpecWriterResult(
     // Surface what the agent reported so we can see WHY it didn't write the
     // spec (wrong path, confusion, asked a question, etc.) instead of a blind
     // "not found".
+    // Log the agent's final output server-side so operators can diagnose WHY
+    // the spec was not created (wrong path, confusion, pending question, etc.).
+    // Do NOT include finalOutput in the returned error: with product context
+    // injected, it may contain fragments of README/AGENT.md content.
     console.error('[spec-writer] Spec file missing after agent run', {
       externalId,
       specPath,
@@ -189,7 +193,7 @@ export async function handleSpecWriterResult(
     });
     return {
       transitioned: false,
-      error: `spec file not found at ${specPath} — agent did not create it. Agent said: ${agentResult.finalOutput || '(no output)'}`,
+      error: `spec file not found at ${specPath} — agent did not create it`,
     };
   }
 

@@ -228,7 +228,7 @@ describe('publishSpecToPR', () => {
     expect(pushCall![0][1]).toBe('origin');
   });
 
-  it('sanitizes token from error messages when clone fails', async () => {
+  it('sanitizes token from error messages when clone fails (single occurrence)', async () => {
     const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === 'clone') {
         // Simulate git echoing the authenticated URL back in its error message.
@@ -245,10 +245,35 @@ describe('publishSpecToPR', () => {
       .catch((e: unknown) => e as Error);
 
     expect(err).not.toBeNull();
-    // The propagated error must not contain the bare token.
     expect(err!.message).not.toContain('secret-token');
-    // It should contain the redacted form instead.
     expect(err!.message).toContain('x-access-token:***@');
+  });
+
+  it('sanitizes ALL occurrences of the token when it appears multiple times in an error', async () => {
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        // Simulate a verbose git error that echoes the URL twice plus the bare token.
+        throw new Error(
+          `error: could not read Username for 'https://x-access-token:secret-token@github.com': ` +
+            `terminal prompts disabled\n` +
+            `fatal: repository 'https://x-access-token:secret-token@github.com/test-org/knowledge/' not found\n` +
+            `hint: token=secret-token`,
+        );
+      }
+      return { stdout: '' };
+    });
+    const runGh = makeRunGh();
+
+    const err = await publishSpecToPR(makeOpts({ githubToken: 'secret-token' }), runGit, runGh)
+      .then(() => null)
+      .catch((e: unknown) => e as Error);
+
+    expect(err).not.toBeNull();
+    // No occurrence of the bare token must survive — not in the URL pattern,
+    // not in the bare `token=secret-token` hint line.
+    expect(err!.message).not.toContain('secret-token');
+    // All URL occurrences should be replaced with the redacted form.
+    expect(err!.message).not.toContain('x-access-token:secret-token@');
   });
 
   it('throws on invalid externalId containing path traversal characters', async () => {

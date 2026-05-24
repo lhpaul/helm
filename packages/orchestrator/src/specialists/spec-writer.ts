@@ -127,11 +127,10 @@ export function buildSpecWriterParams(
  */
 export type SpecPublishOptions = {
   product: Product;
-  knowledgeRepoLocalPath: string;
   githubToken: string;
-  /** Injectable git runner — defaults to /usr/bin/git. For testing. */
+  /** Injectable git runner — defaults to git via execFile. For testing. */
   runGit?: RunGit;
-  /** Injectable gh runner — defaults to /opt/homebrew/bin/gh. For testing. */
+  /** Injectable gh runner — defaults to gh via execFile. For testing. */
   runGh?: RunGh;
 };
 
@@ -190,7 +189,6 @@ export async function handleSpecWriterResult(
       externalId,
       product: publishOpts.product,
       specPath,
-      knowledgeRepoLocalPath: publishOpts.knowledgeRepoLocalPath,
       githubToken: publishOpts.githubToken,
     };
     try {

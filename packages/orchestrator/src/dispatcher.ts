@@ -42,8 +42,7 @@ export type DispatchOptions = {
   specialistId?: string;
   /**
    * Absolute path to the Helm data root (e.g. HELM_DATA_DIR or cwd/data).
-   * Used to locate `knowledge-repos/{productSlug}/` for the publish step.
-   * Required for the publish step to run.
+   * Reserved for future specialists; currently unused by the spec-writer path.
    */
   dataRoot?: string;
   /**
@@ -136,25 +135,17 @@ export async function dispatchStageHandler(
     const agentResult = await session.wait();
 
     // ── Part B: Publish spec to knowledge repo (optional) ────────────────────
-    const publishOpts =
-      options?.githubToken && options?.dataRoot
-        ? {
-            product,
-            // Each item gets its own clone subdirectory to prevent concurrent
-            // publishes for different items of the same product from clobbering
-            // each other's working tree.  On re-dispatch the same path is reused
-            // (fetch + reset) rather than re-cloned.
-            knowledgeRepoLocalPath: join(
-              options.dataRoot,
-              'knowledge-repos',
-              item.productSlug,
-              item.externalId,
-            ),
-            githubToken: options.githubToken,
-            runGit: options.runGit,
-            runGh: options.runGh,
-          }
-        : undefined;
+    // publishSpecToPR internally clones to an isolated temp directory per call,
+    // so no knowledgeRepoLocalPath is needed here — concurrency safety is
+    // handled inside the function itself.
+    const publishOpts = options?.githubToken
+      ? {
+          product,
+          githubToken: options.githubToken,
+          runGit: options.runGit,
+          runGh: options.runGh,
+        }
+      : undefined;
 
     const specResult = await handleSpecWriterResult(
       item.externalId,

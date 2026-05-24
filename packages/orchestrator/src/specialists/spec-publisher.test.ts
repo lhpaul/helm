@@ -42,13 +42,18 @@ const makeProduct = (): Product => ({
 
 /**
  * Builds a mock runGit that simulates git operations on the real local
- * filesystem. clone creates a .git dir; other commands are no-ops.
+ * filesystem.  `clone <url> <dest>` creates a `.git` marker inside `dest`
+ * (which publishSpecToPR pre-creates); all other commands are no-ops.
+ *
+ * Since publishSpecToPR always clones to a fresh temp directory (known only
+ * at call time), the destination is read directly from the args array rather
+ * than being injected as a parameter.
  */
-function makeRunGit(cloneTargetPath: string): RunGit {
+function makeRunGit(): RunGit {
   return vi.fn().mockImplementation(async (args: string[]) => {
     if (args[0] === 'clone') {
-      // Simulate clone by creating .git marker dir
-      await mkdir(join(cloneTargetPath, '.git'), { recursive: true });
+      const dest = args[2]!;
+      await mkdir(join(dest, '.git'), { recursive: true });
     }
     return { stdout: '' };
   });
@@ -71,7 +76,6 @@ function makeRunGh(prListResult: { url: string }[] = []): RunGh {
 
 let tmpDir: string;
 let specPath: string;
-let knowledgeRepoLocalPath: string;
 
 beforeEach(async () => {
   tmpDir = join(tmpdir(), `spec-publisher-${randomUUID()}`);
@@ -82,8 +86,6 @@ beforeEach(async () => {
   await mkdir(specsDir, { recursive: true });
   specPath = join(specsDir, 'issue_1.md');
   await writeFile(specPath, '# issue_1 — Specification\n');
-
-  knowledgeRepoLocalPath = join(tmpDir, 'knowledge-repos', 'my-product');
 });
 
 afterEach(async () => {
@@ -96,7 +98,6 @@ const makeOpts = (overrides?: Partial<PublishSpecOpts>): PublishSpecOpts => ({
   externalId: 'issue_1',
   product: makeProduct(),
   specPath,
-  knowledgeRepoLocalPath,
   githubToken: 'test-token',
   ...overrides,
 });
@@ -105,16 +106,12 @@ const makeOpts = (overrides?: Partial<PublishSpecOpts>): PublishSpecOpts => ({
 
 describe('publishSpecToPR', () => {
   it('clones repo, copies spec, commits, pushes, and creates PR', async () => {
-    const runGit = makeRunGit(knowledgeRepoLocalPath);
+    const runGit = makeRunGit();
     const runGh = makeRunGh();
 
     const result = await publishSpecToPR(makeOpts(), runGit, runGh);
 
     expect(result.prUrl).toBe('https://github.com/test-org/knowledge/pull/42');
-
-    // Spec file should exist in the knowledge repo clone
-    const destSpec = join(knowledgeRepoLocalPath, 'specs', 'issue_1.md');
-    await expect(stat(destSpec)).resolves.toBeDefined();
 
     // git was called with clone, checkout -B, add, commit, push
     // mock.calls[i] = [args, opts] since runGit takes two parameters
@@ -127,7 +124,7 @@ describe('publishSpecToPR', () => {
   });
 
   it('reuses existing open PR without creating a duplicate', async () => {
-    const runGit = makeRunGit(knowledgeRepoLocalPath);
+    const runGit = makeRunGit();
     const existingPrUrl = 'https://github.com/test-org/knowledge/pull/7';
     const runGh = makeRunGh([{ url: existingPrUrl }]);
 
@@ -141,22 +138,6 @@ describe('publishSpecToPR', () => {
     expect(ghCalls.some(([args]) => args[0] === 'pr' && args[1] === 'create')).toBe(false);
   });
 
-  it('skips clone and pulls when knowledge repo already exists', async () => {
-    // Pre-create .git directory to simulate an already-cloned repo
-    await mkdir(join(knowledgeRepoLocalPath, '.git'), { recursive: true });
-    const runGit: RunGit = vi.fn().mockResolvedValue({ stdout: '' });
-    const runGh = makeRunGh();
-
-    await publishSpecToPR(makeOpts(), runGit, runGh);
-
-    // mock.calls[i] = [args, opts]
-    const gitCalls = (runGit as ReturnType<typeof vi.fn>).mock.calls as [string[], unknown][];
-    // Should fetch + checkout + reset — NOT clone
-    expect(gitCalls.some(([args]) => args[0] === 'clone')).toBe(false);
-    expect(gitCalls.some(([args]) => args[0] === 'fetch')).toBe(true);
-    expect(gitCalls.some(([args]) => args[0] === 'reset')).toBe(true);
-  });
-
   it('throws with a descriptive message when clone fails', async () => {
     const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === 'clone') throw new Error('Authentication failed');
@@ -165,14 +146,15 @@ describe('publishSpecToPR', () => {
     const runGh = makeRunGh();
 
     await expect(publishSpecToPR(makeOpts(), runGit, runGh)).rejects.toThrow(
-      /Failed to clone\/update knowledge repo.*Authentication failed/,
+      /Failed to clone knowledge repo.*Authentication failed/,
     );
   });
 
   it('throws with a descriptive message when push fails', async () => {
     const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === 'clone') {
-        await mkdir(join(knowledgeRepoLocalPath, '.git'), { recursive: true });
+        const dest = args[2]!;
+        await mkdir(join(dest, '.git'), { recursive: true });
         return { stdout: '' };
       }
       if (args[0] === 'push') throw new Error('remote: Permission to repo denied');
@@ -186,7 +168,7 @@ describe('publishSpecToPR', () => {
   });
 
   it('throws with a descriptive message when PR creation fails', async () => {
-    const runGit = makeRunGit(knowledgeRepoLocalPath);
+    const runGit = makeRunGit();
     const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
       if (args[0] === 'pr' && args[1] === 'create') throw new Error('rate limit exceeded');
@@ -202,19 +184,18 @@ describe('publishSpecToPR', () => {
     const runGit: RunGit = vi.fn().mockResolvedValue({ stdout: '' });
     const runGh = makeRunGh();
 
-    const opts = makeOpts();
     const badProduct: Product = {
       ...makeProduct(),
       knowledge_repo: { url: 'https://gitlab.com/owner/repo', default_branch: 'main' },
     };
 
-    await expect(publishSpecToPR({ ...opts, product: badProduct }, runGit, runGh)).rejects.toThrow(
-      /Cannot parse knowledge repo URL/,
-    );
+    await expect(
+      publishSpecToPR({ ...makeOpts(), product: badProduct }, runGit, runGh),
+    ).rejects.toThrow(/Cannot parse knowledge repo URL/);
   });
 
   it('uses a branch name derived from the externalId', async () => {
-    const runGit = makeRunGit(knowledgeRepoLocalPath);
+    const runGit = makeRunGit();
     const runGh = makeRunGh();
 
     await publishSpecToPR(makeOpts({ externalId: 'HLM-99' }), runGit, runGh);
@@ -227,7 +208,7 @@ describe('publishSpecToPR', () => {
   });
 
   it('passes auth token via GIT_HTTP_EXTRAHEADER, not embedded in URL', async () => {
-    const runGit = makeRunGit(knowledgeRepoLocalPath);
+    const runGit = makeRunGit();
     const runGh = makeRunGh();
 
     await publishSpecToPR(makeOpts({ githubToken: 'secret-token' }), runGit, runGh);
@@ -284,5 +265,66 @@ describe('publishSpecToPR', () => {
     await expect(publishSpecToPR(makeOpts({ product: sshProduct }), runGit, runGh)).rejects.toThrow(
       /SSH knowledge repo URLs are not supported.*Use an HTTPS URL/,
     );
+  });
+
+  it('cleans up the temp workdir even when push fails', async () => {
+    // Capture the clone destination so we can verify it was removed afterwards.
+    const capturedDirs: string[] = [];
+
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const dest = args[2]!;
+        capturedDirs.push(dest);
+        await mkdir(join(dest, '.git'), { recursive: true });
+        return { stdout: '' };
+      }
+      if (args[0] === 'push') throw new Error('remote: Permission to repo denied');
+      return { stdout: '' };
+    });
+    const runGh = makeRunGh();
+
+    await expect(publishSpecToPR(makeOpts(), runGit, runGh)).rejects.toThrow(/Failed to push/);
+
+    // The temp workdir must be cleaned up even though publish failed.
+    expect(capturedDirs).toHaveLength(1);
+    await expect(stat(capturedDirs[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('two concurrent publishes for the same product use isolated workdirs and do not interfere', async () => {
+    // Create a second spec file for the second concurrent publish.
+    const specPath2 = join(tmpDir, 'workdir2', 'specs', 'issue_2.md');
+    await mkdir(join(tmpDir, 'workdir2', 'specs'), { recursive: true });
+    await writeFile(specPath2, '# issue_2 — Specification\n');
+
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const dest = args[2]!;
+        await mkdir(join(dest, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
+
+    // Return a PR URL that embeds the branch name so we can verify each publish
+    // got a distinct, correct URL.
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create') {
+        const headIdx = args.indexOf('--head');
+        const branch = headIdx >= 0 && args[headIdx + 1] ? args[headIdx + 1] : 'unknown';
+        return { stdout: `https://github.com/test-org/knowledge/pull/${branch}\n` };
+      }
+      return { stdout: '' };
+    });
+
+    const [result1, result2] = await Promise.all([
+      publishSpecToPR(makeOpts({ externalId: 'issue_1' }), runGit, runGh),
+      publishSpecToPR(makeOpts({ externalId: 'issue_2', specPath: specPath2 }), runGit, runGh),
+    ]);
+
+    // Each publish must have produced a PR URL containing its own branch.
+    expect(result1.prUrl).toContain('helm/spec/issue_1');
+    expect(result2.prUrl).toContain('helm/spec/issue_2');
+    // The two PRs must be distinct (no cross-contamination).
+    expect(result1.prUrl).not.toBe(result2.prUrl);
   });
 });

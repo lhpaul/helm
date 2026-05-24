@@ -195,12 +195,27 @@ describe('dispatchStageHandler', () => {
       text: () => Promise.resolve('Not Found'),
     } as Response);
 
+    // Provide runner mocks so the publish step (also triggered by githubToken)
+    // doesn't attempt a real git clone during this context-fetch test.
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        await mkdir(join(args[2]!, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create')
+        return { stdout: 'https://github.com/test-org/knowledge/pull/1\n' };
+      return { stdout: '' };
+    });
+
     await dispatchStageHandler(
       { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
       makeProduct(),
       makeSpecWriterRuntime('issue_1'),
       transition as ItemTransitionFn,
-      { workdir, githubToken: 'test-token', fetchFn: mockFetch },
+      { workdir, githubToken: 'test-token', fetchFn: mockFetch, runGit, runGh },
     );
 
     expect(mockFetch).toHaveBeenCalled();
@@ -224,13 +239,28 @@ describe('dispatchStageHandler', () => {
     const mockFetch: FetchFn = vi.fn().mockRejectedValue(new Error('network error'));
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
+    // Provide runner mocks so the publish step (also triggered by githubToken)
+    // succeeds and doesn't mask the context-fetch fallback being tested.
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        await mkdir(join(args[2]!, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create')
+        return { stdout: 'https://github.com/test-org/knowledge/pull/1\n' };
+      return { stdout: '' };
+    });
+
     try {
       const result = await dispatchStageHandler(
         { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
         makeProduct(),
         makeSpecWriterRuntime('issue_1'),
         transition as ItemTransitionFn,
-        { workdir, githubToken: 'test-token', fetchFn: mockFetch },
+        { workdir, githubToken: 'test-token', fetchFn: mockFetch, runGit, runGh },
       );
 
       expect(result.status).toBe('done');
@@ -305,7 +335,7 @@ describe('dispatchStageHandler', () => {
       makeProduct(),
       makeSpecWriterRuntime('issue_1'),
       transition as ItemTransitionFn,
-      { workdir, dataRoot: workdir, githubToken: 'test-token', runGit, runGh },
+      { workdir, githubToken: 'test-token', runGit, runGh },
     );
 
     expect(result.status).toBe('done');

@@ -230,20 +230,22 @@ describe('handleSpecWriterResult', () => {
   it('calls publisher and includes prUrl in result when publishOpts provided', async () => {
     await writeFile(join(workdir, 'specs', 'issue_1.md'), '# Spec');
 
-    const mockRunGit = vi.fn().mockResolvedValue({ stdout: '' });
+    const mockRunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        // Simulate clone by creating .git in the temp destination dir.
+        const dest = args[2]!;
+        await mkdir(join(dest, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
     const mockRunGh = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[1] === 'list') return { stdout: '[]' };
       if (args[1] === 'create') return { stdout: 'https://github.com/test-org/knowledge/pull/1\n' };
       return { stdout: '' };
     });
 
-    // Pre-create .git so ensureKnowledgeRepo skips the real clone
-    const knowledgeRepoLocalPath = join(workdir, 'knowledge-repos', 'test-product');
-    await mkdir(join(knowledgeRepoLocalPath, '.git'), { recursive: true });
-
     const publishOpts: SpecPublishOptions = {
       product: makeProduct(),
-      knowledgeRepoLocalPath,
       githubToken: 'test-token',
       runGit: mockRunGit,
       runGh: mockRunGh,
@@ -274,10 +276,8 @@ describe('handleSpecWriterResult', () => {
       const mockRunGit = vi.fn().mockRejectedValue(new Error('network timeout'));
       const mockRunGh = vi.fn().mockResolvedValue({ stdout: '[]' });
 
-      const knowledgeRepoLocalPath = join(workdir, 'knowledge-repos', 'test-product');
       const publishOpts: SpecPublishOptions = {
         product: makeProduct(),
-        knowledgeRepoLocalPath,
         githubToken: 'test-token',
         runGit: mockRunGit,
         runGh: mockRunGh,

@@ -260,6 +260,7 @@ export async function publishSpecToPR(
     return { prUrl };
   } finally {
     // Always clean up the isolated workdir, even on error.
-    await rm(workDir, { recursive: true, force: true });
+    // Swallow cleanup errors so they never mask the original failure.
+    await rm(workDir, { recursive: true, force: true }).catch(() => {});
   }
 }

@@ -1,105 +1,65 @@
 rules:
-  - id: "resolve-session-results-on-failure"
-    name: "Resolve session waits on runtime failure"
-    type: llm
-    severity: warning
-    category: "patterns"
-    message: "Stateful runtime/session methods must catch internal errors and resolve a terminal error result so waiters do not hang on rejected promises."
-    llm:
-      prompt: "Stateful runtime/session methods must catch internal errors and resolve a terminal error result so waiters do not hang on rejected promises."
-  - id: "non-2xx-on-domain-errors"
-    name: "Return non-2xx for application errors"
+  - id: "zod-strict-validation-for-api-inputs"
+    name: "Use strict Zod schemas for API inputs"
     type: llm
     severity: warning
     category: "style"
-    message: "API handlers must return a non-2xx HTTP status whenever the domain result indicates an error instead of replying 200 with an error payload."
+    message: "Validate route params and request bodies with Zod `.strict()` schemas (including refinements for business constraints) instead of ad-hoc manual checks."
     llm:
-      prompt: "API handlers must return a non-2xx HTTP status whenever the domain result indicates an error instead of replying 200 with an error payload."
-  - id: "sanitize-client-error-messages"
-    name: "Sanitize client-facing error responses"
+      prompt: "Validate route params and request bodies with Zod `.strict()` schemas (including refinements for business constraints) instead of ad-hoc manual checks."
+  - id: "sanitize-and-map-http-errors"
+    name: "Sanitize client errors and map HTTP status codes"
     type: llm
     severity: warning
     category: "security"
-    message: "Log detailed server errors internally but return generic safe error messages to clients without internal paths, tokens, stack traces, or implementation details."
+    message: "Map known/domain failures to explicit non-2xx HTTP status codes and return generic client-safe error bodies while logging internal details server-side."
     llm:
-      prompt: "Log detailed server errors internally but return generic safe error messages to clients without internal paths, tokens, stack traces, or implementation details."
-  - id: "validate-filesystem-identifiers"
-    name: "Whitelist filesystem-bound identifiers"
+      prompt: "Map known/domain failures to explicit non-2xx HTTP status codes and return generic client-safe error bodies while logging internal details server-side."
+  - id: "block-dot-segment-path-inputs"
+    name: "Reject dot-segment identifiers before path use"
     type: llm
     severity: warning
     category: "security"
-    message: "Validate identifiers used in filesystem path construction with a strict allowlist and explicitly reject dot segments like \".\" and \"..\" before joining paths."
+    message: "Reject `.` and `..` style dot-segment identifier values before constructing filesystem paths, even if broader identifier regexes allow dots."
     llm:
-      prompt: "Validate identifiers used in filesystem path construction with a strict allowlist and explicitly reject dot segments like \".\" and \"..\" before joining paths."
-  - id: "atomic-create-with-eexist-handling"
+      prompt: "Reject `.` and `..` style dot-segment identifier values before constructing filesystem paths, even if broader identifier regexes allow dots."
+  - id: "atomic-create-for-persisted-records"
     name: "Use atomic create-if-absent writes"
     type: llm
     severity: warning
     category: "performance"
-    message: "For create-if-not-exists persistence, use OS-level exclusive create semantics (for example flag \"wx\") and map EEXIST explicitly instead of read-then-write checks."
+    message: "For create operations on persisted state, use atomic exclusive-write primitives (for example `writeFile` with `flag: 'wx'`) instead of check-then-create flows."
     llm:
-      prompt: "For create-if-not-exists persistence, use OS-level exclusive create semantics (for example flag \"wx\") and map EEXIST explicitly instead of read-then-write checks."
-  - id: "narrow-enoent-fallbacks"
-    name: "Limit ENOENT fallbacks to intended files"
+      prompt: "For create operations on persisted state, use atomic exclusive-write primitives (for example `writeFile` with `flag: 'wx'`) instead of check-then-create flows."
+  - id: "no-mutable-internal-state-in-responses"
+    name: "Return defensive copies from APIs"
     type: llm
     severity: warning
     category: "patterns"
-    message: "Fallback behavior for missing files must only trigger for the exact expected path/code and rethrow other ENOENT cases to avoid masking real failures."
+    message: "Do not return mutable internal objects or arrays directly from storage/cache/handlers; return copied values instead."
     llm:
-      prompt: "Fallback behavior for missing files must only trigger for the exact expected path/code and rethrow other ENOENT cases to avoid masking real failures."
-  - id: "return-defensive-copies-from-caches"
-    name: "Do not expose mutable cached state"
+      prompt: "Do not return mutable internal objects or arrays directly from storage/cache/handlers; return copied values instead."
+  - id: "never-throw-at-parser-boundaries"
+    name: "Keep parser/webhook boundaries non-throwing"
     type: llm
     severity: warning
     category: "patterns"
-    message: "Methods returning cached arrays or objects, including cached promise results, must return defensive copies so callers cannot mutate shared internal state."
+    message: "Boundary parser and signature-verification functions must catch internal exceptions and return a typed error/fallback path instead of throwing."
     llm:
-      prompt: "Methods returning cached arrays or objects, including cached promise results, must return defensive copies so callers cannot mutate shared internal state."
-  - id: "validate-env-derived-paths"
-    name: "Validate environment-derived filesystem paths"
+      prompt: "Boundary parser and signature-verification functions must catch internal exceptions and return a typed error/fallback path instead of throwing."
+  - id: "resolve-async-session-results-on-failure"
+    name: "Always resolve async session/job outcomes"
     type: llm
     severity: warning
-    category: "security"
-    message: "Environment-provided filesystem paths must be trimmed and validated against a safe path pattern before deriving or joining local paths."
+    category: "patterns"
+    message: "Async runtime/session execution paths must catch failures and resolve final waitable results consistently so `wait()` callers never hang on error paths."
     llm:
-      prompt: "Environment-provided filesystem paths must be trimmed and validated against a safe path pattern before deriving or joining local paths."
-  - id: "strict-zod-for-external-inputs"
-    name: "Use strict schemas for external inputs"
+      prompt: "Async runtime/session execution paths must catch failures and resolve final waitable results consistently so `wait()` callers never hang on error paths."
+  - id: "avoid-timing-dependent-concurrency-tests"
+    name: "Make async concurrency tests deterministic"
     type: llm
     severity: warning
     category: "style"
-    message: "Validate route params and request bodies with Zod object schemas in strict mode so unknown keys and invalid inputs are rejected with 400 responses."
+    message: "In concurrency/async tests, control completion ordering explicitly (for example with deferred promises) rather than relying on timing-sensitive assertions."
     llm:
-      prompt: "Validate route params and request bodies with Zod object schemas in strict mode so unknown keys and invalid inputs are rejected with 400 responses."
-  - id: "explicit-invalid-json-400"
-    name: "Reject malformed JSON explicitly"
-    type: llm
-    severity: warning
-    category: "style"
-    message: "Route handlers must parse JSON bodies explicitly and return a clear 400 invalid-JSON response instead of swallowing parse errors into default objects."
-    llm:
-      prompt: "Route handlers must parse JSON bodies explicitly and return a clear 400 invalid-JSON response instead of swallowing parse errors into default objects."
-  - id: "inject-config-into-core-services"
-    name: "Keep core adapters free of direct env access"
-    type: llm
-    severity: warning
-    category: "patterns"
-    message: "Core adapters and services should receive config and secrets via dependency injection, with process environment reads centralized in composition wiring."
-    llm:
-      prompt: "Core adapters and services should receive config and secrets via dependency injection, with process environment reads centralized in composition wiring."
-  - id: "reuse-canonical-shared-types"
-    name: "Import canonical types from owning packages"
-    type: llm
-    severity: warning
-    category: "patterns"
-    message: "Use shared constants and types from their owning package as the single source of truth instead of redefining local duplicates."
-    llm:
-      prompt: "Use shared constants and types from their owning package as the single source of truth instead of redefining local duplicates."
-  - id: "api-client-never-throw-contract"
-    name: "Return typed API errors instead of throwing"
-    type: llm
-    severity: warning
-    category: "patterns"
-    message: "Web API client helpers should return the discriminated ApiResult ok/error shape and model network failures as returned errors rather than thrown exceptions."
-    llm:
-      prompt: "Web API client helpers should return the discriminated ApiResult ok/error shape and model network failures as returned errors rather than thrown exceptions."
+      prompt: "In concurrency/async tests, control completion ordering explicitly (for example with deferred promises) rather than relying on timing-sensitive assertions."

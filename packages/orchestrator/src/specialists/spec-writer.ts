@@ -3,6 +3,9 @@ import { join } from 'node:path';
 import type { WorkflowStage } from '@helm/workflow';
 import type { Product } from '@helm/shared';
 import type { AgentResult, SpawnParams } from '../runtime.js';
+import type { ProductContext } from './fetch-product-context.js';
+import type { PublishSpecOpts, RunGit, RunGh } from './spec-publisher.js';
+import { publishSpecToPR } from './spec-publisher.js';
 
 // ── Minimal transition interface ──────────────────────────────────────────────
 // Avoids a dependency on @helm/api internals. ItemStore.transition satisfies this.
@@ -19,19 +22,59 @@ export type ItemTransitionFn = (input: {
 export type SpecWriterResult = {
   transitioned: boolean;
   newStage?: WorkflowStage;
+  /** URL of the opened knowledge-repo PR. Present on successful publish. */
+  prUrl?: string;
   error?: string;
 };
 
 // ── Prompt template ───────────────────────────────────────────────────────────
 
 /**
- * Builds the initial prompt for the spec-writer specialist.
- * The template is intentionally minimal for v0 — Sesión 10 will refine it.
+ * Builds the "## Product Context" section injected into the spec-writer prompt.
+ * Returns an empty string when no context is available.
  */
-export function buildSpecWriterPrompt(externalId: string, product: Product): string {
+function buildContextSection(product: Product, context: ProductContext): string {
+  const lines: string[] = [
+    '## Product Context',
+    '',
+    `**Product:** ${product.product.name} (slug: \`${product.product.slug}\`)`,
+    `**Code repo:** ${product.code_repos[0]?.url ?? 'N/A'} (branch: \`${product.code_repos[0]?.default_branch ?? 'main'}\`)`,
+    `**Workflow stages:** ${product.workflow.stages_enabled.join(' → ')}`,
+    '',
+  ];
+
+  if (context.readme) {
+    lines.push('### README', '', context.readme, '');
+  }
+
+  if (context.agentMd) {
+    lines.push('### Agent Instructions', '', context.agentMd, '');
+  }
+
+  lines.push('---', '');
+  return lines.join('\n');
+}
+
+/**
+ * Builds the initial prompt for the spec-writer specialist.
+ *
+ * @param externalId  The item identifier.
+ * @param product     Parsed product config.
+ * @param context     Optional product context (README, agent instructions).
+ *                    When provided, a "## Product Context" section is injected
+ *                    at the top of the prompt so the agent understands the
+ *                    product domain rather than guessing from the name alone.
+ */
+export function buildSpecWriterPrompt(
+  externalId: string,
+  product: Product,
+  context?: ProductContext,
+): string {
+  const contextSection = context ? buildContextSection(product, context) : '';
+
   return `You are the spec writer for the product "${product.product.name}".
 
-Your task: write a specification for item ${externalId}.
+${contextSection}Your task: write a specification for item ${externalId}.
 
 Steps:
 1. Review any existing context in the working directory.
@@ -57,21 +100,40 @@ Product: ${product.product.slug}`;
 
 /**
  * Builds SpawnParams for the spec-writer specialist.
+ *
+ * @param context  Optional product context — passed to buildSpecWriterPrompt.
  */
 export function buildSpecWriterParams(
   externalId: string,
   product: Product,
   workdir: string,
+  context?: ProductContext,
 ): SpawnParams {
   return {
     specialistId: 'spec-writer',
-    prompt: buildSpecWriterPrompt(externalId, product),
+    prompt: buildSpecWriterPrompt(externalId, product, context),
     workdir,
     productSlug: product.product.slug,
     externalId,
     model: product.specialists.spec_writer.model,
   };
 }
+
+// ── Publish options ───────────────────────────────────────────────────────────
+
+/**
+ * Options that enable the publish-to-knowledge-repo step.
+ * When absent, the spec is written locally but not published.
+ */
+export type SpecPublishOptions = {
+  product: Product;
+  knowledgeRepoLocalPath: string;
+  githubToken: string;
+  /** Injectable git runner — defaults to /usr/bin/git. For testing. */
+  runGit?: RunGit;
+  /** Injectable gh runner — defaults to /opt/homebrew/bin/gh. For testing. */
+  runGh?: RunGh;
+};
 
 // ── Post-completion handler ───────────────────────────────────────────────────
 
@@ -80,9 +142,12 @@ export function buildSpecWriterParams(
  *
  * On success:
  *   1. Verifies specs/{externalId}.md was created in workdir.
- *   2. Transitions the item discovery → spec-draft.
+ *   2. If publishOpts provided: publishes spec to knowledge repo as a PR.
+ *   3. Transitions the item discovery → spec-draft.
+ *      (Transition happens after PR is opened so the stage accurately reflects
+ *       that the spec is under review.)
  *
- * On agent error or missing file:
+ * On agent error, missing spec file, or publish failure:
  *   Returns an error result without transitioning.
  */
 export async function handleSpecWriterResult(
@@ -90,6 +155,7 @@ export async function handleSpecWriterResult(
   agentResult: AgentResult,
   workdir: string,
   transition: ItemTransitionFn,
+  publishOpts?: SpecPublishOptions,
 ): Promise<SpecWriterResult> {
   if (agentResult.status !== 'done') {
     // Log diagnostics server-side (stderr content, timeout details, etc.) so
@@ -117,14 +183,38 @@ export async function handleSpecWriterResult(
     };
   }
 
+  // ── Publish step (optional) ───────────────────────────────────────────────
+  let prUrl: string | undefined;
+  if (publishOpts) {
+    const publishInput: PublishSpecOpts = {
+      externalId,
+      product: publishOpts.product,
+      specPath,
+      knowledgeRepoLocalPath: publishOpts.knowledgeRepoLocalPath,
+      githubToken: publishOpts.githubToken,
+    };
+    try {
+      const result = await publishSpecToPR(publishInput, publishOpts.runGit, publishOpts.runGh);
+      prUrl = result.prUrl;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[spec-writer] Publish step failed', { externalId, error: message });
+      return {
+        transitioned: false,
+        error: message,
+      };
+    }
+  }
+
+  // ── Transition (after successful publish or when publish is skipped) ──────
   try {
     const updated = await transition({
       externalId,
       toStage: 'spec-draft',
       triggeredBy: 'agent:spec-writer',
-      note: `Spec written to specs/${externalId}.md`,
+      note: `Spec written to specs/${externalId}.md${prUrl ? ` — PR: ${prUrl}` : ''}`,
     });
-    return { transitioned: true, newStage: updated.currentStage };
+    return { transitioned: true, newStage: updated.currentStage, prUrl };
   } catch (err) {
     return {
       transitioned: false,

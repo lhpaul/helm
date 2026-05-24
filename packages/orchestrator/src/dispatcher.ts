@@ -5,6 +5,8 @@ import type { Product } from '@helm/shared';
 import type { IAgentRuntime } from './runtime.js';
 import type { ItemTransitionFn } from './specialists/spec-writer.js';
 import { buildSpecWriterParams, handleSpecWriterResult } from './specialists/spec-writer.js';
+import { fetchProductContext } from './specialists/fetch-product-context.js';
+import type { FetchFn } from './specialists/fetch-product-context.js';
 
 // ── Stage → specialist mapping ────────────────────────────────────────────────
 // Expanded in later sessions (plan-writer, implementer, etc.)
@@ -27,6 +29,8 @@ export type DispatchResult = {
   newStage?: WorkflowStage;
   costUsd: number;
   durationMs: number;
+  /** URL of the knowledge-repo PR opened by the publish step, if applicable. */
+  prUrl?: string;
   error?: string;
 };
 
@@ -35,6 +39,23 @@ export type DispatchOptions = {
   workdir?: string;
   /** Override the specialist determined by stage mapping. */
   specialistId?: string;
+  /**
+   * Absolute path to the Helm data root (e.g. HELM_DATA_DIR or cwd/data).
+   * Used to locate `knowledge-repos/{productSlug}/` for the publish step.
+   * Required for the publish step to run.
+   */
+  dataRoot?: string;
+  /**
+   * GitHub personal access token (repo scope).
+   * Required for product context fetching (Part A) and spec publishing (Part B).
+   * When absent, both features are silently skipped.
+   */
+  githubToken?: string;
+  /**
+   * Injectable HTTP fetch function — for testing the context-fetch path.
+   * Defaults to the global fetch.
+   */
+  fetchFn?: FetchFn;
 };
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
@@ -89,15 +110,38 @@ export async function dispatchStageHandler(
 
   // Route to specialist
   if (specialistId === 'spec-writer') {
-    const params = buildSpecWriterParams(item.externalId, product, workdir);
+    // ── Part A: Fetch product context (README + agent instructions) ──────────
+    // Skipped gracefully when no token is provided.
+    const context = options?.githubToken
+      ? await fetchProductContext(product, options.githubToken, options.fetchFn).catch((err) => {
+          console.error(
+            '[dispatcher] Failed to fetch product context (continuing without it):',
+            err,
+          );
+          return undefined;
+        })
+      : undefined;
+
+    const params = buildSpecWriterParams(item.externalId, product, workdir, context);
     const session = await runtime.spawn(params);
     const agentResult = await session.wait();
+
+    // ── Part B: Publish spec to knowledge repo (optional) ────────────────────
+    const publishOpts =
+      options?.githubToken && options?.dataRoot
+        ? {
+            product,
+            knowledgeRepoLocalPath: join(options.dataRoot, 'knowledge-repos', item.productSlug),
+            githubToken: options.githubToken,
+          }
+        : undefined;
 
     const specResult = await handleSpecWriterResult(
       item.externalId,
       agentResult,
       workdir,
       transition,
+      publishOpts,
     );
 
     return {
@@ -106,6 +150,7 @@ export async function dispatchStageHandler(
       newStage: specResult.newStage,
       costUsd: agentResult.totalCostUsd,
       durationMs: agentResult.durationMs,
+      prUrl: specResult.prUrl,
       error: specResult.error,
     };
   }

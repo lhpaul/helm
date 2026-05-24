@@ -20,10 +20,18 @@ const TRUNCATION_SUFFIX = '\n\n[...truncated]';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
- * Parses a GitHub HTTPS URL into owner/repo.
- * Handles trailing .git, trailing slashes, and optional paths after the repo.
+ * Parses a GitHub URL into owner/repo.
+ * Supports both HTTPS (`https://github.com/owner/repo[.git]`) and
+ * SSH (`git@github.com:owner/repo[.git]`) formats.
  */
 export function parseGitHubRepoUrl(url: string): { owner: string; repo: string } | null {
+  // SSH format: git@github.com:owner/repo[.git]
+  const sshMatch = url.match(/^git@github\.com:([^/]+)\/([^/.]+?)(?:\.git)?$/);
+  if (sshMatch) {
+    return { owner: sshMatch[1]!, repo: sshMatch[2]! };
+  }
+
+  // HTTPS format: https://github.com/owner/repo[.git][/]
   try {
     const u = new URL(url);
     if (u.hostname !== 'github.com') return null;

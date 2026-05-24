@@ -129,7 +129,16 @@ export async function dispatchStageHandler(
       options?.githubToken && options?.dataRoot
         ? {
             product,
-            knowledgeRepoLocalPath: join(options.dataRoot, 'knowledge-repos', item.productSlug),
+            // Each item gets its own clone subdirectory to prevent concurrent
+            // publishes for different items of the same product from clobbering
+            // each other's working tree.  On re-dispatch the same path is reused
+            // (fetch + reset) rather than re-cloned.
+            knowledgeRepoLocalPath: join(
+              options.dataRoot,
+              'knowledge-repos',
+              item.productSlug,
+              item.externalId,
+            ),
             githubToken: options.githubToken,
           }
         : undefined;

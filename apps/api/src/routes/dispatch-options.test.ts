@@ -137,9 +137,22 @@ const dispatch = (slug: string, externalId: string) =>
     headers: { 'Content-Type': 'application/json' },
   });
 
-// ── Helper: wait for the background job to invoke dispatchStageHandler ────────
-const waitForDispatch = () =>
-  vi.waitFor(() => expect(mockDispatch).toHaveBeenCalled(), { timeout: 5000 });
+// ── Helper: fully drain the background job ────────────────────────────────────
+// Waiting for mockDispatch.toHaveBeenCalled() only guarantees the mock was
+// *invoked* — jobStore.updateJob (which writes to disk) runs AFTER mockDispatch
+// resolves.  We must also wait for the job to leave 'running' state, otherwise
+// afterEach's rm() races with the in-flight write and throws ENOTEMPTY.
+const waitForJobDone = async (jobId: string) => {
+  const { getJobStore } = await import('../services/index.js');
+  const jobStore = await getJobStore();
+  await vi.waitFor(
+    async () => {
+      const job = await jobStore.getJob(jobId);
+      expect(job?.status).not.toBe('running');
+    },
+    { timeout: 5000 },
+  );
+};
 
 const capturedOptions = (): DispatchOptions => {
   const call = mockDispatch.mock.calls[0] as unknown[];
@@ -152,7 +165,8 @@ describe('dispatch route option forwarding', () => {
   it('forwards dataRoot derived from HELM_DATA_DIR to dispatchStageHandler', async () => {
     const res = await dispatch('test-product', 'issue_1');
     expect(res.status).toBe(202);
-    await waitForDispatch();
+    const { jobId } = (await res.json()) as { jobId: string };
+    await waitForJobDone(jobId);
 
     expect(capturedOptions().dataRoot).toBe(dataDir);
   });
@@ -160,7 +174,8 @@ describe('dispatch route option forwarding', () => {
   it('forwards undefined githubToken when GITHUB_TOKEN is not set', async () => {
     const res = await dispatch('test-product', 'issue_1');
     expect(res.status).toBe(202);
-    await waitForDispatch();
+    const { jobId } = (await res.json()) as { jobId: string };
+    await waitForJobDone(jobId);
 
     expect(capturedOptions().githubToken).toBeUndefined();
   });
@@ -170,7 +185,8 @@ describe('dispatch route option forwarding', () => {
 
     const res = await dispatch('test-product', 'issue_1');
     expect(res.status).toBe(202);
-    await waitForDispatch();
+    const { jobId } = (await res.json()) as { jobId: string };
+    await waitForJobDone(jobId);
 
     expect(capturedOptions().githubToken).toBe('padded-token');
   });
@@ -180,7 +196,8 @@ describe('dispatch route option forwarding', () => {
 
     const res = await dispatch('test-product', 'issue_1');
     expect(res.status).toBe(202);
-    await waitForDispatch();
+    const { jobId } = (await res.json()) as { jobId: string };
+    await waitForJobDone(jobId);
 
     expect(capturedOptions().githubToken).toBe('clean-token');
   });

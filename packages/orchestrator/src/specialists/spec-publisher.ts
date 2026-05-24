@@ -133,11 +133,12 @@ export async function publishSpecToPR(
   }
   const { owner, repo } = parsed;
 
-  // SSH-format knowledge repo URLs (git@github.com:org/repo) are not supported
-  // for token-based authentication: GIT_HTTP_EXTRAHEADER only applies to HTTPS
-  // operations and has no effect on SSH transport.  Fail early with a clear
-  // message rather than silently falling through to a confusing auth error.
-  if (knowledgeRepo.url.startsWith('git@')) {
+  // SSH-format knowledge repo URLs (git@github.com:org/repo or ssh://...) are
+  // not supported for token-based authentication: GIT_HTTP_EXTRAHEADER only
+  // applies to HTTPS operations and has no effect on SSH transport.  Fail early
+  // with a clear message rather than silently falling through to a confusing
+  // auth error.
+  if (knowledgeRepo.url.startsWith('git@') || knowledgeRepo.url.startsWith('ssh://')) {
     throw new Error(
       `[spec-publisher] SSH knowledge repo URLs are not supported for token-based auth. ` +
         `Use an HTTPS URL (https://github.com/${owner}/${repo}) instead.`,

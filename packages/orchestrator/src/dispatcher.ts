@@ -7,6 +7,7 @@ import type { ItemTransitionFn } from './specialists/spec-writer.js';
 import { buildSpecWriterParams, handleSpecWriterResult } from './specialists/spec-writer.js';
 import { fetchProductContext } from './specialists/fetch-product-context.js';
 import type { FetchFn } from './specialists/fetch-product-context.js';
+import type { RunGit, RunGh } from './specialists/spec-publisher.js';
 
 // ── Stage → specialist mapping ────────────────────────────────────────────────
 // Expanded in later sessions (plan-writer, implementer, etc.)
@@ -56,6 +57,16 @@ export type DispatchOptions = {
    * Defaults to the global fetch.
    */
   fetchFn?: FetchFn;
+  /**
+   * Injectable git runner — for testing the publish path.
+   * Defaults to the real git binary via execFile.
+   */
+  runGit?: RunGit;
+  /**
+   * Injectable gh runner — for testing the publish path.
+   * Defaults to the real gh binary via execFile.
+   */
+  runGh?: RunGh;
 };
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
@@ -140,6 +151,8 @@ export async function dispatchStageHandler(
               item.externalId,
             ),
             githubToken: options.githubToken,
+            runGit: options.runGit,
+            runGh: options.runGh,
           }
         : undefined;
 

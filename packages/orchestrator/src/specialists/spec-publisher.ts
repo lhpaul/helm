@@ -133,6 +133,17 @@ export async function publishSpecToPR(
   }
   const { owner, repo } = parsed;
 
+  // SSH-format knowledge repo URLs (git@github.com:org/repo) are not supported
+  // for token-based authentication: GIT_HTTP_EXTRAHEADER only applies to HTTPS
+  // operations and has no effect on SSH transport.  Fail early with a clear
+  // message rather than silently falling through to a confusing auth error.
+  if (knowledgeRepo.url.startsWith('git@')) {
+    throw new Error(
+      `[spec-publisher] SSH knowledge repo URLs are not supported for token-based auth. ` +
+        `Use an HTTPS URL (https://github.com/${owner}/${repo}) instead.`,
+    );
+  }
+
   // Build token env once — used for clone, fetch, and push (network operations).
   // Token is passed as an HTTP Authorization header via git config, so it never
   // appears in remote URLs or git error messages.

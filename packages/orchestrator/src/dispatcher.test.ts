@@ -8,6 +8,7 @@ import { MockAgentRuntime } from './runtimes/mock.js';
 import type { Product } from '@helm/shared';
 import type { ItemTransitionFn } from './specialists/spec-writer.js';
 import type { FetchFn } from './specialists/fetch-product-context.js';
+import type { RunGit, RunGh } from './specialists/spec-publisher.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -280,5 +281,34 @@ describe('dispatchStageHandler', () => {
 
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/Invalid productSlug or externalId/);
+  });
+
+  it('propagates prUrl from publish step when token and dataRoot are provided', async () => {
+    const expectedPrUrl = 'https://github.com/test-org/test-knowledge/pull/5';
+
+    // Stub runners: clone creates a .git dir; gh create returns a PR URL.
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const cloneDest = args[2]!;
+        await mkdir(join(cloneDest, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create') return { stdout: `${expectedPrUrl}\n` };
+      return { stdout: '' };
+    });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir, dataRoot: workdir, githubToken: 'test-token', runGit, runGh },
+    );
+
+    expect(result.status).toBe('done');
+    expect(result.prUrl).toBe(expectedPrUrl);
   });
 });

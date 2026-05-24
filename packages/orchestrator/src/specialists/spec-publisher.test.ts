@@ -256,4 +256,17 @@ describe('publishSpecToPR', () => {
       publishSpecToPR(makeOpts({ externalId: '../evil' }), runGit, runGh),
     ).rejects.toThrow(/Invalid externalId/);
   });
+
+  it('throws with a helpful message when knowledge repo URL is SSH-format', async () => {
+    const runGit: RunGit = vi.fn().mockResolvedValue({ stdout: '' });
+    const runGh = makeRunGh();
+    const sshProduct: Product = {
+      ...makeProduct(),
+      knowledge_repo: { url: 'git@github.com:test-org/knowledge.git', default_branch: 'main' },
+    };
+
+    await expect(publishSpecToPR(makeOpts({ product: sshProduct }), runGit, runGh)).rejects.toThrow(
+      /SSH knowledge repo URLs are not supported.*Use an HTTPS URL/,
+    );
+  });
 });

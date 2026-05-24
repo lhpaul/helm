@@ -93,7 +93,10 @@ Steps:
 
 3. Confirm once the file is written.
 
-Working directory: {workdir}
+IMPORTANT: Write the file to the path \`specs/${externalId}.md\` relative to your
+current working directory. Create the \`specs/\` directory if it does not exist.
+Do not ask for confirmation before writing — create the file directly.
+
 Item: ${externalId}
 Product: ${product.product.slug}`;
 }
@@ -176,9 +179,17 @@ export async function handleSpecWriterResult(
   try {
     await access(specPath);
   } catch {
+    // Surface what the agent reported so we can see WHY it didn't write the
+    // spec (wrong path, confusion, asked a question, etc.) instead of a blind
+    // "not found".
+    console.error('[spec-writer] Spec file missing after agent run', {
+      externalId,
+      specPath,
+      agentFinalOutput: agentResult.finalOutput,
+    });
     return {
       transitioned: false,
-      error: `spec file not found at ${specPath} — agent did not create it`,
+      error: `spec file not found at ${specPath} — agent did not create it. Agent said: ${agentResult.finalOutput || '(no output)'}`,
     };
   }
 

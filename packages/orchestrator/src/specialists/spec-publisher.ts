@@ -61,6 +61,37 @@ export const defaultRunGh: RunGh = async (args, opts) => {
   return { stdout };
 };
 
+// ── Auth helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Builds an HTTPS URL with the token embedded as basic-auth credentials.
+ * Format: `https://x-access-token:{token}@github.com/{owner}/{repo}`
+ *
+ * This URL is used for `git clone` only.  The `origin` remote inside the
+ * resulting clone stores this URL (including the token) in `.git/config`.
+ * Since every publish uses a fresh isolated temp directory that is deleted in
+ * the `finally` block, the on-disk lifetime of the token is bounded to the
+ * duration of a single publish operation.
+ *
+ * ⚠ NEVER pass this URL to logging calls.  Use the plain `knowledgeRepo.url`
+ *   in user-visible messages; pass raw error text through `sanitizeToken`.
+ */
+function buildAuthenticatedUrl(owner: string, repo: string, token: string): string {
+  return `https://x-access-token:${token}@github.com/${owner}/${repo}`;
+}
+
+/**
+ * Redacts any occurrence of the token from a string so that git error messages
+ * (which may echo the remote URL) are safe to surface to operators.
+ *
+ * Replaces both:
+ *   - `x-access-token:<token>@`  →  `x-access-token:***@`  (URL pattern)
+ *   - the bare token string      →  `***`                    (safety net)
+ */
+function sanitizeToken(text: string, token: string): string {
+  return text.replace(`x-access-token:${token}@`, 'x-access-token:***@').replace(token, '***');
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
@@ -105,10 +136,8 @@ export async function publishSpecToPR(
   const { owner, repo } = parsed;
 
   // SSH-format knowledge repo URLs (git@github.com:org/repo or ssh://...) are
-  // not supported for token-based authentication: GIT_HTTP_EXTRAHEADER only
-  // applies to HTTPS operations and has no effect on SSH transport.  Fail early
-  // with a clear message rather than silently falling through to a confusing
-  // auth error.
+  // not supported for token-based authentication.  Fail early with a clear
+  // message rather than silently falling through to a confusing auth error.
   if (knowledgeRepo.url.startsWith('git@') || knowledgeRepo.url.startsWith('ssh://')) {
     throw new Error(
       `[spec-publisher] SSH knowledge repo URLs are not supported for token-based auth. ` +
@@ -116,14 +145,15 @@ export async function publishSpecToPR(
     );
   }
 
-  // Build token env once — used for clone and push (network operations).
-  // Token is passed as an HTTP Authorization header via git config, so it never
-  // appears in remote URLs or git error messages.
-  const tokenEnv: NodeJS.ProcessEnv = {
-    GIT_CONFIG_COUNT: '1',
-    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
-    GIT_CONFIG_VALUE_0: `Authorization: token ${githubToken}`,
-  };
+  // Build the authenticated clone URL once.  The token is embedded as basic-auth
+  // credentials so that `git clone` works with all git versions without requiring
+  // GIT_CONFIG env var support (added in Git 2.31).  The `origin` remote inside
+  // the resulting clone inherits this URL, so `git push origin` is authenticated
+  // without any additional configuration.
+  //
+  // ⚠ Never log `authenticatedUrl`.  Always use `knowledgeRepo.url` (the plain
+  //   URL) in error text, and pass raw git error strings through `sanitizeToken`.
+  const authenticatedUrl = buildAuthenticatedUrl(owner, repo, githubToken);
 
   // Each publish gets its own isolated working directory so that concurrent
   // publishes for the same product do not share a checkout and cannot interleave
@@ -134,11 +164,14 @@ export async function publishSpecToPR(
 
   try {
     // ── Step 1: Clone knowledge repo to isolated workdir ────────────────────
+    // Use the authenticated URL so git can access private repos.  The plain URL
+    // (without credentials) is used in the error message.
     try {
-      await runGit(['clone', knowledgeRepo.url, workDir], { cwd: tmpdir(), env: tokenEnv });
+      await runGit(['clone', authenticatedUrl, workDir], { cwd: tmpdir() });
     } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `[spec-publisher] Failed to clone knowledge repo: ${err instanceof Error ? err.message : String(err)}`,
+        `[spec-publisher] Failed to clone knowledge repo (${knowledgeRepo.url}): ${sanitizeToken(raw, githubToken)}`,
       );
     }
 
@@ -149,8 +182,9 @@ export async function publishSpecToPR(
         cwd: workDir,
       });
     } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `[spec-publisher] Failed to create branch '${branchName}': ${err instanceof Error ? err.message : String(err)}`,
+        `[spec-publisher] Failed to create branch '${branchName}': ${sanitizeToken(raw, githubToken)}`,
       );
     }
 
@@ -161,8 +195,9 @@ export async function publishSpecToPR(
       await mkdir(destDir, { recursive: true });
       await copyFile(specPath, destPath);
     } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `[spec-publisher] Failed to copy spec file: ${err instanceof Error ? err.message : String(err)}`,
+        `[spec-publisher] Failed to copy spec file: ${sanitizeToken(raw, githubToken)}`,
       );
     }
 
@@ -180,20 +215,21 @@ export async function publishSpecToPR(
         env: gitEnv,
       });
     } catch (err) {
-      throw new Error(
-        `[spec-publisher] Failed to commit spec: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      const raw = err instanceof Error ? err.message : String(err);
+      throw new Error(`[spec-publisher] Failed to commit spec: ${sanitizeToken(raw, githubToken)}`);
     }
 
     // ── Step 5: Push branch ──────────────────────────────────────────────────
+    // The `origin` remote already holds the authenticated URL from the clone step,
+    // so no extra credentials are needed here.
     try {
       await runGit(['push', 'origin', `${branchName}:${branchName}`, '--force'], {
         cwd: workDir,
-        env: tokenEnv,
       });
     } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `[spec-publisher] Failed to push branch '${branchName}': ${err instanceof Error ? err.message : String(err)}`,
+        `[spec-publisher] Failed to push branch '${branchName}': ${sanitizeToken(raw, githubToken)}`,
       );
     }
 
@@ -221,8 +257,9 @@ export async function publishSpecToPR(
       const prs = JSON.parse(listOut.stdout.trim()) as { url: string }[];
       if (prs.length > 0) existingPrUrl = prs[0]!.url;
     } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `[spec-publisher] Failed to check for existing PRs: ${err instanceof Error ? err.message : String(err)}`,
+        `[spec-publisher] Failed to check for existing PRs: ${sanitizeToken(raw, githubToken)}`,
       );
     }
 
@@ -252,9 +289,8 @@ export async function publishSpecToPR(
       );
       prUrl = createOut.stdout.trim();
     } catch (err) {
-      throw new Error(
-        `[spec-publisher] Failed to create PR: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      const raw = err instanceof Error ? err.message : String(err);
+      throw new Error(`[spec-publisher] Failed to create PR: ${sanitizeToken(raw, githubToken)}`);
     }
 
     return { prUrl };

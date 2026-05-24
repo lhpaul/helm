@@ -207,26 +207,48 @@ describe('publishSpecToPR', () => {
     expect(checkoutCall![0][2]).toBe('helm/spec/HLM-99');
   });
 
-  it('passes auth token via GIT_HTTP_EXTRAHEADER, not embedded in URL', async () => {
+  it('embeds token in clone URL as x-access-token credentials', async () => {
     const runGit = makeRunGit();
     const runGh = makeRunGh();
 
     await publishSpecToPR(makeOpts({ githubToken: 'secret-token' }), runGit, runGh);
 
-    // mock.calls[i] = [args, opts] where opts has .env
-    const gitCalls = (runGit as ReturnType<typeof vi.fn>).mock.calls as [
-      string[],
-      { cwd: string; env?: NodeJS.ProcessEnv },
-    ][];
+    // mock.calls[i] = [args, opts]
+    const gitCalls = (runGit as ReturnType<typeof vi.fn>).mock.calls as [string[], unknown][];
     const cloneCall = gitCalls.find(([args]) => args[0] === 'clone');
     const pushCall = gitCalls.find(([args]) => args[0] === 'push');
 
-    // Token must NOT appear in any URL argument
-    expect(cloneCall![0][1]).not.toContain('secret-token');
-    expect(pushCall![0][1]).not.toContain('secret-token');
+    // Clone URL must embed the token in the expected format.
+    expect(cloneCall![0][1]).toBe(
+      'https://x-access-token:secret-token@github.com/test-org/knowledge',
+    );
 
-    // Token must appear as an Authorization header in the git env
-    expect(cloneCall![1].env?.GIT_CONFIG_VALUE_0).toContain('secret-token');
+    // Push uses 'origin' (inherits authenticated URL from clone) — no explicit
+    // token in the push args.
+    expect(pushCall![0][1]).toBe('origin');
+  });
+
+  it('sanitizes token from error messages when clone fails', async () => {
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        // Simulate git echoing the authenticated URL back in its error message.
+        throw new Error(
+          `fatal: repository 'https://x-access-token:secret-token@github.com/test-org/knowledge/' not found`,
+        );
+      }
+      return { stdout: '' };
+    });
+    const runGh = makeRunGh();
+
+    const err = await publishSpecToPR(makeOpts({ githubToken: 'secret-token' }), runGit, runGh)
+      .then(() => null)
+      .catch((e: unknown) => e as Error);
+
+    expect(err).not.toBeNull();
+    // The propagated error must not contain the bare token.
+    expect(err!.message).not.toContain('secret-token');
+    // It should contain the redacted form instead.
+    expect(err!.message).toContain('x-access-token:***@');
   });
 
   it('throws on invalid externalId containing path traversal characters', async () => {

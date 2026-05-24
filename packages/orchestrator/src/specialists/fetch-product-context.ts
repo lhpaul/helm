@@ -26,7 +26,7 @@ const TRUNCATION_SUFFIX = '\n\n[...truncated]';
  */
 export function parseGitHubRepoUrl(url: string): { owner: string; repo: string } | null {
   // SSH format: git@github.com:owner/repo[.git]
-  const sshMatch = url.match(/^git@github\.com:([^/]+)\/([^/.]+?)(?:\.git)?$/);
+  const sshMatch = url.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/);
   if (sshMatch) {
     return { owner: sshMatch[1]!, repo: sshMatch[2]! };
   }

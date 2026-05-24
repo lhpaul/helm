@@ -255,4 +255,30 @@ describe('dispatchStageHandler', () => {
     expect(result.status).toBe('done');
     expect(result.prUrl).toBeUndefined();
   });
+
+  it('returns error when productSlug starts with a dot (dot-segment traversal)', async () => {
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: '.hidden-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/Invalid productSlug or externalId/);
+  });
+
+  it('returns error when externalId is ".." (parent-directory traversal)', async () => {
+    const result = await dispatchStageHandler(
+      { externalId: '..', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/Invalid productSlug or externalId/);
+  });
 });

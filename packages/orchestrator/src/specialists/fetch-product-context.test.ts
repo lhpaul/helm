@@ -85,6 +85,27 @@ describe('parseGitHubRepoUrl', () => {
   it('returns null for SSH URLs pointing to non-GitHub hosts', () => {
     expect(parseGitHubRepoUrl('git@gitlab.com:owner/repo.git')).toBeNull();
   });
+
+  it('parses SSH-style URL with dots in repo name (e.g. my.repo.git)', () => {
+    expect(parseGitHubRepoUrl('git@github.com:owner/my.repo.git')).toEqual({
+      owner: 'owner',
+      repo: 'my.repo',
+    });
+  });
+
+  it('parses HTTPS URL with dots in repo name', () => {
+    expect(parseGitHubRepoUrl('https://github.com/owner/my.repo')).toEqual({
+      owner: 'owner',
+      repo: 'my.repo',
+    });
+  });
+
+  it('parses SSH-style URL with dots in repo name and no .git suffix', () => {
+    expect(parseGitHubRepoUrl('git@github.com:owner/my.repo')).toEqual({
+      owner: 'owner',
+      repo: 'my.repo',
+    });
+  });
 });
 
 // ── fetchProductContext ───────────────────────────────────────────────────────

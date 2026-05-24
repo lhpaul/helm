@@ -7,6 +7,7 @@ import { dispatchStageHandler } from './dispatcher.js';
 import { MockAgentRuntime } from './runtimes/mock.js';
 import type { Product } from '@helm/shared';
 import type { ItemTransitionFn } from './specialists/spec-writer.js';
+import type { FetchFn } from './specialists/fetch-product-context.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -184,5 +185,74 @@ describe('dispatchStageHandler', () => {
     expect(result.status).toBe('error');
     expect(result.error).toContain('not implemented');
     expect(result.specialistId).toBe('plan-writer');
+  });
+
+  it('calls fetchFn when githubToken is provided', async () => {
+    const mockFetch: FetchFn = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: () => Promise.resolve('Not Found'),
+    } as Response);
+
+    await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn: mockFetch },
+    );
+
+    expect(mockFetch).toHaveBeenCalled();
+  });
+
+  it('does not call fetchFn when githubToken is absent', async () => {
+    const mockFetch: FetchFn = vi.fn();
+
+    await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir, fetchFn: mockFetch },
+    );
+
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('continues dispatch when context fetch throws (fallback to no context)', async () => {
+    const mockFetch: FetchFn = vi.fn().mockRejectedValue(new Error('network error'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const result = await dispatchStageHandler(
+        { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+        makeProduct(),
+        makeSpecWriterRuntime('issue_1'),
+        transition as ItemTransitionFn,
+        { workdir, githubToken: 'test-token', fetchFn: mockFetch },
+      );
+
+      expect(result.status).toBe('done');
+      expect(result.newStage).toBe('spec-draft');
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[dispatcher]'),
+        expect.any(Error),
+      );
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('omits prUrl when githubToken is absent (publish step skipped)', async () => {
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir, dataRoot: '/some/data' }, // dataRoot present but no token
+    );
+
+    expect(result.status).toBe('done');
+    expect(result.prUrl).toBeUndefined();
   });
 });

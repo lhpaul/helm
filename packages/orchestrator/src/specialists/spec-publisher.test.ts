@@ -226,17 +226,34 @@ describe('publishSpecToPR', () => {
     expect(checkoutCall![0][2]).toBe('helm/spec/HLM-99');
   });
 
-  it('uses token-embedded URL for clone and push', async () => {
+  it('passes auth token via GIT_HTTP_EXTRAHEADER, not embedded in URL', async () => {
     const runGit = makeRunGit(knowledgeRepoLocalPath);
     const runGh = makeRunGh();
 
     await publishSpecToPR(makeOpts({ githubToken: 'secret-token' }), runGit, runGh);
 
-    // mock.calls[i] = [args, opts]
-    const gitCalls = (runGit as ReturnType<typeof vi.fn>).mock.calls as [string[], unknown][];
+    // mock.calls[i] = [args, opts] where opts has .env
+    const gitCalls = (runGit as ReturnType<typeof vi.fn>).mock.calls as [
+      string[],
+      { cwd: string; env?: NodeJS.ProcessEnv },
+    ][];
     const cloneCall = gitCalls.find(([args]) => args[0] === 'clone');
     const pushCall = gitCalls.find(([args]) => args[0] === 'push');
-    expect(cloneCall![0][1]).toContain('x-access-token:secret-token@');
-    expect(pushCall![0][1]).toContain('x-access-token:secret-token@');
+
+    // Token must NOT appear in any URL argument
+    expect(cloneCall![0][1]).not.toContain('secret-token');
+    expect(pushCall![0][1]).not.toContain('secret-token');
+
+    // Token must appear as an Authorization header in the git env
+    expect(cloneCall![1].env?.GIT_CONFIG_VALUE_0).toContain('secret-token');
+  });
+
+  it('throws on invalid externalId containing path traversal characters', async () => {
+    const runGit: RunGit = vi.fn().mockResolvedValue({ stdout: '' });
+    const runGh = makeRunGh();
+
+    await expect(
+      publishSpecToPR(makeOpts({ externalId: '../evil' }), runGit, runGh),
+    ).rejects.toThrow(/Invalid externalId/);
   });
 });

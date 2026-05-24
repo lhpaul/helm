@@ -24,8 +24,18 @@ const TRUNCATION_SUFFIX = '\n\n[...truncated]';
  * Handles trailing .git, trailing slashes, and optional paths after the repo.
  */
 export function parseGitHubRepoUrl(url: string): { owner: string; repo: string } | null {
-  const match = url.match(/github\.com\/([^/]+)\/([^/.]+?)(?:\.git)?(?:[/?#]|$)/);
-  return match ? { owner: match[1]!, repo: match[2]! } : null;
+  try {
+    const u = new URL(url);
+    if (u.hostname !== 'github.com') return null;
+    const parts = u.pathname.replace(/^\/+/, '').split('/');
+    if (parts.length < 2) return null;
+    const owner = parts[0]!;
+    const repo = parts[1]!.replace(/\.git$/, '');
+    if (!owner || !repo) return null;
+    return { owner, repo };
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -53,8 +53,7 @@ export const defaultRunGit: RunGit = async (args, opts) => {
 };
 
 export const defaultRunGh: RunGh = async (args, opts) => {
-  const ghPath = '/opt/homebrew/bin/gh';
-  const { stdout } = await execFileAsync(ghPath, args, {
+  const { stdout } = await execFileAsync('gh', args, {
     env: { ...process.env, ...opts.env },
   });
   return { stdout };
@@ -73,26 +72,23 @@ async function pathExists(p: string): Promise<boolean> {
 
 /**
  * Ensures the knowledge repo is cloned and up to date.
- * If not yet cloned → git clone (with token-embedded HTTPS URL).
+ * If not yet cloned → git clone using plain URL + GIT_HTTP_EXTRAHEADER for auth.
  * If already cloned → fetch + reset to latest default branch.
  */
 async function ensureKnowledgeRepo(
   localPath: string,
   repoUrl: string,
   defaultBranch: string,
-  githubToken: string,
+  tokenEnv: NodeJS.ProcessEnv,
   runGit: RunGit,
 ): Promise<void> {
-  // Token-embedded URL so git doesn't prompt for credentials.
-  const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${githubToken}@`);
-
   const gitDir = join(localPath, '.git');
   if (!(await pathExists(gitDir))) {
     await mkdir(dirname(localPath), { recursive: true });
-    await runGit(['clone', authenticatedUrl, localPath], { cwd: dirname(localPath) });
+    await runGit(['clone', repoUrl, localPath], { cwd: dirname(localPath), env: tokenEnv });
   } else {
     // Pull latest without interactive prompts.
-    await runGit(['fetch', 'origin'], { cwd: localPath });
+    await runGit(['fetch', 'origin'], { cwd: localPath, env: tokenEnv });
     await runGit(['checkout', defaultBranch], { cwd: localPath });
     await runGit(['reset', '--hard', `origin/${defaultBranch}`], { cwd: localPath });
   }
@@ -118,6 +114,11 @@ export async function publishSpecToPR(
 ): Promise<PublishSpecResult> {
   const { externalId, product, specPath, knowledgeRepoLocalPath, githubToken } = opts;
 
+  const EXTERNAL_ID_SAFE = /^[A-Za-z0-9._-]+$/;
+  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+    throw new Error(`[spec-publisher] Invalid externalId: "${externalId}"`);
+  }
+
   const knowledgeRepo = product.knowledge_repo;
   const defaultBranch = knowledgeRepo.default_branch;
   const branchName = `helm/spec/${externalId}`;
@@ -128,13 +129,22 @@ export async function publishSpecToPR(
   }
   const { owner, repo } = parsed;
 
+  // Build token env once — used for clone, fetch, and push (network operations).
+  // Token is passed as an HTTP Authorization header via git config, so it never
+  // appears in remote URLs or git error messages.
+  const tokenEnv: NodeJS.ProcessEnv = {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
+    GIT_CONFIG_VALUE_0: `Authorization: token ${githubToken}`,
+  };
+
   // ── Step 1: Clone or update knowledge repo ───────────────────────────────
   try {
     await ensureKnowledgeRepo(
       knowledgeRepoLocalPath,
       knowledgeRepo.url,
       defaultBranch,
-      githubToken,
+      tokenEnv,
       runGit,
     );
   } catch (err) {
@@ -187,13 +197,10 @@ export async function publishSpecToPR(
   }
 
   // ── Step 5: Push branch ──────────────────────────────────────────────────
-  const authenticatedUrl = knowledgeRepo.url.replace(
-    'https://',
-    `https://x-access-token:${githubToken}@`,
-  );
   try {
-    await runGit(['push', authenticatedUrl, `${branchName}:${branchName}`, '--force'], {
+    await runGit(['push', 'origin', `${branchName}:${branchName}`, '--force'], {
       cwd: knowledgeRepoLocalPath,
+      env: tokenEnv,
     });
   } catch (err) {
     throw new Error(

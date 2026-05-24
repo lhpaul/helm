@@ -82,6 +82,11 @@ describe('buildSpecWriterPrompt', () => {
     expect(prompt).not.toContain('### Agent Instructions');
     expect(prompt).toContain('# Readme');
   });
+
+  it('omits Product Context section when context has neither readme nor agentMd', () => {
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), {});
+    expect(prompt).not.toContain('## Product Context');
+  });
 });
 
 // ── handleSpecWriterResult ────────────────────────────────────────────────────

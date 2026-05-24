@@ -70,7 +70,8 @@ export function buildSpecWriterPrompt(
   product: Product,
   context?: ProductContext,
 ): string {
-  const contextSection = context ? buildContextSection(product, context) : '';
+  const contextSection =
+    context && (context.readme || context.agentMd) ? buildContextSection(product, context) : '';
 
   return `You are the spec writer for the product "${product.product.name}".
 
@@ -90,8 +91,6 @@ Steps:
 
 ## Technical Notes
 <!-- Architecture, constraints, dependencies -->
-
-3. Confirm once the file is written.
 
 IMPORTANT: Write the file to the path \`specs/${externalId}.md\` relative to your
 current working directory. Create the \`specs/\` directory if it does not exist.

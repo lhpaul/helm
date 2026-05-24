@@ -313,6 +313,37 @@ describe('dispatchStageHandler', () => {
     expect(result.error).toMatch(/Invalid productSlug or externalId/);
   });
 
+  it('path-validation fires before default workdir is computed (dot productSlug, no custom workdir)', async () => {
+    // Guard must reject before dispatcher tries to mkdir the default
+    // data/worktrees/{productSlug}/{externalId} path, which would embed the
+    // untrusted value directly into a filesystem path.
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: '.hidden', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      // intentionally no `workdir` option
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/Invalid productSlug or externalId/);
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('path-validation fires before default workdir is computed (dotdot externalId, no custom workdir)', async () => {
+    const result = await dispatchStageHandler(
+      { externalId: '..', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      // intentionally no `workdir` option
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/Invalid productSlug or externalId/);
+    expect(transition).not.toHaveBeenCalled();
+  });
+
   it('propagates prUrl from publish step when token and dataRoot are provided', async () => {
     const expectedPrUrl = 'https://github.com/test-org/test-knowledge/pull/5';
 

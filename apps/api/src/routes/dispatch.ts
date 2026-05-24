@@ -2,10 +2,13 @@ import { Hono } from 'hono';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { dispatchStageHandler } from '@helm/orchestrator';
-import { getProductRegistry, getItemStore } from '../services/index.js';
+import { getProductRegistry, getItemStore, getJobStore } from '../services/index.js';
 import { createRuntimeForProduct } from '../services/runtime-factory.js';
-import { ItemNotFoundError } from '../services/errors.js';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
+import type { Job } from '../services/job-store.js';
+import type { ItemState } from '../services/types.js';
+import type { Product } from '@helm/shared';
+import type { ItemStore } from '../services/item-store.js';
 
 export const dispatchRouter = new Hono();
 
@@ -14,6 +17,57 @@ const SlugSchema = z
   .min(1)
   .regex(/^[a-z0-9-]+$/);
 const BodySchema = z.object({ specialistId: z.string().min(1).optional() }).strict();
+
+/**
+ * Background function that runs the dispatch job asynchronously.
+ * Must never throw — a job must never stay stuck in 'running' status.
+ */
+async function runDispatchJob(
+  job: Job,
+  ctx: {
+    product: Product;
+    item: ItemState;
+    store: ItemStore;
+    workdir: string;
+    specialistId: string | undefined;
+  },
+): Promise<void> {
+  const jobStore = await getJobStore();
+  try {
+    const runtime = createRuntimeForProduct(ctx.product, ctx.item.externalId, ctx.workdir);
+    const result = await dispatchStageHandler(
+      {
+        externalId: ctx.item.externalId,
+        productSlug: ctx.item.productSlug,
+        currentStage: ctx.item.currentStage,
+      },
+      ctx.product,
+      runtime,
+      (input) => ctx.store.transition(input),
+      { workdir: ctx.workdir, specialistId: ctx.specialistId },
+    );
+
+    const now = new Date().toISOString();
+    await jobStore.updateJob(job.jobId, {
+      // Preserve all three DispatchResult statuses: done, error, cancelled.
+      status: result.status,
+      result,
+      finishedAt: now,
+    });
+  } catch (err) {
+    const now = new Date().toISOString();
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      await jobStore.updateJob(job.jobId, {
+        status: 'error',
+        error: message,
+        finishedAt: now,
+      });
+    } catch (updateErr) {
+      console.error('[dispatch] Failed to update job after error:', updateErr);
+    }
+  }
+}
 
 dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   const slug = c.req.param('slug');
@@ -77,36 +131,40 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   const dataRoot = envDataDir || join(process.cwd(), 'data');
   const workdir = join(dataRoot, 'worktrees', slug, externalId);
 
+  // Resolve job store and check for concurrency
+  let jobStore;
   try {
-    // Select runtime based on product specialist config.
-    // 'claude_code' → ClaudeCodeRuntime (real). Tests inject a mock via vi.mock
-    // on '../services/runtime-factory.js'. See runtime-factory.ts for details.
-    // Kept inside the try/catch so a bad config (unknown runtime) surfaces as a
-    // structured JSON 500 rather than an unhandled Hono error.
-    const runtime = createRuntimeForProduct(product, externalId, workdir);
-
-    const result = await dispatchStageHandler(
-      { externalId, productSlug: item.productSlug, currentStage: item.currentStage },
-      product,
-      runtime,
-      (input) => store.transition(input),
-      { workdir, specialistId: bodyResult.data.specialistId },
-    );
-
-    if (result.status === 'error') {
-      if (result.error?.includes('No specialist mapped')) {
-        return c.json({ error: 'Unsupported stage for dispatch' }, 400);
-      }
-      console.error('[dispatch] Dispatch failed:', result.error);
-      return c.json({ error: 'Dispatch failed' }, 500);
-    }
-
-    return c.json(result, 200);
+    jobStore = await getJobStore();
   } catch (err) {
-    if (err instanceof ItemNotFoundError) {
-      return c.json({ error: `Item not found: ${err.externalId}` }, 404);
-    }
-    console.error('[dispatch] Unexpected error:', err);
-    return c.json({ error: 'Dispatch failed' }, 500);
+    console.error('[dispatch] Failed to load job store:', err);
+    return c.json({ error: 'Failed to load job store' }, 500);
   }
+
+  // Concurrency guard + job creation (atomic check-and-create via in-memory lock).
+  const outcome = await jobStore.createJobIfNoRunning({
+    productSlug: slug,
+    externalId,
+    specialistId: bodyResult.data.specialistId ?? 'auto',
+  });
+  if ('conflict' in outcome) {
+    return c.json(
+      {
+        error: 'A dispatch job is already running for this item',
+        runningJobId: outcome.runningJobId,
+      },
+      409,
+    );
+  }
+  const { job } = outcome;
+
+  // Fire and forget — returns 202 immediately
+  void runDispatchJob(job, {
+    product,
+    item,
+    store,
+    workdir,
+    specialistId: bodyResult.data.specialistId,
+  });
+
+  return c.json({ jobId: job.jobId, status: 'running' }, 202);
 });

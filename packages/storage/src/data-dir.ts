@@ -20,6 +20,8 @@ export type DataPaths = {
   reviewers: string;
   /** data/items/ — one JSON file per tracked item (workflow state + history) */
   items: string;
+  /** data/jobs/ — one JSON file per async dispatch job */
+  jobs: string;
 };
 
 /**
@@ -36,6 +38,7 @@ export async function ensureDataDir(rootPath: string): Promise<DataPaths> {
     linearCache: join(rootPath, 'linear-cache'),
     reviewers: join(rootPath, 'reviewers'),
     items: join(rootPath, 'items'),
+    jobs: join(rootPath, 'jobs'),
   };
 
   await Promise.all([
@@ -45,6 +48,7 @@ export async function ensureDataDir(rootPath: string): Promise<DataPaths> {
     mkdir(join(rootPath, 'linear-cache', 'items'), { recursive: true }),
     mkdir(paths.reviewers, { recursive: true }),
     mkdir(paths.items, { recursive: true }),
+    mkdir(paths.jobs, { recursive: true }),
   ]);
 
   return paths;

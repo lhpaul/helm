@@ -4,6 +4,7 @@ import { parseProductConfigFromFile, loadProductRegistry, ProductConfigError } f
 import type { Product } from '@helm/shared';
 import { GitHubProjectsAdapter } from '@helm/adapters';
 import { ItemStore } from './item-store.js';
+import { JobStore } from './job-store.js';
 
 // ── ItemStore singleton ───────────────────────────────────────────────────────
 
@@ -31,6 +32,35 @@ export async function getItemStore(): Promise<ItemStore> {
     return await _itemInitPromise;
   } finally {
     _itemInitPromise = null;
+  }
+}
+
+// ── JobStore singleton ────────────────────────────────────────────────────────
+
+let _jobStore: JobStore | null = null;
+let _jobInitPromise: Promise<JobStore> | null = null;
+
+/**
+ * Returns the shared JobStore instance, initializing it on first call.
+ * Single-flight: concurrent calls during startup await the same promise.
+ * Reads HELM_DATA_DIR from env (defaults to 'data/' relative to process CWD).
+ */
+export async function getJobStore(): Promise<JobStore> {
+  if (_jobStore !== null) return _jobStore;
+  if (_jobInitPromise !== null) return _jobInitPromise;
+
+  _jobInitPromise = (async () => {
+    const envDataDir = process.env.HELM_DATA_DIR?.trim();
+    const dataRoot = envDataDir ? envDataDir : join(process.cwd(), 'data');
+    const paths = await ensureDataDir(dataRoot);
+    _jobStore = new JobStore(paths.jobs);
+    return _jobStore;
+  })();
+
+  try {
+    return await _jobInitPromise;
+  } finally {
+    _jobInitPromise = null;
   }
 }
 
@@ -177,6 +207,8 @@ export async function getProductRegistry(): Promise<Product[]> {
 export function _resetForTests(): void {
   _itemStore = null;
   _itemInitPromise = null;
+  _jobStore = null;
+  _jobInitPromise = null;
   _productConfig = null;
   _productInitPromise = null;
   _githubAdapter = null;

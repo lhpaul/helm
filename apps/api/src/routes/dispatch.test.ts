@@ -140,34 +140,131 @@ const dispatch = (slug: string, externalId: string, body?: unknown) =>
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
-  it('returns 200 with dispatch result for a discovery-stage item', async () => {
+  it('returns 202 with jobId and status:running for a discovery-stage item', async () => {
     const res = await dispatch('test-product', 'issue_1');
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
 
     const body = (await res.json()) as {
-      specialistId: string;
+      jobId: string;
       status: string;
-      newStage: string;
-      costUsd: number;
-      durationMs: number;
     };
-    expect(body.specialistId).toBe('spec-writer');
-    expect(body.status).toBe('done');
-    expect(body.newStage).toBe('spec-draft');
-    expect(body.costUsd).toBeGreaterThanOrEqual(0);
-    expect(typeof body.durationMs).toBe('number');
+    expect(body.status).toBe('running');
+    expect(typeof body.jobId).toBe('string');
+    expect(body.jobId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+
+    // Wait for the background job to finish so afterEach cleanup doesn't race
+    // with sideEffects still writing files into dataDir.
+    const { getJobStore } = await import('../services/index.js');
+    const jobStore = await getJobStore();
+    await vi.waitFor(
+      async () => {
+        const job = await jobStore.getJob(body.jobId);
+        expect(job?.status).not.toBe('running');
+      },
+      { timeout: 5000 },
+    );
   });
 
-  it('returns 200 and calls store.transition after successful dispatch', async () => {
-    await dispatch('test-product', 'issue_1');
+  it('runs the dispatch job in background and calls store.transition', async () => {
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(202);
 
-    expect(mockTransition).toHaveBeenCalledOnce();
+    // Wait for background job to complete
+    await vi.waitFor(
+      () => {
+        expect(mockTransition).toHaveBeenCalled();
+      },
+      { timeout: 5000 },
+    );
+
     expect(mockTransition).toHaveBeenCalledWith(
       expect.objectContaining({
         externalId: 'issue_1',
         toStage: 'spec-draft',
         triggeredBy: 'agent:spec-writer',
       }),
+    );
+  });
+
+  it('job transitions to done with correct result after background completion', async () => {
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(202);
+    const { jobId } = (await res.json()) as { jobId: string };
+
+    // Import real getJobStore from the actual module (not mocked)
+    const { getJobStore } = await import('../services/index.js');
+    const jobStore = await getJobStore();
+
+    await vi.waitFor(
+      async () => {
+        const job = await jobStore.getJob(jobId);
+        expect(job?.status).toBe('done');
+      },
+      { timeout: 5000 },
+    );
+
+    const job = await jobStore.getJob(jobId);
+    expect(job?.result?.newStage).toBe('spec-draft');
+    expect(job?.result?.specialistId).toBe('spec-writer');
+    expect(job?.finishedAt).toBeDefined();
+  });
+
+  it('returns 409 when a dispatch job is already running for the item', async () => {
+    // Use a deferred promise to hold the first job's sideEffects open so the
+    // job is guaranteed to still be 'running' when the second dispatch arrives.
+    let releaseSideEffect!: () => void;
+    const sideEffectGate = new Promise<void>((resolve) => {
+      releaseSideEffect = resolve;
+    });
+
+    mockCreateRuntime.mockImplementationOnce(
+      (_product: Product, externalId: string, workdir: string) =>
+        new MockAgentRuntime({
+          messages: [
+            {
+              role: 'agent',
+              content: `[mock] Writing spec for ${externalId}`,
+              costUsd: 0,
+              timestamp: new Date().toISOString(),
+            },
+          ],
+          sideEffects: async (dir) => {
+            // Block until the test explicitly releases the gate.
+            await sideEffectGate;
+            const id = basename(dir);
+            await mkdir(join(dir, 'specs'), { recursive: true });
+            await writeFile(join(dir, 'specs', `${id}.md`), `# ${id}\n`);
+            void workdir;
+          },
+        }),
+    );
+
+    // First dispatch — job enters 'running' and stays there (gate is held).
+    const res1 = await dispatch('test-product', 'issue_1');
+    expect(res1.status).toBe(202);
+    const { jobId: runningJobId } = (await res1.json()) as { jobId: string };
+
+    // Second dispatch while the first job is still running → must be 409.
+    const res2 = await dispatch('test-product', 'issue_1');
+    expect(res2.status).toBe(409);
+    const body2 = (await res2.json()) as { error: string; runningJobId: string };
+    expect(body2.error).toContain('already running');
+    expect(body2.runningJobId).toBe(runningJobId);
+
+    // Release the gate so the background job can complete and the test exits cleanly.
+    releaseSideEffect();
+
+    const { getJobStore } = await import('../services/index.js');
+    const jobStore = await getJobStore();
+
+    await vi.waitFor(
+      async () => {
+        const job = await jobStore.getJob(runningJobId);
+        expect(job?.status).not.toBe('running');
+      },
+      { timeout: 5000 },
     );
   });
 
@@ -257,48 +354,69 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     expect(res.status).toBe(500);
   });
 
-  it('returns 400 when item stage has no specialist mapped', async () => {
+  it('job transitions to error when item stage has no specialist mapped', async () => {
     // spec-draft has no mapping in STAGE_TO_SPECIALIST
     mockGet.mockResolvedValue(makeItem('issue_1', 'spec-draft'));
 
     const res = await dispatch('test-product', 'issue_1');
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string };
-    // Generic client-safe message — raw orchestrator error is logged server-side
-    expect(body.error).toBe('Unsupported stage for dispatch');
-  });
+    // Async dispatch: job is created, returns 202
+    expect(res.status).toBe(202);
+    const { jobId } = (await res.json()) as { jobId: string };
 
-  it('returns 500 when dispatch fails for a reason other than missing specialist', async () => {
-    // plan-writer is in the specialist mapping but not yet implemented →
-    // dispatchStageHandler returns status:'error' with a non-"No specialist mapped" message
-    const res = await dispatch('test-product', 'issue_1', { specialistId: 'plan-writer' });
-    expect(res.status).toBe(500);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toBe('Dispatch failed');
-    expect(mockTransition).not.toHaveBeenCalled();
+    const { getJobStore } = await import('../services/index.js');
+    const jobStore = await getJobStore();
+
+    await vi.waitFor(
+      async () => {
+        const job = await jobStore.getJob(jobId);
+        expect(job?.status).toBe('error');
+      },
+      { timeout: 5000 },
+    );
   });
 
   it('accepts specialistId override in request body', async () => {
     const res = await dispatch('test-product', 'issue_1', { specialistId: 'spec-writer' });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { specialistId: string };
-    expect(body.specialistId).toBe('spec-writer');
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { jobId: string; status: string };
+    expect(body.status).toBe('running');
+
+    // Wait for the job to complete
+    await vi.waitFor(() => expect(mockTransition).toHaveBeenCalled(), { timeout: 5000 });
   });
 
-  it('returns 500 when createRuntimeForProduct throws (unknown runtime config)', async () => {
+  it('job transitions to error when createRuntimeForProduct throws', async () => {
     mockCreateRuntime.mockImplementation(() => {
       throw new Error("[runtime-factory] Unknown specialist runtime: 'bad_runtime'");
     });
 
     const res = await dispatch('test-product', 'issue_1');
-    expect(res.status).toBe(500);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toBe('Dispatch failed');
+    expect(res.status).toBe(202);
+    const { jobId } = (await res.json()) as { jobId: string };
+
+    const { getJobStore } = await import('../services/index.js');
+    const jobStore = await getJobStore();
+
+    await vi.waitFor(
+      async () => {
+        const job = await jobStore.getJob(jobId);
+        expect(job?.status).toBe('error');
+      },
+      { timeout: 5000 },
+    );
+
+    const job = await jobStore.getJob(jobId);
+    expect(job?.error).toContain('bad_runtime');
     expect(mockTransition).not.toHaveBeenCalled();
   });
 
   it('passes product, externalId, and workdir to createRuntimeForProduct', async () => {
-    await dispatch('test-product', 'issue_1');
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(202);
+
+    // Wait for the background job to complete (transition is called after sideEffects
+    // finish, so this also ensures no files are still being written into dataDir).
+    await vi.waitFor(() => expect(mockTransition).toHaveBeenCalled(), { timeout: 5000 });
 
     expect(mockCreateRuntime).toHaveBeenCalledOnce();
     expect(mockCreateRuntime).toHaveBeenCalledWith(

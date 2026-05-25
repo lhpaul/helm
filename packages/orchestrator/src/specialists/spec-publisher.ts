@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { Product } from '@helm/shared';
+import { specBranchName } from '@helm/shared';
 import { parseGitHubRepoUrl } from './fetch-product-context.js';
 
 const execFileAsync = promisify(execFile);
@@ -133,7 +134,7 @@ export async function publishSpecToPR(
 
   const knowledgeRepo = product.knowledge_repo;
   const defaultBranch = knowledgeRepo.default_branch;
-  const branchName = `helm/spec/${externalId}`;
+  const branchName = specBranchName(externalId);
 
   const parsed = parseGitHubRepoUrl(knowledgeRepo.url);
   if (!parsed) {

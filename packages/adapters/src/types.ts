@@ -46,4 +46,11 @@ export type NormalizedEvent =
       timestamp: string;
     }
   | { type: 'comment_added'; externalId: string; body: string; timestamp: string }
+  /**
+   * A pull request was merged. headRef is the source branch name
+   * (e.g. `helm/spec/HLM-42`). The webhook route is responsible for
+   * interpreting the branch name convention — the adapter emits the raw ref
+   * without applying any Helm-specific semantics.
+   */
+  | { type: 'pull_request_merged'; headRef: string; timestamp: string }
   | { type: 'unknown'; raw: unknown };

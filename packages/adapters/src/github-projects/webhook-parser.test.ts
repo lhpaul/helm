@@ -65,6 +65,72 @@ describe('parseGitHubWebhook', () => {
     });
   });
 
+  describe('pull_request events', () => {
+    it('pull_request closed+merged:true → pull_request_merged with headRef', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'closed',
+          pull_request: { merged: true, head: { ref: 'helm/spec/issue_42' } },
+        }),
+      );
+      expect(result).toMatchObject({
+        type: 'pull_request_merged',
+        headRef: 'helm/spec/issue_42',
+      });
+      expect('timestamp' in result).toBe(true);
+    });
+
+    it('pull_request closed+merged:false → unknown (not a merge)', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'closed',
+          pull_request: { merged: false, head: { ref: 'helm/spec/issue_42' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('pull_request action:opened → unknown', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'opened',
+          pull_request: { merged: false, head: { ref: 'helm/spec/issue_42' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('pull_request action:synchronize → unknown', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'synchronize',
+          pull_request: { merged: false, head: { ref: 'feature/foo' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('pull_request with missing pull_request field → unknown (no throw)', () => {
+      const result = parseGitHubWebhook(ctx('pull_request', { action: 'closed' }));
+      expect(result.type).toBe('unknown');
+    });
+
+    it('pull_request with non-spec branch → pull_request_merged with that headRef (interpretation is route responsibility)', () => {
+      // The parser emits the raw headRef without filtering — the route decides
+      // what to do with non-spec branches.
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'closed',
+          pull_request: { merged: true, head: { ref: 'feature/some-other-branch' } },
+        }),
+      );
+      expect(result).toMatchObject({
+        type: 'pull_request_merged',
+        headRef: 'feature/some-other-branch',
+      });
+    });
+  });
+
   describe('unknown / malformed inputs', () => {
     it('unknown event type → unknown', () => {
       expect(parseGitHubWebhook(ctx('push', {}))).toMatchObject({ type: 'unknown' });

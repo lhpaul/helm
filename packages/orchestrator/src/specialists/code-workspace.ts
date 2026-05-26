@@ -140,6 +140,24 @@ export async function provisionCodeWorkspace(
     );
   }
 
+  // ── Step 3: Scrub token from .git/config ──────────────────────────────────
+  // The clone used an authenticated URL (https://x-access-token:{token}@…).
+  // Git stores that URL — token included — in .git/config as the origin remote.
+  // The agent runs with bypassPermissions in this workspace and could read the
+  // token via `cat .git/config` or `git remote -v`. Reset origin to the plain
+  // (non-authenticated) URL so the token is not accessible on disk.
+  // The push in openCodePR bypasses the origin remote and pushes directly to an
+  // authenticated URL so it does not rely on this remote being authenticated.
+  try {
+    await runGit(['remote', 'set-url', 'origin', codeRepo.url], { cwd: workspacePath });
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+    throw new Error(
+      `[code-workspace] Failed to strip token from git config: ${sanitizeToken(raw, githubToken)}`,
+    );
+  }
+
   return { workspacePath, branchName: branch };
 }
 
@@ -225,8 +243,13 @@ export async function openCodePR(
   }
 
   // ── Step 4: Push branch ───────────────────────────────────────────────────
+  // Push directly to the authenticated URL rather than via the `origin` remote.
+  // provisionCodeWorkspace strips the token from origin (sets it to the plain
+  // URL) so the agent cannot read it from .git/config.  We re-inject the token
+  // here — only for the push — so the push is authenticated.
+  const pushUrl = buildAuthenticatedUrl(owner, repo, githubToken);
   try {
-    await runGit(['push', 'origin', `${branchName}:${branchName}`, '--force'], {
+    await runGit(['push', pushUrl, `${branchName}:${branchName}`, '--force'], {
       cwd: workspacePath,
     });
   } catch (err) {

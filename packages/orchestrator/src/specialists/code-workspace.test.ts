@@ -64,6 +64,14 @@ describe('provisionCodeWorkspace', () => {
     expect(checkoutArgs).toContain('-B');
     expect(checkoutArgs).toContain('helm/impl/HLM-42');
 
+    // Token scrub: git remote set-url strips the authenticated URL from .git/config
+    const setUrlArgs = capturedArgs.find((a) => a[0] === 'remote' && a[1] === 'set-url');
+    expect(setUrlArgs).toBeDefined();
+    expect(setUrlArgs).toContain('origin');
+    // Plain URL (no token) — the agent cannot read the token from .git/config
+    expect(setUrlArgs).toContain('https://github.com/test-org/test-repo');
+    expect(setUrlArgs?.join(' ')).not.toContain('test-token');
+
     // Result has the correct branch name
     expect(result.branchName).toBe('helm/impl/HLM-42');
   });
@@ -188,10 +196,13 @@ describe('openCodePR', () => {
     // add -A
     const addArgs = capturedGitArgs.find((a) => a[0] === 'add');
     expect(addArgs).toContain('-A');
-    // push force
+    // push force — uses authenticated URL directly (not origin, which is plain after provisioning)
     const pushArgs = capturedGitArgs.find((a) => a[0] === 'push');
     expect(pushArgs).toContain('--force');
     expect(pushArgs).toContain('helm/impl/HLM-42:helm/impl/HLM-42');
+    const pushUrl = pushArgs?.find((a) => a.includes('x-access-token:'));
+    expect(pushUrl).toBeDefined();
+    expect(pushUrl).toContain('test-token');
 
     expect(result.prUrl).toBe('https://github.com/test-org/test-repo/pull/1');
   });

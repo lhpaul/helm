@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { publishSpecToPR } from './spec-publisher.js';
-import type { PublishSpecOpts, RunGit, RunGh } from './spec-publisher.js';
+import { publishSpecToPR, publishPlanToPR } from './spec-publisher.js';
+import type { PublishSpecOpts, PublishPlanOpts, RunGit, RunGh } from './spec-publisher.js';
 import type { Product } from '@helm/shared';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -76,6 +76,7 @@ function makeRunGh(prListResult: { url: string }[] = []): RunGh {
 
 let tmpDir: string;
 let specPath: string;
+let planPath: string;
 
 beforeEach(async () => {
   tmpDir = join(tmpdir(), `spec-publisher-${randomUUID()}`);
@@ -86,6 +87,12 @@ beforeEach(async () => {
   await mkdir(specsDir, { recursive: true });
   specPath = join(specsDir, 'issue_1.md');
   await writeFile(specPath, '# issue_1 — Specification\n');
+
+  // Create a plan file to publish
+  const plansDir = join(tmpDir, 'workdir', 'plans');
+  await mkdir(plansDir, { recursive: true });
+  planPath = join(plansDir, 'issue_1.md');
+  await writeFile(planPath, '# issue_1 — Implementation Plan\n');
 });
 
 afterEach(async () => {
@@ -98,6 +105,14 @@ const makeOpts = (overrides?: Partial<PublishSpecOpts>): PublishSpecOpts => ({
   externalId: 'issue_1',
   product: makeProduct(),
   specPath,
+  githubToken: 'test-token',
+  ...overrides,
+});
+
+const makePlanOpts = (overrides?: Partial<PublishPlanOpts>): PublishPlanOpts => ({
+  externalId: 'issue_1',
+  product: makeProduct(),
+  planPath,
   githubToken: 'test-token',
   ...overrides,
 });
@@ -373,5 +388,154 @@ describe('publishSpecToPR', () => {
     expect(result2.prUrl).toContain('helm/spec/issue_2');
     // The two PRs must be distinct (no cross-contamination).
     expect(result1.prUrl).not.toBe(result2.prUrl);
+  });
+});
+
+// ── publishPlanToPR ───────────────────────────────────────────────────────────
+
+describe('publishPlanToPR', () => {
+  it('clones repo, copies plan, commits, pushes, and creates PR', async () => {
+    const runGit = makeRunGit();
+    const runGh = makeRunGh();
+
+    const result = await publishPlanToPR(makePlanOpts(), runGit, runGh);
+
+    expect(result.prUrl).toBe('https://github.com/test-org/knowledge/pull/42');
+
+    const gitCalls = (runGit as ReturnType<typeof vi.fn>).mock.calls as [string[], unknown][];
+    expect(gitCalls.some(([args]) => args[0] === 'clone')).toBe(true);
+    expect(gitCalls.some(([args]) => args[0] === 'checkout' && args[1] === '-B')).toBe(true);
+    expect(gitCalls.some(([args]) => args[0] === 'add')).toBe(true);
+    expect(gitCalls.some(([args]) => args[0] === 'commit')).toBe(true);
+    expect(gitCalls.some(([args]) => args[0] === 'push')).toBe(true);
+  });
+
+  it('uses a helm/plan/ branch name derived from the externalId', async () => {
+    const runGit = makeRunGit();
+    const runGh = makeRunGh();
+
+    await publishPlanToPR(makePlanOpts({ externalId: 'HLM-42' }), runGit, runGh);
+
+    const gitCalls = (runGit as ReturnType<typeof vi.fn>).mock.calls as [string[], unknown][];
+    const checkoutCall = gitCalls.find(([args]) => args[0] === 'checkout' && args[1] === '-B');
+    expect(checkoutCall).toBeDefined();
+    // Must use helm/plan/ prefix, NOT helm/spec/
+    expect(checkoutCall![0][2]).toBe('helm/plan/HLM-42');
+  });
+
+  it('copies plan into plans/ subdirectory (not specs/)', async () => {
+    const capturedAddArgs: string[][] = [];
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const dest = args[2]!;
+        await mkdir(join(dest, '.git'), { recursive: true });
+      }
+      if (args[0] === 'add') capturedAddArgs.push(args);
+      return { stdout: '' };
+    });
+    const runGh = makeRunGh();
+
+    await publishPlanToPR(makePlanOpts(), runGit, runGh);
+
+    // The staged path must be inside plans/, not specs/
+    expect(capturedAddArgs.length).toBeGreaterThan(0);
+    const addedPath = capturedAddArgs[0]![1]!;
+    expect(addedPath).toContain('plans/');
+    expect(addedPath).not.toContain('specs/');
+  });
+
+  it('uses docs(plan) commit message', async () => {
+    const capturedCommitArgs: string[][] = [];
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const dest = args[2]!;
+        await mkdir(join(dest, '.git'), { recursive: true });
+      }
+      if (args[0] === 'commit') capturedCommitArgs.push(args);
+      return { stdout: '' };
+    });
+    const runGh = makeRunGh();
+
+    await publishPlanToPR(makePlanOpts({ externalId: 'HLM-7' }), runGit, runGh);
+
+    expect(capturedCommitArgs.length).toBeGreaterThan(0);
+    const message = capturedCommitArgs[0]!.join(' ');
+    expect(message).toContain('docs(plan): add plan for HLM-7');
+  });
+
+  it('uses docs(plan) PR title', async () => {
+    const runGit = makeRunGit();
+    const capturedGhArgs: string[][] = [];
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      capturedGhArgs.push(args);
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create')
+        return { stdout: 'https://github.com/test-org/knowledge/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    await publishPlanToPR(makePlanOpts({ externalId: 'HLM-7' }), runGit, runGh);
+
+    const createCall = capturedGhArgs.find((args) => args[0] === 'pr' && args[1] === 'create');
+    expect(createCall).toBeDefined();
+    const titleIdx = createCall!.indexOf('--title');
+    expect(titleIdx).toBeGreaterThan(-1);
+    expect(createCall![titleIdx + 1]).toBe('docs(plan): add plan for HLM-7');
+  });
+
+  it('reuses existing open PR without creating a duplicate', async () => {
+    const runGit = makeRunGit();
+    const existingPrUrl = 'https://github.com/test-org/knowledge/pull/11';
+    const runGh = makeRunGh([{ url: existingPrUrl }]);
+
+    const result = await publishPlanToPR(makePlanOpts(), runGit, runGh);
+
+    expect(result.prUrl).toBe(existingPrUrl);
+
+    const ghCalls = (runGh as ReturnType<typeof vi.fn>).mock.calls as [string[], unknown][];
+    expect(ghCalls.some(([args]) => args[0] === 'pr' && args[1] === 'create')).toBe(false);
+  });
+
+  it('throws with [plan-publisher] tag on traversal externalId', async () => {
+    const runGit: RunGit = vi.fn().mockResolvedValue({ stdout: '' });
+    const runGh = makeRunGh();
+
+    await expect(
+      publishPlanToPR(makePlanOpts({ externalId: '../evil' }), runGit, runGh),
+    ).rejects.toThrow(/\[plan-publisher\].*Invalid externalId/);
+  });
+
+  it('throws with [plan-publisher] tag on SSH knowledge repo URL', async () => {
+    const runGit: RunGit = vi.fn().mockResolvedValue({ stdout: '' });
+    const runGh = makeRunGh();
+    const sshProduct: Product = {
+      ...makeProduct(),
+      knowledge_repo: { url: 'git@github.com:test-org/knowledge.git', default_branch: 'main' },
+    };
+
+    await expect(
+      publishPlanToPR(makePlanOpts({ product: sshProduct }), runGit, runGh),
+    ).rejects.toThrow(/\[plan-publisher\].*SSH knowledge repo URLs are not supported/);
+  });
+
+  it('cleans up the temp workdir even when push fails', async () => {
+    const capturedDirs: string[] = [];
+
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const dest = args[2]!;
+        capturedDirs.push(dest);
+        await mkdir(join(dest, '.git'), { recursive: true });
+        return { stdout: '' };
+      }
+      if (args[0] === 'push') throw new Error('remote: Permission denied');
+      return { stdout: '' };
+    });
+    const runGh = makeRunGh();
+
+    await expect(publishPlanToPR(makePlanOpts(), runGit, runGh)).rejects.toThrow(/Failed to push/);
+
+    expect(capturedDirs).toHaveLength(1);
+    await expect(stat(capturedDirs[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

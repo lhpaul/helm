@@ -17,6 +17,10 @@ export type FetchFn = typeof fetch;
 const MAX_CHARS = 2000;
 const TRUNCATION_SUFFIX = '\n\n[...truncated]';
 
+/** Cap for spec content fetched as plan-writer input. Generous — the spec IS the input. */
+const SPEC_MAX_CHARS = 32_000;
+const SPEC_TRUNCATION_SUFFIX = '\n\n[...truncated — spec exceeds 32000 chars]';
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
@@ -50,8 +54,11 @@ export function parseGitHubRepoUrl(url: string): { owner: string; repo: string }
  * Fetches raw file content from GitHub via raw.githubusercontent.com.
  * Returns null on 404 or any non-2xx response (treated as "file does not exist").
  * Throws on network errors.
+ *
+ * Exported so that other specialists (e.g. plan-writer's fetchSpecForPlan) can
+ * reuse the same authenticated fetch logic without duplicating it.
  */
-async function fetchRawFile(
+export async function fetchRawFile(
   owner: string,
   repo: string,
   branch: string,
@@ -72,7 +79,7 @@ function truncate(content: string): string {
   return content.slice(0, MAX_CHARS) + TRUNCATION_SUFFIX;
 }
 
-// ── Main export ───────────────────────────────────────────────────────────────
+// ── Product context (README + agent instructions from code repo) ──────────────
 
 /**
  * Fetches README and agent instructions from the product's primary code repo.
@@ -114,4 +121,45 @@ export async function fetchProductContext(
     readme: readmeRaw !== null ? truncate(readmeRaw) : undefined,
     agentMd: agentMdRaw !== null ? truncate(agentMdRaw) : undefined,
   };
+}
+
+// ── Spec fetch (for plan-writer) ──────────────────────────────────────────────
+
+/**
+ * Fetches the approved spec from the product's knowledge repo.
+ *
+ * The spec is the primary input for the plan-writer: it is fetched from
+ * `specs/{externalId}.md` on the knowledge repo's default branch.
+ *
+ * Unlike product context, the spec is NOT truncated aggressively — a 32 000-char
+ * cap is applied as a generous safety limit rather than a tight budget.
+ *
+ * Returns null when the spec file is absent (404) or the repo URL cannot be parsed.
+ * Throws on network errors so the dispatcher can propagate the failure rather than
+ * silently proceeding without the spec.
+ *
+ * @param product     The parsed product config.
+ * @param externalId  The item identifier.
+ * @param token       GitHub personal access token (repo scope).
+ * @param fetchFn     HTTP fetch function — injectable for testing.
+ */
+export async function fetchSpecForPlan(
+  product: Product,
+  externalId: string,
+  token: string,
+  fetchFn: FetchFn = fetch,
+): Promise<string | null> {
+  const parsed = parseGitHubRepoUrl(product.knowledge_repo.url);
+  if (!parsed) return null;
+
+  const { owner, repo } = parsed;
+  const branch = product.knowledge_repo.default_branch;
+
+  const content = await fetchRawFile(owner, repo, branch, `specs/${externalId}.md`, token, fetchFn);
+  if (content === null) return null;
+
+  if (content.length > SPEC_MAX_CHARS) {
+    return content.slice(0, SPEC_MAX_CHARS) + SPEC_TRUNCATION_SUFFIX;
+  }
+  return content;
 }

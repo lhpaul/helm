@@ -52,6 +52,35 @@ const makeSpecWriterRuntime = (externalId: string) =>
     },
   });
 
+/** MockAgentRuntime that writes plans/{externalId}.md as a side effect. */
+const makePlanWriterRuntime = (externalId: string) =>
+  new MockAgentRuntime({
+    messages: [{ role: 'agent', content: 'Writing plan…', timestamp: new Date().toISOString() }],
+    sideEffects: async (dir) => {
+      await mkdir(join(dir, 'plans'), { recursive: true });
+      await writeFile(join(dir, 'plans', `${externalId}.md`), `# ${externalId} — Plan\n`);
+    },
+  });
+
+/**
+ * Builds a mock fetchFn for plan-writer dispatcher tests.
+ * Returns spec content for knowledge-repo spec URL; 404 for everything else.
+ */
+const makePlanFetchFn = (specContent = '# Spec content'): FetchFn =>
+  vi.fn().mockImplementation((url: string) => {
+    if ((url as string).includes('/specs/')) {
+      return Promise.resolve({
+        ok: true,
+        text: () => Promise.resolve(specContent),
+      } as Response);
+    }
+    return Promise.resolve({
+      ok: false,
+      status: 404,
+      text: () => Promise.resolve('Not Found'),
+    } as Response);
+  });
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('dispatchStageHandler', () => {
@@ -180,12 +209,12 @@ describe('dispatchStageHandler', () => {
       makeProduct(),
       runtime,
       transition as ItemTransitionFn,
-      { workdir, specialistId: 'plan-writer' },
+      { workdir, specialistId: 'implementer' },
     );
 
     expect(result.status).toBe('error');
     expect(result.error).toContain('not implemented');
-    expect(result.specialistId).toBe('plan-writer');
+    expect(result.specialistId).toBe('implementer');
   });
 
   it('calls fetchFn when githubToken is provided', async () => {
@@ -371,5 +400,86 @@ describe('dispatchStageHandler', () => {
 
     expect(result.status).toBe('done');
     expect(result.prUrl).toBe(expectedPrUrl);
+  });
+
+  // ── plan-writer routing ────────────────────────────────────────────────────
+
+  it('routes spec-ready to plan-writer and transitions to plan-draft', async () => {
+    transition.mockResolvedValue({ currentStage: 'plan-draft' });
+
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        await mkdir(join(args[2]!, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create')
+        return { stdout: 'https://github.com/test-org/test-knowledge/pull/9\n' };
+      return { stdout: '' };
+    });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-ready' },
+      makeProduct(),
+      makePlanWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        githubToken: 'test-token',
+        fetchFn: makePlanFetchFn(),
+        runGit,
+        runGh,
+      },
+    );
+
+    expect(result.specialistId).toBe('plan-writer');
+    expect(result.status).toBe('done');
+    expect(result.newStage).toBe('plan-draft');
+    expect(transition).toHaveBeenCalledOnce();
+  });
+
+  it('plan-writer returns error without spawning when githubToken is absent', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-ready' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir }, // no githubToken
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('GITHUB_TOKEN');
+    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('plan-writer returns error without spawning when spec is not found', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+
+    // fetchFn always returns 404 — spec is absent in knowledge repo
+    const fetchFn: FetchFn = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: () => Promise.resolve('Not Found'),
+    } as Response);
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-ready' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain("Spec not found for item 'issue_1'");
+    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(transition).not.toHaveBeenCalled();
   });
 });

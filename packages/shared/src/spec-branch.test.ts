@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { SPEC_BRANCH_PREFIX, specBranchName, parseSpecBranch } from './spec-branch.js';
+import {
+  SPEC_BRANCH_PREFIX,
+  specBranchName,
+  parseSpecBranch,
+  PLAN_BRANCH_PREFIX,
+  planBranchName,
+} from './spec-branch.js';
 
 describe('SPEC_BRANCH_PREFIX', () => {
   it('is helm/spec/', () => {
@@ -56,5 +62,25 @@ describe('parseSpecBranch', () => {
     for (const id of ids) {
       expect(parseSpecBranch(specBranchName(id))).toBe(id);
     }
+  });
+});
+
+describe('PLAN_BRANCH_PREFIX', () => {
+  it('is helm/plan/', () => {
+    expect(PLAN_BRANCH_PREFIX).toBe('helm/plan/');
+  });
+});
+
+describe('planBranchName', () => {
+  it('prepends helm/plan/ to the externalId', () => {
+    expect(planBranchName('HLM-42')).toBe('helm/plan/HLM-42');
+    expect(planBranchName('issue_1')).toBe('helm/plan/issue_1');
+    expect(planBranchName('feature.v2')).toBe('helm/plan/feature.v2');
+  });
+
+  it('produces a different branch than specBranchName for the same id', () => {
+    expect(planBranchName('HLM-42')).not.toBe(specBranchName('HLM-42'));
+    expect(planBranchName('HLM-42')).toBe('helm/plan/HLM-42');
+    expect(specBranchName('HLM-42')).toBe('helm/spec/HLM-42');
   });
 });

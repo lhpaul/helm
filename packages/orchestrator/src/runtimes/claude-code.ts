@@ -20,26 +20,54 @@ export interface SubprocessLike {
   readonly exited: Promise<number>;
 }
 
-export type SpawnFn = (args: string[], cwd: string) => SubprocessLike;
+export type SpawnFn = (args: string[], cwd: string, env: Record<string, string>) => SubprocessLike;
 
 /** Default timeout: 5 minutes. Enough for a spec-writer run; override in tests. */
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
+ * Builds the subprocess environment from the host `process.env`, applying two
+ * transformations:
+ *
+ *  1. **Token scrub**: `GITHUB_TOKEN` and `GH_TOKEN` are deleted so that a
+ *     compromised agent subprocess cannot exfiltrate the host's git credentials
+ *     via tool calls.  The implementer workspace is provisioned with the token
+ *     before the agent starts; the agent never needs the raw token.
+ *
+ *  2. **Extra env**: caller-provided key/value pairs are merged on top (used by
+ *     future specialists that need their own env vars, e.g. API keys).
+ *
+ * Returns a plain `Record<string, string>` — all values are guaranteed to be
+ * strings (undefined entries from `process.env` are filtered out).
+ */
+export function buildSubprocessEnv(extra?: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined) env[k] = v;
+  }
+  // Scrub credentials — agents must not have access to the host token.
+  delete env['GITHUB_TOKEN'];
+  delete env['GH_TOKEN'];
+  // Merge caller-provided overrides last so they can set whatever the specialist needs.
+  if (extra) Object.assign(env, extra);
+  return env;
+}
+
+/**
  * Default spawn: delegates to Bun.spawn with stdout and stderr piped.
  * Using globalThis cast to avoid a bun-types dev-dependency in this package.
  */
-function defaultSpawn(args: string[], cwd: string): SubprocessLike {
+function defaultSpawn(args: string[], cwd: string, env: Record<string, string>): SubprocessLike {
   const bun = (globalThis as Record<string, unknown>)['Bun'] as
     | {
         spawn(
           args: string[],
-          options: { cwd: string; stdout: 'pipe'; stderr: 'pipe' },
+          options: { cwd: string; stdout: 'pipe'; stderr: 'pipe'; env: Record<string, string> },
         ): SubprocessLike;
       }
     | undefined;
   if (!bun) throw new Error('ClaudeCodeRuntime requires the Bun runtime');
-  return bun.spawn(args, { cwd, stdout: 'pipe', stderr: 'pipe' });
+  return bun.spawn(args, { cwd, stdout: 'pipe', stderr: 'pipe', env });
 }
 
 // ── JSONL message shapes (minimal — only fields we act on) ────────────────────
@@ -345,6 +373,9 @@ export class ClaudeCodeRuntime implements IAgentRuntime {
   }
 
   async spawn(params: SpawnParams): Promise<AgentSession> {
+    const permissionMode = params.permissionMode ?? 'acceptEdits';
+    const timeoutMs = params.timeoutMs ?? this.timeoutMs;
+
     const args = [
       'claude',
       '--print',
@@ -354,14 +385,18 @@ export class ClaudeCodeRuntime implements IAgentRuntime {
       'stream-json',
       '--verbose',
       '--permission-mode',
-      'acceptEdits',
+      permissionMode,
     ];
     if (params.model) {
       args.push('--model', params.model);
     }
 
-    const proc = this.spawnFn(args, params.workdir);
-    const session = new ClaudeCodeSession(proc, params, this.timeoutMs);
+    // Build a sanitized subprocess environment: host env with GITHUB_TOKEN and
+    // GH_TOKEN scrubbed, then merged with any caller-provided overrides.
+    const env = buildSubprocessEnv(params.env);
+
+    const proc = this.spawnFn(args, params.workdir, env);
+    const session = new ClaudeCodeSession(proc, params, timeoutMs);
     // Run asynchronously — same pattern as MockAgentRuntime.
     // The first `await reader.read()` in run() yields naturally, so callers
     // can register onMessage handlers before any messages are emitted.

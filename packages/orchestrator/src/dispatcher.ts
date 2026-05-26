@@ -1,5 +1,7 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import type { WorkflowStage } from '@helm/workflow';
 import type { Product } from '@helm/shared';
 import type { IAgentRuntime } from './runtime.js';
@@ -7,7 +9,17 @@ import type { ItemTransitionFn } from './specialists/spec-writer.js';
 import { buildSpecWriterParams, handleSpecWriterResult } from './specialists/spec-writer.js';
 import { buildPlanWriterParams, handlePlanWriterResult } from './specialists/plan-writer.js';
 import type { PlanPublishOptions } from './specialists/plan-writer.js';
-import { fetchProductContext, fetchSpecForPlan } from './specialists/fetch-product-context.js';
+import {
+  buildImplementerParams,
+  handleImplementerResult,
+  type ImplementerPublishOptions,
+} from './specialists/implementer.js';
+import { provisionCodeWorkspace } from './specialists/code-workspace.js';
+import {
+  fetchProductContext,
+  fetchSpecForPlan,
+  fetchPlanForImplementer,
+} from './specialists/fetch-product-context.js';
 import type { FetchFn } from './specialists/fetch-product-context.js';
 import type { RunGit, RunGh } from './specialists/spec-publisher.js';
 
@@ -16,6 +28,7 @@ import type { RunGit, RunGh } from './specialists/spec-publisher.js';
 const STAGE_TO_SPECIALIST: Partial<Record<WorkflowStage, string>> = {
   discovery: 'spec-writer',
   'spec-ready': 'plan-writer',
+  'plan-ready': 'implementer',
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -247,6 +260,157 @@ export async function dispatchStageHandler(
       prUrl: planResult.prUrl,
       error: planResult.error,
     };
+  }
+
+  if (specialistId === 'implementer') {
+    // Token is required — implementer needs it to clone the code repo and open a PR.
+    if (!options?.githubToken) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: 'implementer requires GITHUB_TOKEN',
+      };
+    }
+
+    // Code repo is required — implementer clones it to write the implementation.
+    const codeRepo = product.code_repos[0];
+    if (!codeRepo) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: 'implementer requires at least one code_repo in product config',
+      };
+    }
+
+    // ── Fetch plan (required input) ──────────────────────────────────────────
+    let plan: string;
+    try {
+      const planContent = await fetchPlanForImplementer(
+        product,
+        item.externalId,
+        options.githubToken,
+        options.fetchFn,
+      );
+      if (planContent === null) {
+        return {
+          specialistId,
+          status: 'error',
+          costUsd: 0,
+          durationMs: 0,
+          error: `Plan not found for item '${item.externalId}' in knowledge repo`,
+        };
+      }
+      plan = planContent;
+    } catch (err) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: `Failed to fetch plan: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    // ── Fetch product context (best-effort) ──────────────────────────────────
+    const context = await fetchProductContext(product, options.githubToken, options.fetchFn).catch(
+      (err) => {
+        console.error('[dispatcher] Failed to fetch product context (continuing without it):', err);
+        return undefined;
+      },
+    );
+
+    // ── Transition plan-ready → in-development (before spawning agent) ───────
+    try {
+      await transition({
+        externalId: item.externalId,
+        toStage: 'in-development',
+        triggeredBy: 'specialist:implementer',
+      });
+    } catch (err) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: `Failed to transition to in-development: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    // ── Provision code workspace (shallow clone + impl branch) ───────────────
+    const workspaceId = `helm-impl-${item.externalId}-${randomUUID()}`;
+    const workspacePath = join(tmpdir(), workspaceId);
+    let provisionedWorkspace = false;
+    let actualWorkspacePath = workspacePath;
+
+    try {
+      const provisioned = await provisionCodeWorkspace(
+        {
+          externalId: item.externalId,
+          codeRepo,
+          githubToken: options.githubToken,
+        },
+        options.runGit,
+      );
+      actualWorkspacePath = provisioned.workspacePath;
+      provisionedWorkspace = true;
+    } catch (err) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: `Failed to provision code workspace: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    try {
+      const params = buildImplementerParams(
+        item.externalId,
+        product,
+        actualWorkspacePath,
+        plan,
+        context,
+      );
+      const session = await runtime.spawn(params);
+      const agentResult = await session.wait();
+
+      const publishOpts: ImplementerPublishOptions | undefined = options.githubToken
+        ? {
+            product,
+            githubToken: options.githubToken,
+            runGit: options.runGit,
+            runGh: options.runGh,
+          }
+        : undefined;
+
+      const implResult = await handleImplementerResult(
+        item.externalId,
+        agentResult,
+        actualWorkspacePath,
+        codeRepo,
+        transition,
+        publishOpts,
+      );
+
+      return {
+        specialistId,
+        status: agentResult.status,
+        newStage: implResult.newStage,
+        costUsd: agentResult.totalCostUsd,
+        durationMs: agentResult.durationMs,
+        prUrl: implResult.prUrl,
+        error: implResult.error,
+      };
+    } finally {
+      // Always clean up the provisioned workspace, even on error.
+      if (provisionedWorkspace) {
+        await rm(actualWorkspacePath, { recursive: true, force: true }).catch(() => {});
+      }
+    }
   }
 
   // Stub for future specialists

@@ -1,14 +1,18 @@
 import { copyFile, mkdir, rm } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { promisify } from 'node:util';
 import type { Product } from '@helm/shared';
 import { specBranchName, planBranchName } from '@helm/shared';
 import { parseGitHubRepoUrl } from './fetch-product-context.js';
-
-const execFileAsync = promisify(execFile);
+import {
+  buildAuthenticatedUrl,
+  sanitizeToken,
+  defaultRunGit,
+  defaultRunGh,
+  type RunGit,
+  type RunGh,
+} from './git-helpers.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -56,79 +60,12 @@ export type PublishArtifactResult = {
   prUrl: string;
 };
 
-/**
- * Injectable runner for git commands — receives an arg list and cwd.
- * Resolves with stdout; throws on non-zero exit.
- */
-export type RunGit = (
-  args: string[],
-  opts: { cwd: string; env?: NodeJS.ProcessEnv },
-) => Promise<{ stdout: string }>;
-
-/**
- * Injectable runner for gh commands — receives an arg list.
- * Resolves with stdout; throws on non-zero exit.
- */
-export type RunGh = (
-  args: string[],
-  opts: { env?: NodeJS.ProcessEnv },
-) => Promise<{ stdout: string }>;
-
-// ── Default runners ───────────────────────────────────────────────────────────
-
-export const defaultRunGit: RunGit = async (args, opts) => {
-  // Resolve 'git' from PATH for portability (avoids hardcoding /usr/bin/git
-  // which may differ on Linux containers, NixOS, Windows, or Homebrew setups).
-  const { stdout } = await execFileAsync('git', args, {
-    cwd: opts.cwd,
-    env: { ...process.env, ...opts.env, GIT_TERMINAL_PROMPT: '0' },
-  });
-  return { stdout };
-};
-
-export const defaultRunGh: RunGh = async (args, opts) => {
-  const { stdout } = await execFileAsync('gh', args, {
-    env: { ...process.env, ...opts.env },
-  });
-  return { stdout };
-};
-
-// ── Auth helpers ─────────────────────────────────────────────────────────────
-
-/**
- * Builds an HTTPS URL with the token embedded as basic-auth credentials.
- * Format: `https://x-access-token:{token}@github.com/{owner}/{repo}`
- *
- * This URL is used for `git clone` only.  The `origin` remote inside the
- * resulting clone stores this URL (including the token) in `.git/config`.
- * Since every publish uses a fresh isolated temp directory that is deleted in
- * the `finally` block, the on-disk lifetime of the token is bounded to the
- * duration of a single publish operation.
- *
- * ⚠ NEVER pass this URL to logging calls.  Use the plain `knowledgeRepo.url`
- *   in user-visible messages; pass raw error text through `sanitizeToken`.
- */
-function buildAuthenticatedUrl(owner: string, repo: string, token: string): string {
-  return `https://x-access-token:${token}@github.com/${owner}/${repo}`;
-}
-
-/**
- * Redacts ALL occurrences of the token from a string so that git error messages
- * (which may echo the remote URL) are safe to surface to operators.
- *
- * Replaces both:
- *   - every `x-access-token:<token>@`  →  `x-access-token:***@`  (URL pattern)
- *   - every bare token string          →  `***`                    (safety net)
- *
- * Uses replaceAll so that multiple occurrences in a single message are all
- * redacted (e.g. a git error that echoes the URL twice, or a stack trace that
- * includes both the URL pattern and the raw token).
- */
-function sanitizeToken(text: string, token: string): string {
-  return text
-    .replaceAll(`x-access-token:${token}@`, 'x-access-token:***@')
-    .replaceAll(token, '***');
-}
+// ── Re-exports for backward compatibility ─────────────────────────────────────
+// RunGit and RunGh are imported by the dispatcher and tests via spec-publisher.
+// They now live in git-helpers.ts but are re-exported here so existing import
+// paths continue to work without changes.
+export type { RunGit, RunGh } from './git-helpers.js';
+export { defaultRunGit, defaultRunGh } from './git-helpers.js';
 
 // ── Kind-specific configuration ───────────────────────────────────────────────
 

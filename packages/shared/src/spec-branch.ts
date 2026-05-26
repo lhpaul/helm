@@ -47,6 +47,21 @@ export function planBranchName(externalId: string): string {
 }
 
 /**
+ * Prefix used for all implementation branches in the code repo.
+ * Example branch: `helm/impl/HLM-42`
+ */
+export const IMPL_BRANCH_PREFIX = 'helm/impl/';
+
+/**
+ * Returns the code-repo branch name for an implementation artifact.
+ *
+ * @example implBranchName('HLM-42') // → 'helm/impl/HLM-42'
+ */
+export function implBranchName(externalId: string): string {
+  return `${IMPL_BRANCH_PREFIX}${externalId}`;
+}
+
+/**
  * Discriminates between the two kinds of artifact branches in the knowledge
  * repo.  Used by `parseArtifactBranch` to communicate which workflow artifact
  * type a git ref belongs to.

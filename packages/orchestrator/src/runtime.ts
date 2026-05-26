@@ -33,6 +33,25 @@ export interface SpawnParams {
   externalId: string;
   /** Optional runtime hint, e.g. 'claude-sonnet-4-6'. */
   model?: string;
+  /**
+   * Claude Code permission mode for this spawn.
+   * - `'acceptEdits'` (default): auto-accepts file writes; requires approval for Bash.
+   * - `'bypassPermissions'`: skips all permission prompts (needed for the implementer
+   *   which runs arbitrary code in its workspace).
+   */
+  permissionMode?: 'acceptEdits' | 'bypassPermissions';
+  /**
+   * Per-spawn timeout override in milliseconds.
+   * Overrides the runtime-level `timeoutMs` option for this specific session.
+   */
+  timeoutMs?: number;
+  /**
+   * Additional environment variables to set in the agent subprocess.
+   * Merged on top of the base subprocess environment.
+   * The base environment is derived from `process.env` with GITHUB_TOKEN and
+   * GH_TOKEN scrubbed (so leaked credentials cannot be accessed from tool calls).
+   */
+  env?: Record<string, string>;
 }
 
 export interface AgentSession {

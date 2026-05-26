@@ -222,6 +222,8 @@ describe('POST /api/webhooks/github', () => {
   });
 
   describe('dispatch: pull_request_merged', () => {
+    // ── Spec merge (helm/spec/ → spec-ready) ────────────────────────────────
+
     it('transitions spec-draft → spec-ready when helm/spec/ branch is merged', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({
@@ -240,20 +242,7 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
-    it('returns 200 without transition when branch is not a spec branch', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'feature/some-feature',
-        timestamp: 't',
-      });
-
-      const res = await post(body, 'pull_request');
-      expect(res.status).toBe(200);
-      expect(mockTransition).not.toHaveBeenCalled();
-    });
-
-    it('returns 200 on WorkflowTransitionError (item already past spec-draft)', async () => {
+    it('returns 200 on WorkflowTransitionError for spec merge (item already past spec-draft)', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({
         type: 'pull_request_merged',
@@ -270,7 +259,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockTransition).toHaveBeenCalledOnce();
     });
 
-    it('returns 200 on ItemNotFoundError (item not in this Helm instance)', async () => {
+    it('returns 200 on ItemNotFoundError for spec merge (item not in this Helm instance)', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({
         type: 'pull_request_merged',
@@ -284,7 +273,7 @@ describe('POST /api/webhooks/github', () => {
       expect(res.status).toBe(200);
     });
 
-    it('returns 500 on unexpected error during transition', async () => {
+    it('returns 500 on unexpected error during spec merge transition', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({
         type: 'pull_request_merged',
@@ -297,11 +286,103 @@ describe('POST /api/webhooks/github', () => {
       expect(res.status).toBe(500);
     });
 
-    it('returns 200 and does not transition for a dot-traversal headRef (parseSpecBranch rejects it)', async () => {
+    // ── Plan merge (helm/plan/ → plan-ready) ─────────────────────────────────
+
+    it('transitions plan-draft → plan-ready when helm/plan/ branch is merged', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'pull_request_merged',
+        headRef: 'helm/plan/issue_42',
+        timestamp: 't',
+      });
+      mockTransition.mockResolvedValue({});
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockTransition).toHaveBeenCalledWith({
+        externalId: 'issue_42',
+        toStage: 'plan-ready',
+        triggeredBy: 'webhook:knowledge-repo',
+      });
+    });
+
+    it('returns 200 on WorkflowTransitionError for plan merge (item already past plan-draft)', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'pull_request_merged',
+        headRef: 'helm/plan/issue_42',
+        timestamp: 't',
+      });
+      const { WorkflowTransitionError } = await import('@helm/workflow');
+      mockTransition.mockRejectedValue(
+        new WorkflowTransitionError('Cannot transition', 'plan-ready', 'plan-ready'),
+      );
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockTransition).toHaveBeenCalledOnce();
+    });
+
+    it('returns 200 on ItemNotFoundError for plan merge (item not in this Helm instance)', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'pull_request_merged',
+        headRef: 'helm/plan/HLM-7',
+        timestamp: 't',
+      });
+      const { ItemNotFoundError } = await import('../services/errors.js');
+      mockTransition.mockRejectedValue(new ItemNotFoundError('HLM-7'));
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+    });
+
+    it('returns 500 on unexpected error during plan merge transition', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'pull_request_merged',
+        headRef: 'helm/plan/issue_42',
+        timestamp: 't',
+      });
+      mockTransition.mockRejectedValue(new Error('storage failure'));
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(500);
+    });
+
+    // ── Non-artifact branches ─────────────────────────────────────────────────
+
+    it('returns 200 without transition when branch is not an artifact branch', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'pull_request_merged',
+        headRef: 'feature/some-feature',
+        timestamp: 't',
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockTransition).not.toHaveBeenCalled();
+    });
+
+    it('returns 200 and does not transition for a dot-traversal headRef (parseArtifactBranch rejects it)', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({
         type: 'pull_request_merged',
         headRef: 'helm/spec/../etc/passwd',
+        timestamp: 't',
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockTransition).not.toHaveBeenCalled();
+    });
+
+    it('returns 200 and does not transition for a dot-traversal plan headRef', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'pull_request_merged',
+        headRef: 'helm/plan/../etc/passwd',
         timestamp: 't',
       });
 

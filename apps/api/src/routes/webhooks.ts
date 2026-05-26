@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { verifyGitHubSignature } from '@helm/adapters';
 import { WorkflowTransitionError } from '@helm/workflow';
-import { parseSpecBranch } from '@helm/shared';
+import { parseArtifactBranch } from '@helm/shared';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
 import { getGitHubAdapter, getItemStore, getProductConfig } from '../services/index.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
@@ -87,25 +87,30 @@ webhooksRouter.post('/webhooks/github', async (c) => {
   } else if (event.type === 'comment_added') {
     console.info(`[webhooks/github] comment_added on ${event.externalId} — no action in v0`);
   } else if (event.type === 'pull_request_merged') {
-    // Interpret the head ref: if it matches helm/spec/{externalId}, advance the
-    // item from spec-draft → spec-ready.  Any other branch (feature/, main, …)
-    // is silently ignored — it belongs to a different workflow.
-    const externalId = parseSpecBranch(event.headRef);
-    if (externalId !== null) {
+    // Interpret the head ref: if it matches helm/spec/{externalId} or
+    // helm/plan/{externalId}, advance the item to the corresponding stage.
+    // Any other branch (feature/, main, …) is silently ignored — it belongs
+    // to a different workflow.
+    const parsed = parseArtifactBranch(event.headRef);
+    if (parsed !== null) {
+      const toStage = parsed.kind === 'spec' ? 'spec-ready' : 'plan-ready';
       const itemStore = await getItemStore();
       try {
         await itemStore.transition({
-          externalId,
-          toStage: 'spec-ready',
+          externalId: parsed.externalId,
+          toStage,
           triggeredBy: 'webhook:knowledge-repo',
         });
       } catch (err) {
         if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
-          // Not a delivery problem — item may already be spec-ready or may not
-          // exist in this Helm instance.  Log and return 200 (idempotent).
-          console.error('[webhooks/github] Spec merge transition not applied:', err.message);
+          // Not a delivery problem — item may already be in the target stage or
+          // may not exist in this Helm instance.  Log and return 200 (idempotent).
+          console.error('[webhooks/github] Artifact merge transition not applied:', err.message);
         } else {
-          console.error('[webhooks/github] Unexpected error during spec merge transition:', err);
+          console.error(
+            '[webhooks/github] Unexpected error during artifact merge transition:',
+            err,
+          );
           return c.json({ error: 'Internal server error' }, 500);
         }
       }

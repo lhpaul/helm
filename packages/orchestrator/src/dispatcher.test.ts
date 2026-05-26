@@ -592,4 +592,67 @@ describe('dispatchStageHandler', () => {
     expect(result.newStage).toBe('code-review');
     expect(result.prUrl).toBe(expectedPrUrl);
   });
+
+  it('implementer returns error without spawning when product has no code_repos', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+
+    // Cast through unknown to bypass the strict Zod-generated type — this
+    // simulates a product that passed validation but has an empty code_repos
+    // array (possible if the Zod schema is relaxed in a future version).
+    const productNoRepos = { ...makeProduct(), code_repos: [] } as unknown as Product;
+
+    const fetchFn: FetchFn = vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve('# Plan content'),
+    } as Response);
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+      productNoRepos,
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('code_repo');
+    expect(result.specialistId).toBe('implementer');
+    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('implementer returns error when provisionCodeWorkspace fails (clone error)', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+
+    const fetchFn: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if ((url as string).includes('/plans/')) {
+        return Promise.resolve({ ok: true, text: () => Promise.resolve('# Plan') } as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      } as Response);
+    });
+
+    // runGit throws on clone — simulates network/auth failure
+    const runGit: RunGit = vi.fn().mockRejectedValue(new Error('fatal: repository not found'));
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn, runGit },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('provision code workspace');
+    expect(spawnSpy).not.toHaveBeenCalled();
+    // plan-ready → in-development transition fires before provision attempt
+    expect(transition).toHaveBeenCalledOnce();
+    expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'in-development' }));
+  });
 });

@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   SPEC_BRANCH_PREFIX,
   specBranchName,
-  parseSpecBranch,
   PLAN_BRANCH_PREFIX,
   planBranchName,
+  parseArtifactBranch,
 } from './spec-branch.js';
 
 describe('SPEC_BRANCH_PREFIX', () => {
@@ -18,50 +18,6 @@ describe('specBranchName', () => {
     expect(specBranchName('HLM-42')).toBe('helm/spec/HLM-42');
     expect(specBranchName('issue_1')).toBe('helm/spec/issue_1');
     expect(specBranchName('feature.v2')).toBe('helm/spec/feature.v2');
-  });
-});
-
-describe('parseSpecBranch', () => {
-  it('returns externalId for a standard spec branch', () => {
-    expect(parseSpecBranch('helm/spec/HLM-42')).toBe('HLM-42');
-    expect(parseSpecBranch('helm/spec/issue_1')).toBe('issue_1');
-    expect(parseSpecBranch('helm/spec/feature.v2')).toBe('feature.v2');
-  });
-
-  it('returns null for non-spec branches', () => {
-    expect(parseSpecBranch('feature/foo')).toBeNull();
-    expect(parseSpecBranch('main')).toBeNull();
-    expect(parseSpecBranch('helm/plan/HLM-42')).toBeNull();
-    expect(parseSpecBranch('')).toBeNull();
-  });
-
-  it('returns null for dot-segment traversal attempts', () => {
-    // helm/spec/../x — the suffix is '../x' which starts with '.'
-    expect(parseSpecBranch('helm/spec/../x')).toBeNull();
-    // helm/spec/. — suffix is '.' (single dot)
-    expect(parseSpecBranch('helm/spec/.')).toBeNull();
-    // helm/spec/.. — suffix is '..' (double dot)
-    expect(parseSpecBranch('helm/spec/..')).toBeNull();
-  });
-
-  it('returns null for dot-prefixed externalIds (hidden-file style)', () => {
-    expect(parseSpecBranch('helm/spec/.hidden')).toBeNull();
-  });
-
-  it('returns null for externalIds with disallowed characters', () => {
-    // slash — path traversal
-    expect(parseSpecBranch('helm/spec/foo/bar')).toBeNull();
-    // space
-    expect(parseSpecBranch('helm/spec/foo bar')).toBeNull();
-    // empty suffix
-    expect(parseSpecBranch('helm/spec/')).toBeNull();
-  });
-
-  it('is the inverse of specBranchName for valid externalIds', () => {
-    const ids = ['HLM-42', 'issue_1', 'feature.v2', 'my-item'];
-    for (const id of ids) {
-      expect(parseSpecBranch(specBranchName(id))).toBe(id);
-    }
   });
 });
 
@@ -82,5 +38,91 @@ describe('planBranchName', () => {
     expect(planBranchName('HLM-42')).not.toBe(specBranchName('HLM-42'));
     expect(planBranchName('HLM-42')).toBe('helm/plan/HLM-42');
     expect(specBranchName('HLM-42')).toBe('helm/spec/HLM-42');
+  });
+});
+
+describe('parseArtifactBranch', () => {
+  // ── Spec branches ──────────────────────────────────────────────────────────
+
+  it('returns { kind: spec, externalId } for a standard spec branch', () => {
+    expect(parseArtifactBranch('helm/spec/HLM-42')).toEqual({ kind: 'spec', externalId: 'HLM-42' });
+    expect(parseArtifactBranch('helm/spec/issue_1')).toEqual({
+      kind: 'spec',
+      externalId: 'issue_1',
+    });
+    expect(parseArtifactBranch('helm/spec/feature.v2')).toEqual({
+      kind: 'spec',
+      externalId: 'feature.v2',
+    });
+  });
+
+  // ── Plan branches ──────────────────────────────────────────────────────────
+
+  it('returns { kind: plan, externalId } for a standard plan branch', () => {
+    expect(parseArtifactBranch('helm/plan/HLM-42')).toEqual({ kind: 'plan', externalId: 'HLM-42' });
+    expect(parseArtifactBranch('helm/plan/issue_1')).toEqual({
+      kind: 'plan',
+      externalId: 'issue_1',
+    });
+    expect(parseArtifactBranch('helm/plan/feature.v2')).toEqual({
+      kind: 'plan',
+      externalId: 'feature.v2',
+    });
+  });
+
+  // ── Non-artifact branches ──────────────────────────────────────────────────
+
+  it('returns null for non-artifact branches', () => {
+    expect(parseArtifactBranch('feature/foo')).toBeNull();
+    expect(parseArtifactBranch('main')).toBeNull();
+    expect(parseArtifactBranch('')).toBeNull();
+  });
+
+  // ── Traversal / injection guards ──────────────────────────────────────────
+
+  it('returns null for dot-segment traversal attempts in spec branches', () => {
+    expect(parseArtifactBranch('helm/spec/../x')).toBeNull();
+    expect(parseArtifactBranch('helm/spec/.')).toBeNull();
+    expect(parseArtifactBranch('helm/spec/..')).toBeNull();
+  });
+
+  it('returns null for dot-segment traversal attempts in plan branches', () => {
+    expect(parseArtifactBranch('helm/plan/../x')).toBeNull();
+    expect(parseArtifactBranch('helm/plan/.')).toBeNull();
+    expect(parseArtifactBranch('helm/plan/..')).toBeNull();
+  });
+
+  it('returns null for dot-prefixed externalIds (hidden-file style)', () => {
+    expect(parseArtifactBranch('helm/spec/.hidden')).toBeNull();
+    expect(parseArtifactBranch('helm/plan/.hidden')).toBeNull();
+  });
+
+  it('returns null for externalIds with disallowed characters', () => {
+    // slash — path traversal
+    expect(parseArtifactBranch('helm/spec/foo/bar')).toBeNull();
+    expect(parseArtifactBranch('helm/plan/foo/bar')).toBeNull();
+    // space
+    expect(parseArtifactBranch('helm/spec/foo bar')).toBeNull();
+    // empty suffix
+    expect(parseArtifactBranch('helm/spec/')).toBeNull();
+    expect(parseArtifactBranch('helm/plan/')).toBeNull();
+  });
+
+  // ── Inverse property ──────────────────────────────────────────────────────
+
+  it('is the inverse of specBranchName for valid externalIds', () => {
+    const ids = ['HLM-42', 'issue_1', 'feature.v2', 'my-item'];
+    for (const id of ids) {
+      const parsed = parseArtifactBranch(specBranchName(id));
+      expect(parsed).toEqual({ kind: 'spec', externalId: id });
+    }
+  });
+
+  it('is the inverse of planBranchName for valid externalIds', () => {
+    const ids = ['HLM-42', 'issue_1', 'feature.v2', 'my-item'];
+    for (const id of ids) {
+      const parsed = parseArtifactBranch(planBranchName(id));
+      expect(parsed).toEqual({ kind: 'plan', externalId: id });
+    }
   });
 });

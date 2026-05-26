@@ -1,9 +1,11 @@
 /**
- * Single source of truth for the knowledge-repo spec branch naming convention.
+ * Single source of truth for the knowledge-repo artifact branch naming
+ * convention (spec and plan branches).
  *
- * All code that creates, matches, or parses `helm/spec/{externalId}` branches
- * must go through these helpers so the convention stays in sync across the
- * orchestrator (spec-publisher) and the API (webhook handler).
+ * All code that creates, matches, or parses `helm/spec/{externalId}` or
+ * `helm/plan/{externalId}` branches must go through these helpers so the
+ * convention stays in sync across the orchestrator (spec-publisher,
+ * plan-publisher) and the API (webhook handler).
  */
 
 /**
@@ -45,22 +47,39 @@ export function planBranchName(externalId: string): string {
 }
 
 /**
- * Parses a git ref and returns the externalId if the ref is a valid spec branch,
- * or `null` if it is not.
+ * Discriminates between the two kinds of artifact branches in the knowledge
+ * repo.  Used by `parseArtifactBranch` to communicate which workflow artifact
+ * type a git ref belongs to.
+ */
+export type ArtifactBranchKind = 'spec' | 'plan';
+
+/**
+ * Parses a git ref and returns the artifact kind and externalId if the ref is
+ * a valid spec or plan branch, or `null` if it is not.
  *
- * A valid spec branch:
- *   - Starts with `helm/spec/`
+ * A valid artifact branch:
+ *   - Starts with `helm/spec/` (kind: 'spec') or `helm/plan/` (kind: 'plan')
  *   - Has a non-empty suffix that passes the externalId regex
  *     (blocks leading dots, slashes, spaces, and other unsafe characters)
  *
  * @example
- *   parseSpecBranch('helm/spec/HLM-42')  // → 'HLM-42'
- *   parseSpecBranch('helm/spec/../x')    // → null  (dot-segment traversal)
- *   parseSpecBranch('feature/foo')       // → null  (not a spec branch)
+ *   parseArtifactBranch('helm/spec/HLM-42')  // → { kind: 'spec', externalId: 'HLM-42' }
+ *   parseArtifactBranch('helm/plan/HLM-42')  // → { kind: 'plan', externalId: 'HLM-42' }
+ *   parseArtifactBranch('helm/spec/../x')    // → null  (dot-segment traversal)
+ *   parseArtifactBranch('feature/foo')       // → null  (not an artifact branch)
  */
-export function parseSpecBranch(ref: string): string | null {
-  if (!ref.startsWith(SPEC_BRANCH_PREFIX)) return null;
-  const externalId = ref.slice(SPEC_BRANCH_PREFIX.length);
-  if (!VALID_EXTERNAL_ID.test(externalId)) return null;
-  return externalId;
+export function parseArtifactBranch(
+  ref: string,
+): { kind: ArtifactBranchKind; externalId: string } | null {
+  if (ref.startsWith(SPEC_BRANCH_PREFIX)) {
+    const externalId = ref.slice(SPEC_BRANCH_PREFIX.length);
+    if (!VALID_EXTERNAL_ID.test(externalId)) return null;
+    return { kind: 'spec', externalId };
+  }
+  if (ref.startsWith(PLAN_BRANCH_PREFIX)) {
+    const externalId = ref.slice(PLAN_BRANCH_PREFIX.length);
+    if (!VALID_EXTERNAL_ID.test(externalId)) return null;
+    return { kind: 'plan', externalId };
+  }
+  return null;
 }

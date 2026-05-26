@@ -281,4 +281,24 @@ describe('fetchSpecForPlan', () => {
 
     expect(content).toBe(normalSpec);
   });
+
+  it('throws when spec fetch returns a non-404 error (e.g. 403)', async () => {
+    const mockFetch: FetchFn = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      text: () => Promise.resolve('Forbidden'),
+    } as Response);
+
+    await expect(fetchSpecForPlan(makeProduct(), 'issue_1', 'tok', mockFetch)).rejects.toThrow(
+      /403/,
+    );
+  });
+
+  it('throws on invalid externalId (path traversal)', async () => {
+    const mockFetch: FetchFn = vi.fn();
+    await expect(fetchSpecForPlan(makeProduct(), '../evil', 'tok', mockFetch)).rejects.toThrow(
+      /Invalid externalId/,
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
 });

@@ -174,7 +174,8 @@ export async function handlePlanWriterResult(
       console.error('[plan-writer] Agent failure details', {
         externalId,
         status: agentResult.status,
-        finalOutput: agentResult.finalOutput,
+        hasFinalOutput: true,
+        finalOutputChars: agentResult.finalOutput.length,
       });
     }
     return {
@@ -193,7 +194,8 @@ export async function handlePlanWriterResult(
     console.error('[plan-writer] Plan file missing after agent run', {
       externalId,
       planPath,
-      agentFinalOutput: agentResult.finalOutput,
+      hasAgentFinalOutput: Boolean(agentResult.finalOutput),
+      agentFinalOutputChars: agentResult.finalOutput?.length ?? 0,
     });
     return {
       transitioned: false,

@@ -196,6 +196,7 @@ describe('handlePlanWriterResult', () => {
   it('error message does not expose finalOutput (may contain spec content)', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
+      // No plan file written — triggers "plan file missing" branch which logs metadata only.
       const result = await handlePlanWriterResult(
         'issue_1',
         doneResult({
@@ -207,11 +208,12 @@ describe('handlePlanWriterResult', () => {
       );
 
       expect(result.error).not.toContain('SECRET_SPEC_CONTENT');
-      // But the console.error should still contain it for operators
+      // console.error logs metadata only — raw finalOutput must not appear.
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('[plan-writer]'),
         expect.objectContaining({
-          agentFinalOutput: expect.stringContaining('SECRET_SPEC_CONTENT'),
+          hasAgentFinalOutput: true,
+          agentFinalOutputChars: expect.any(Number),
         }),
       );
     } finally {

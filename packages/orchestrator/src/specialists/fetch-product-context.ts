@@ -52,7 +52,8 @@ export function parseGitHubRepoUrl(url: string): { owner: string; repo: string }
 
 /**
  * Fetches raw file content from GitHub via raw.githubusercontent.com.
- * Returns null on 404 or any non-2xx response (treated as "file does not exist").
+ * Returns null on 404 (file does not exist).
+ * Throws a descriptive error on any other non-2xx status (auth, server errors, etc.).
  * Throws on network errors.
  *
  * Exported so that other specialists (e.g. plan-writer's fetchSpecForPlan) can
@@ -70,7 +71,10 @@ export async function fetchRawFile(
   const res = await fetchFn(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) return null;
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`fetchRawFile: HTTP ${res.status} fetching ${url}`);
+  }
   return res.text();
 }
 
@@ -143,12 +147,18 @@ export async function fetchProductContext(
  * @param token       GitHub personal access token (repo scope).
  * @param fetchFn     HTTP fetch function — injectable for testing.
  */
+const EXTERNAL_ID_SAFE = /^(?!\.)[A-Za-z0-9._-]+$/;
+
 export async function fetchSpecForPlan(
   product: Product,
   externalId: string,
   token: string,
   fetchFn: FetchFn = fetch,
 ): Promise<string | null> {
+  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+    throw new Error(`[fetch-spec] Invalid externalId: "${externalId}"`);
+  }
+
   const parsed = parseGitHubRepoUrl(product.knowledge_repo.url);
   if (!parsed) return null;
 

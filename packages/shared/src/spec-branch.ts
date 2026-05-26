@@ -30,6 +30,21 @@ export function specBranchName(externalId: string): string {
 }
 
 /**
+ * Prefix used for all plan branches in the knowledge repo.
+ * Example branch: `helm/plan/HLM-42`
+ */
+export const PLAN_BRANCH_PREFIX = 'helm/plan/';
+
+/**
+ * Returns the knowledge-repo branch name for a plan artifact.
+ *
+ * @example planBranchName('HLM-42') // → 'helm/plan/HLM-42'
+ */
+export function planBranchName(externalId: string): string {
+  return `${PLAN_BRANCH_PREFIX}${externalId}`;
+}
+
+/**
  * Parses a git ref and returns the externalId if the ref is a valid spec branch,
  * or `null` if it is not.
  *

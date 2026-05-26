@@ -5,15 +5,17 @@ import type { Product } from '@helm/shared';
 import type { IAgentRuntime } from './runtime.js';
 import type { ItemTransitionFn } from './specialists/spec-writer.js';
 import { buildSpecWriterParams, handleSpecWriterResult } from './specialists/spec-writer.js';
-import { fetchProductContext } from './specialists/fetch-product-context.js';
+import { buildPlanWriterParams, handlePlanWriterResult } from './specialists/plan-writer.js';
+import type { PlanPublishOptions } from './specialists/plan-writer.js';
+import { fetchProductContext, fetchSpecForPlan } from './specialists/fetch-product-context.js';
 import type { FetchFn } from './specialists/fetch-product-context.js';
 import type { RunGit, RunGh } from './specialists/spec-publisher.js';
 
 // ── Stage → specialist mapping ────────────────────────────────────────────────
-// Expanded in later sessions (plan-writer, implementer, etc.)
 
 const STAGE_TO_SPECIALIST: Partial<Record<WorkflowStage, string>> = {
   discovery: 'spec-writer',
+  'spec-ready': 'plan-writer',
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -163,6 +165,87 @@ export async function dispatchStageHandler(
       durationMs: agentResult.durationMs,
       prUrl: specResult.prUrl,
       error: specResult.error,
+    };
+  }
+
+  if (specialistId === 'plan-writer') {
+    // Token is required — plan-writer needs it to fetch the spec AND publish the plan.
+    if (!options?.githubToken) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: 'plan-writer requires GITHUB_TOKEN',
+      };
+    }
+
+    // ── Fetch spec (required input) ──────────────────────────────────────────
+    // Unlike product context, a missing spec is a hard error: we cannot write a
+    // plan without the approved specification.
+    let spec: string;
+    try {
+      const specContent = await fetchSpecForPlan(
+        product,
+        item.externalId,
+        options.githubToken,
+        options.fetchFn,
+      );
+      if (specContent === null) {
+        return {
+          specialistId,
+          status: 'error',
+          costUsd: 0,
+          durationMs: 0,
+          error: `Spec not found for item '${item.externalId}' in knowledge repo`,
+        };
+      }
+      spec = specContent;
+    } catch (err) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: `Failed to fetch spec: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    // ── Fetch product context (best-effort) ──────────────────────────────────
+    const context = await fetchProductContext(product, options.githubToken, options.fetchFn).catch(
+      (err) => {
+        console.error('[dispatcher] Failed to fetch product context (continuing without it):', err);
+        return undefined;
+      },
+    );
+
+    const params = buildPlanWriterParams(item.externalId, product, workdir, spec, context);
+    const session = await runtime.spawn(params);
+    const agentResult = await session.wait();
+
+    const publishOpts: PlanPublishOptions = {
+      product,
+      githubToken: options.githubToken,
+      runGit: options.runGit,
+      runGh: options.runGh,
+    };
+
+    const planResult = await handlePlanWriterResult(
+      item.externalId,
+      agentResult,
+      workdir,
+      transition,
+      publishOpts,
+    );
+
+    return {
+      specialistId,
+      status: agentResult.status,
+      newStage: planResult.newStage,
+      costUsd: agentResult.totalCostUsd,
+      durationMs: agentResult.durationMs,
+      prUrl: planResult.prUrl,
+      error: planResult.error,
     };
   }
 

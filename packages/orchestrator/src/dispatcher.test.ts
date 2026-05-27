@@ -579,7 +579,7 @@ describe('dispatchStageHandler', () => {
 
     expect(result.specialistId).toBe('implementer');
     expect(result.status).toBe('done');
-    // plan-ready → in-development (before agent), in-development → code-review (after PR)
+    // plan-ready → in-development (after clone, before agent), in-development → code-review (after PR)
     expect(transition).toHaveBeenCalledTimes(2);
     expect(transition).toHaveBeenNthCalledWith(
       1,
@@ -651,8 +651,7 @@ describe('dispatchStageHandler', () => {
     expect(result.status).toBe('error');
     expect(result.error).toContain('provision code workspace');
     expect(spawnSpy).not.toHaveBeenCalled();
-    // plan-ready → in-development transition fires before provision attempt
-    expect(transition).toHaveBeenCalledOnce();
-    expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'in-development' }));
+    // Provision fails BEFORE the stage transition — item stays in plan-ready (re-dispatchable).
+    expect(transition).not.toHaveBeenCalled();
   });
 });

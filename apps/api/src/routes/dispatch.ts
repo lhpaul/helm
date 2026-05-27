@@ -184,7 +184,8 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
       const trackerItem = await adapter.getItem(externalId);
       if (!trackerItem) return null;
       return { title: trackerItem.title, body: trackerItem.body };
-    } catch {
+    } catch (err) {
+      console.error(`[dispatch] fetchTask failed for externalId=${externalId}:`, err);
       return null;
     }
   };

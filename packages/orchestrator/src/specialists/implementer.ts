@@ -20,6 +20,17 @@ import type { RunGit, RunGh } from './git-helpers.js';
 
 export type { ItemTransitionFn };
 
+// ── Timeout ───────────────────────────────────────────────────────────────────
+
+/**
+ * Default timeout for the implementer specialist.
+ *
+ * 20 minutes covers: code generation, running the full test suite once or
+ * twice (fixing failures), and lint passes.  Adjust via `params.timeoutMs`
+ * if a particular repo's CI is known to be slower.
+ */
+export const IMPLEMENTER_TIMEOUT_MS = 20 * 60 * 1_000; // 20 minutes
+
 // ── Result type ───────────────────────────────────────────────────────────────
 
 export type ImplementerResult = {
@@ -88,11 +99,28 @@ function buildImplementerPrompt(
     '',
     'The working directory is the code repository. Implement the approved plan below by writing, editing, or deleting files as required. Follow the repository conventions (language, style, tests, etc.).',
     '',
-    '**Rules:**',
+    '**Implementation rules:**',
     '- Make only the changes required by the plan. Do not refactor unrelated code.',
     '- If the plan specifies tests, write them.',
     '- Do not commit or push — that is handled by the orchestrator after you finish.',
-    '- When done, output a brief summary of what you implemented.',
+    '',
+    '**Verification (required before finishing):**',
+    '1. Locate the test and lint commands for this repository.',
+    '   Check in order: `AGENT.md`, `CLAUDE.md`, `README.md`, `package.json` scripts,',
+    '   `Makefile`. Common patterns: `pnpm test`, `npm test`, `cargo test`,',
+    '   `pytest`, `go test ./...`, `make test`, `pnpm lint`, `eslint`.',
+    '2. Run the tests. If any tests fail **because of changes you made**, fix them',
+    '   before finishing. Pre-existing failures unrelated to the plan do not need',
+    '   to be fixed — but document them so reviewers can distinguish them.',
+    '3. Run the linter. Fix any lint errors your changes introduced.',
+    '4. Repeat until tests pass and lint is clean for the code you changed.',
+    '5. **If you cannot reach a green state** (e.g. a pre-existing failure blocks the',
+    '   test runner, or a fix would exceed the plan scope), state this explicitly in',
+    '   your final summary:',
+    '   - What is failing and the exact error message',
+    '   - Whether the failure is pre-existing or introduced by your changes',
+    '   - What you attempted to fix it',
+    '   Do NOT claim success if tests are still failing because of your changes.',
     '',
   ];
 
@@ -111,7 +139,7 @@ function buildImplementerPrompt(
  * Key differences from spec-writer / plan-writer:
  * - `permissionMode: 'bypassPermissions'` — the agent needs to run shell
  *   commands (test runners, package managers, etc.) without prompting.
- * - `timeoutMs: 15 * 60 * 1000` — implementation typically takes longer.
+ * - `timeoutMs: IMPLEMENTER_TIMEOUT_MS` (20 minutes) — covers code generation plus test runs.
  * - `env` does NOT include GITHUB_TOKEN (scrubbed by buildSubprocessEnv in the
  *   runtime — the agent must not have direct git push access).
  */
@@ -131,7 +159,7 @@ export function buildImplementerParams(
     externalId,
     model: specialistCfg.model,
     permissionMode: 'bypassPermissions',
-    timeoutMs: 15 * 60 * 1000, // 15 minutes — implementation takes longer
+    timeoutMs: IMPLEMENTER_TIMEOUT_MS,
   };
 }
 

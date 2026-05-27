@@ -321,25 +321,10 @@ export async function dispatchStageHandler(
       },
     );
 
-    // ── Transition plan-ready → in-development (before spawning agent) ───────
-    try {
-      await transition({
-        externalId: item.externalId,
-        toStage: 'in-development',
-        triggeredBy: 'specialist:implementer',
-      });
-    } catch (err) {
-      return {
-        specialistId,
-        status: 'error',
-        costUsd: 0,
-        durationMs: 0,
-        error: `Failed to transition to in-development: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-
     // ── Provision code workspace (shallow clone + impl branch) ───────────────
-    // actualWorkspacePath is set by provisionCodeWorkspace on success.
+    // Provisioning happens BEFORE the stage transition so that a clone/network
+    // failure leaves the item in plan-ready (re-dispatchable) instead of stuck
+    // in in-development with no running agent and no workspace to clean up.
     let provisionedWorkspace = false;
     let actualWorkspacePath = '';
 
@@ -364,7 +349,28 @@ export async function dispatchStageHandler(
       };
     }
 
+    // All steps from here onwards run inside a try/finally that guarantees
+    // the provisioned workspace is cleaned up regardless of outcome.
     try {
+      // ── Transition plan-ready → in-development (after successful clone) ─────
+      // Clone succeeded — signal "work in progress" before spawning the agent.
+      // If this transition fails the finally block still cleans up the workspace.
+      try {
+        await transition({
+          externalId: item.externalId,
+          toStage: 'in-development',
+          triggeredBy: 'specialist:implementer',
+        });
+      } catch (err) {
+        return {
+          specialistId,
+          status: 'error',
+          costUsd: 0,
+          durationMs: 0,
+          error: `Failed to transition to in-development: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+
       const params = buildImplementerParams(
         item.externalId,
         product,

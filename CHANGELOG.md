@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Honest dispatch status (fix/dispatch-status-honesty):** `DispatchResult.status` now reflects the entire pipeline outcome — agent run **plus** post-agent steps (publish, PR creation, stage transition) — not just the raw agent exit code. Previously a `'done'` agent result was forwarded verbatim even when the publish or transition step had failed, causing jobs to report `status: 'done'` with no PR and an item stuck in an intermediate stage.
+  - `resolveStatus(agentResult, handlerOutcome)` — new shared helper in `dispatcher.ts`. Rules: agent cancelled/errored → propagate directly; agent done + handler `error` field defined → `'error'`; agent done + handler succeeded → `'done'`. The helper is called in all three specialist branches (spec-writer, plan-writer, implementer).
+  - `dispatcher.test.ts` — updated one existing assertion (spec file not created was already an error path but wrongly expected `'done'`); added 6 new test cases: spec-writer transition fails, spec-writer publish clone fails, plan-writer plan file not written, plan-writer publish clone fails, implementer no file changes (the exact e2e scenario that surfaced the bug), and implementer PR opened but code-review transition fails (verifies `prUrl` is preserved in error result).
+
 ### Added
 
 - **Implementer hardening (Session 16b):** Robustness and verification improvements on top of the Session 16a implementer foundation.

@@ -2,7 +2,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { WorkflowStage } from '@helm/workflow';
 import type { Product } from '@helm/shared';
-import type { IAgentRuntime } from './runtime.js';
+import type { AgentResult, IAgentRuntime } from './runtime.js';
 import type { ItemTransitionFn } from './specialists/spec-writer.js';
 import { buildSpecWriterParams, handleSpecWriterResult } from './specialists/spec-writer.js';
 import { buildPlanWriterParams, handlePlanWriterResult } from './specialists/plan-writer.js';
@@ -80,6 +80,29 @@ export type DispatchOptions = {
    */
   runGh?: RunGh;
 };
+
+// ── Status resolution ─────────────────────────────────────────────────────────
+
+/**
+ * Derives the honest DispatchResult.status from the agent result and the
+ * post-agent handler outcome.
+ *
+ * Rules:
+ *  - Agent cancelled or errored  → propagate that status directly.
+ *  - Agent done but handler set an error field → 'error'.
+ *  - Agent done and handler succeeded (no error) → 'done'.
+ *
+ * This guarantees that `status: 'done'` only appears when the entire dispatch
+ * pipeline (agent + publish + transition) completed successfully — not just
+ * when the agent finished without a protocol error.
+ */
+function resolveStatus(
+  agentResult: AgentResult,
+  handlerOutcome: { error?: string },
+): DispatchResult['status'] {
+  if (agentResult.status !== 'done') return agentResult.status;
+  return handlerOutcome.error !== undefined ? 'error' : 'done';
+}
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 
@@ -170,7 +193,7 @@ export async function dispatchStageHandler(
 
     return {
       specialistId,
-      status: agentResult.status,
+      status: resolveStatus(agentResult, specResult),
       newStage: specResult.newStage,
       costUsd: agentResult.totalCostUsd,
       durationMs: agentResult.durationMs,
@@ -251,7 +274,7 @@ export async function dispatchStageHandler(
 
     return {
       specialistId,
-      status: agentResult.status,
+      status: resolveStatus(agentResult, planResult),
       newStage: planResult.newStage,
       costUsd: agentResult.totalCostUsd,
       durationMs: agentResult.durationMs,
@@ -401,7 +424,7 @@ export async function dispatchStageHandler(
 
       return {
         specialistId,
-        status: agentResult.status,
+        status: resolveStatus(agentResult, implResult),
         newStage: implResult.newStage,
         costUsd: agentResult.totalCostUsd,
         durationMs: agentResult.durationMs,

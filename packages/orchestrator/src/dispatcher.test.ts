@@ -195,8 +195,8 @@ describe('dispatchStageHandler', () => {
       { workdir },
     );
 
-    // Agent reported done but post-completion check fails
-    expect(result.status).toBe('done');
+    // Agent reported done but post-completion check fails — dispatch status is 'error'
+    expect(result.status).toBe('error');
     expect(result.error).toContain('not found');
     expect(transition).not.toHaveBeenCalled();
   });
@@ -653,5 +653,198 @@ describe('dispatchStageHandler', () => {
     expect(spawnSpy).not.toHaveBeenCalled();
     // Provision fails BEFORE the stage transition — item stays in plan-ready (re-dispatchable).
     expect(transition).not.toHaveBeenCalled();
+  });
+
+  // ── Honest status: agent done but post-agent step fails ───────────────────
+  // Verifies that DispatchResult.status is 'error' whenever the post-agent
+  // step (publish, PR, transition) fails, even when agentResult.status is 'done'.
+  // This ensures the job status surfaced to operators reflects the true outcome.
+
+  it('spec-writer: status is error when transition fails after spec is written', async () => {
+    // Agent writes the spec file; transition then throws.
+    transition.mockRejectedValueOnce(new Error('store unavailable'));
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir }, // no token → publish skipped; transition is still called
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBeDefined();
+    // costUsd / durationMs come from the agent result
+    expect(result.costUsd).toBeDefined();
+  });
+
+  it('spec-writer: status is error when publish (PR creation) fails after spec is written', async () => {
+    // Agent writes the spec file; git clone for publish throws.
+    const runGit: RunGit = vi.fn().mockRejectedValue(new Error('fatal: clone failed'));
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', runGit },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBeDefined();
+    expect(transition).not.toHaveBeenCalled(); // transition never reached
+  });
+
+  it('plan-writer: status is error when plan file is not written by the agent', async () => {
+    // Agent runs successfully but does NOT write plans/issue_1.md
+    const noFileRuntime = new MockAgentRuntime({ messages: [] }); // no sideEffects
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-ready' },
+      makeProduct(),
+      noFileRuntime,
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        githubToken: 'test-token',
+        fetchFn: makePlanFetchFn(), // spec fetch succeeds
+      },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBeDefined();
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('plan-writer: status is error when publish (PR creation) fails after plan is written', async () => {
+    // Agent writes the plan file; git clone for publish throws.
+    const runGit: RunGit = vi.fn().mockRejectedValue(new Error('fatal: clone failed'));
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-ready' },
+      makeProduct(),
+      makePlanWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        githubToken: 'test-token',
+        fetchFn: makePlanFetchFn(), // spec fetch succeeds
+        runGit,
+      },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBeDefined();
+    expect(transition).not.toHaveBeenCalled(); // transition never reached
+  });
+
+  it('implementer: status is error when agent produces no file changes (the e2e scenario)', async () => {
+    // The exact scenario from the first end-to-end run: agent finishes (done)
+    // but makes no file changes → openCodePR returns prUrl: '' → handler error.
+    // Before this fix the job reported status: 'done' even though no PR was opened
+    // and the item was stuck in in-development.
+    transition
+      .mockResolvedValueOnce({ currentStage: 'in-development' })
+      .mockResolvedValueOnce({ currentStage: 'code-review' });
+
+    const fetchFn: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if ((url as string).includes('/plans/')) {
+        return Promise.resolve({ ok: true, text: () => Promise.resolve('# Plan') } as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      } as Response);
+    });
+
+    // runGit: clone creates .git dir; status returns CLEAN (no changes made by agent)
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const dest = args[args.length - 1]!;
+        await mkdir(join(dest, '.git'), { recursive: true });
+      }
+      if (args[0] === 'status') return { stdout: '' }; // clean — agent made no changes
+      return { stdout: '' };
+    });
+    const runGh: RunGh = vi.fn();
+
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await dispatchStageHandler(
+        { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+        makeProduct(),
+        new MockAgentRuntime({ messages: [] }),
+        transition as ItemTransitionFn,
+        { workdir, githubToken: 'test-token', fetchFn, runGit, runGh },
+      );
+
+      expect(result.specialistId).toBe('implementer');
+      expect(result.status).toBe('error'); // honest: no PR, no transition to code-review
+      expect(result.error).toContain('no file changes');
+      // in-development transition fired (agent ran), but code-review transition did NOT
+      expect(transition).toHaveBeenCalledOnce();
+      expect(transition).toHaveBeenCalledWith(
+        expect.objectContaining({ toStage: 'in-development' }),
+      );
+      // gh must not have been called — clean workspace means no PR attempt
+      expect(runGh).not.toHaveBeenCalled();
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('implementer: status is error with prUrl preserved when code-review transition fails after PR opened', async () => {
+    // Agent finishes (done), PR is opened successfully, but the code-review
+    // transition throws. prUrl must be preserved so operators can find the PR.
+    const openedPrUrl = 'https://github.com/test-org/test/pull/11';
+
+    transition
+      .mockResolvedValueOnce({ currentStage: 'in-development' }) // provision transition
+      .mockRejectedValueOnce(new Error('store down')); // code-review transition
+
+    const fetchFn: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if ((url as string).includes('/plans/')) {
+        return Promise.resolve({ ok: true, text: () => Promise.resolve('# Plan') } as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      } as Response);
+    });
+
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const dest = args[args.length - 1]!;
+        await mkdir(join(dest, '.git'), { recursive: true });
+      }
+      if (args[0] === 'status') return { stdout: 'M  src/impl.ts\n' }; // dirty
+      return { stdout: '' };
+    });
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create') return { stdout: `${openedPrUrl}\n` };
+      return { stdout: '' };
+    });
+
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await dispatchStageHandler(
+        { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+        makeProduct(),
+        new MockAgentRuntime({ messages: [] }),
+        transition as ItemTransitionFn,
+        { workdir, githubToken: 'test-token', fetchFn, runGit, runGh },
+      );
+
+      expect(result.specialistId).toBe('implementer');
+      expect(result.status).toBe('error'); // transition failed → honest error
+      expect(result.error).toContain('transition to code-review');
+      // prUrl is preserved — PR was already opened before the transition failed
+      expect(result.prUrl).toBe(openedPrUrl);
+    } finally {
+      consoleSpy.mockRestore();
+    }
   });
 });

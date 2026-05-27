@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Close release loop (Session 18):** The pipeline is now completable end-to-end — Helm can take an item from `discovery` all the way to `released` without manual intervention.
+  - **State machine:** `code-review` now lists `released` as a valid next stage (alongside `in-development` and `remediation`). Previously `released` was unreachable from any automated path.
+  - **`ArtifactBranchKind`** extended from `'spec' | 'plan'` to `'spec' | 'plan' | 'impl'`. `parseArtifactBranch` now recognises `helm/impl/{externalId}` branches with the same traversal/injection guards applied to spec and plan branches.
+  - **Webhook `pull_request_merged` handler** replaced the binary `spec→spec-ready | plan→plan-ready` ternary with an exhaustive `Record<ArtifactBranchKind, WorkflowStage>` map: `spec→spec-ready`, `plan→plan-ready`, `impl→released`. Impl merges use `triggeredBy: 'webhook:code-repo'` (spec/plan retain `'webhook:knowledge-repo'`). TypeScript enforces exhaustiveness at compile time.
+  - **Implementer PR body** corrected: "advance the item to **code-review**" → "advance the item to **released**". When the code-repo PR is merged, the webhook now transitions directly to `released`.
+  - ADR-016: documents the close-release-loop design decisions. Opened as PR against the knowledge repo.
+
 - **Task ingestion into spec-writer (Session 17):** The spec-writer now reads the issue title and description from the tracker and injects them as a `## Task` section at the top of its prompt, so it specifies the real task rather than inventing a placeholder.
   - `NormalizedItem.body?: string` — optional field added to the tracker-agnostic `NormalizedItem` type. GitHub Issues expose a body; trackers with no description leave it `undefined`.
   - `GET_PROJECT_ITEMS` GraphQL query extended with `body` in the `... on Issue` fragment. `GitHubIssueContent.body: string` added to the GraphQL type. `normalizeItem` in `GitHubProjectsAdapter` propagates `body` to the `NormalizedItem`.

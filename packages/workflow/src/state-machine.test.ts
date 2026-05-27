@@ -22,6 +22,10 @@ describe('canTransition', () => {
       expect(canTransition('code-review', 'in-development')).toBe(true);
     });
 
+    it('allows code-review → released (PR approved — item ships)', () => {
+      expect(canTransition('code-review', 'released')).toBe(true);
+    });
+
     it('allows remediation → code-review (after fix, back to review)', () => {
       expect(canTransition('remediation', 'code-review')).toBe(true);
     });
@@ -78,8 +82,12 @@ describe('validateTransition', () => {
 });
 
 describe('getValidNextStages', () => {
-  it('returns both branches from code-review', () => {
-    expect(getValidNextStages('code-review')).toEqual(['in-development', 'remediation']);
+  it('returns all three branches from code-review', () => {
+    expect(getValidNextStages('code-review')).toEqual([
+      'in-development',
+      'remediation',
+      'released',
+    ]);
   });
 
   it('returns empty array for the terminal released stage', () => {

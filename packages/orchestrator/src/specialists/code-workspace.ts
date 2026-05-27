@@ -148,8 +148,14 @@ export async function provisionCodeWorkspace(
   // (non-authenticated) URL so the token is not accessible on disk.
   // The push in openCodePR bypasses the origin remote and pushes directly to an
   // authenticated URL so it does not rely on this remote being authenticated.
+  //
+  // Use the canonical https://github.com/{owner}/{repo} form rather than
+  // codeRepo.url verbatim — codeRepo.url could contain userinfo credentials
+  // if the caller passed an already-authenticated URL, which would persist
+  // those credentials in .git/config instead of removing them.
+  const canonicalUrl = `https://github.com/${owner}/${repo}`;
   try {
-    await runGit(['remote', 'set-url', 'origin', codeRepo.url], { cwd: workspacePath });
+    await runGit(['remote', 'set-url', 'origin', canonicalUrl], { cwd: workspacePath });
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
     await rm(workspacePath, { recursive: true, force: true }).catch(() => {});

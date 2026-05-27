@@ -81,6 +81,9 @@ export function buildAuthenticatedUrl(owner: string, repo: string, token: string
  * includes both the URL pattern and the raw token).
  */
 export function sanitizeToken(text: string, token: string): string {
+  // Guard: an empty token would corrupt output by replacing every empty string
+  // with '***' (replaceAll('', '***') inserts *** between every character).
+  if (!token) return text;
   return text
     .replaceAll(`x-access-token:${token}@`, 'x-access-token:***@')
     .replaceAll(token, '***');

@@ -1,7 +1,5 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
 import type { WorkflowStage } from '@helm/workflow';
 import type { Product } from '@helm/shared';
 import type { IAgentRuntime } from './runtime.js';
@@ -341,10 +339,9 @@ export async function dispatchStageHandler(
     }
 
     // ── Provision code workspace (shallow clone + impl branch) ───────────────
-    const workspaceId = `helm-impl-${item.externalId}-${randomUUID()}`;
-    const workspacePath = join(tmpdir(), workspaceId);
+    // actualWorkspacePath is set by provisionCodeWorkspace on success.
     let provisionedWorkspace = false;
-    let actualWorkspacePath = workspacePath;
+    let actualWorkspacePath = '';
 
     try {
       const provisioned = await provisionCodeWorkspace(

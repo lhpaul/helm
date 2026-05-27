@@ -580,4 +580,12 @@ describe('ClaudeCodeRuntime', () => {
     const capturedEnv = capturedEnvs[0] ?? {};
     expect(capturedEnv['HELM_TEST_VAR']).toBe('hello');
   });
+
+  it('buildSubprocessEnv does not allow token re-injection via extra env', () => {
+    // Regression test for C2: merging extra after the first scrub must not
+    // re-introduce GITHUB_TOKEN or GH_TOKEN into the subprocess environment.
+    const env = buildSubprocessEnv({ GITHUB_TOKEN: 'injected-token', GH_TOKEN: 'other-token' });
+    expect(env['GITHUB_TOKEN']).toBeUndefined();
+    expect(env['GH_TOKEN']).toBeUndefined();
+  });
 });

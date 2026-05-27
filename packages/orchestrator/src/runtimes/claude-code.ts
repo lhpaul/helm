@@ -45,11 +45,16 @@ export function buildSubprocessEnv(extra?: Record<string, string>): Record<strin
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined) env[k] = v;
   }
-  // Scrub credentials — agents must not have access to the host token.
+  // First scrub: remove credentials from host env before merging overrides.
   delete env['GITHUB_TOKEN'];
   delete env['GH_TOKEN'];
   // Merge caller-provided overrides last so they can set whatever the specialist needs.
   if (extra) Object.assign(env, extra);
+  // Second scrub: prevent token re-injection via the `extra` parameter.
+  // A caller that accidentally passes GITHUB_TOKEN in extra would otherwise
+  // re-introduce the credential into the subprocess environment.
+  delete env['GITHUB_TOKEN'];
+  delete env['GH_TOKEN'];
   return env;
 }
 

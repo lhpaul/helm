@@ -67,6 +67,7 @@ export type GitHubIssueContent = {
   id: string;
   number: number;
   title: string;
+  body: string;
   url: string;
   state: 'OPEN' | 'CLOSED';
 };

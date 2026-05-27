@@ -56,26 +56,55 @@ function buildContextSection(product: Product, context: ProductContext): string 
 }
 
 /**
+ * Tracker task injected into the spec-writer prompt.
+ * When present, the agent specifies this exact task rather than guessing.
+ */
+export type SpecWriterTask = {
+  title: string;
+  body?: string;
+};
+
+/**
  * Builds the initial prompt for the spec-writer specialist.
  *
  * @param externalId  The item identifier.
  * @param product     Parsed product config.
+ * @param task        Optional task fetched from the issue tracker (title + body).
+ *                    When provided, a "## Task" section is injected so the agent
+ *                    specifies the real task instead of inventing a placeholder.
  * @param context     Optional product context (README, agent instructions).
  *                    When provided, a "## Product Context" section is injected
- *                    at the top of the prompt so the agent understands the
- *                    product domain rather than guessing from the name alone.
+ *                    so the agent understands the product domain.
  */
 export function buildSpecWriterPrompt(
   externalId: string,
   product: Product,
+  task?: SpecWriterTask,
   context?: ProductContext,
 ): string {
   const contextSection =
     context && (context.readme || context.agentMd) ? buildContextSection(product, context) : '';
 
+  const taskSection = task
+    ? [
+        '## Task',
+        '',
+        `**Title:** ${task.title}`,
+        '',
+        task.body?.trim() || '(no description provided)',
+        '',
+        '---',
+        '',
+      ].join('\n')
+    : '';
+
+  const taskInstruction = task
+    ? `Your task: write a specification for item ${externalId} based on the task described above.`
+    : `Your task: write a specification for item ${externalId}.`;
+
   return `You are the spec writer for the product "${product.product.name}".
 
-${contextSection}Your task: write a specification for item ${externalId}.
+${contextSection}${taskSection}${taskInstruction}
 
 Steps:
 1. Review any existing context in the working directory.
@@ -104,16 +133,18 @@ Product: ${product.product.slug}`;
  * Builds SpawnParams for the spec-writer specialist.
  *
  * @param context  Optional product context — passed to buildSpecWriterPrompt.
+ * @param task     Optional task fetched from the tracker — passed to buildSpecWriterPrompt.
  */
 export function buildSpecWriterParams(
   externalId: string,
   product: Product,
   workdir: string,
   context?: ProductContext,
+  task?: SpecWriterTask,
 ): SpawnParams {
   return {
     specialistId: 'spec-writer',
-    prompt: buildSpecWriterPrompt(externalId, product, context),
+    prompt: buildSpecWriterPrompt(externalId, product, task, context),
     workdir,
     productSlug: product.product.slug,
     externalId,

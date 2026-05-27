@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildSpecWriterPrompt, handleSpecWriterResult } from './spec-writer.js';
 import type { AgentResult } from '../runtime.js';
-import type { ItemTransitionFn, SpecPublishOptions } from './spec-writer.js';
+import type { ItemTransitionFn, SpecPublishOptions, SpecWriterTask } from './spec-writer.js';
 import type { Product } from '@helm/shared';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ describe('buildSpecWriterPrompt', () => {
   });
 
   it('injects Product Context section when context is provided', () => {
-    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), {
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), undefined, {
       readme: '# My Product README',
       agentMd: 'Use TypeScript.',
     });
@@ -70,22 +70,86 @@ describe('buildSpecWriterPrompt', () => {
   });
 
   it('omits README subsection when context has no readme', () => {
-    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), { agentMd: 'instructions' });
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), undefined, {
+      agentMd: 'instructions',
+    });
     expect(prompt).toContain('## Product Context');
     expect(prompt).not.toContain('### README');
     expect(prompt).toContain('instructions');
   });
 
   it('omits Agent Instructions subsection when context has no agentMd', () => {
-    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), { readme: '# Readme' });
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), undefined, {
+      readme: '# Readme',
+    });
     expect(prompt).toContain('## Product Context');
     expect(prompt).not.toContain('### Agent Instructions');
     expect(prompt).toContain('# Readme');
   });
 
   it('omits Product Context section when context has neither readme nor agentMd', () => {
-    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), {});
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), undefined, {});
     expect(prompt).not.toContain('## Product Context');
+  });
+
+  // ── ## Task section ──────────────────────────────────────────────────────────
+
+  it('injects ## Task section with title and body when task is provided', () => {
+    const task: SpecWriterTask = {
+      title: 'Add dark mode toggle',
+      body: 'Users want to switch between light and dark themes.',
+    };
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), task);
+    expect(prompt).toContain('## Task');
+    expect(prompt).toContain('**Title:** Add dark mode toggle');
+    expect(prompt).toContain('Users want to switch between light and dark themes.');
+  });
+
+  it('uses placeholder body when task body is empty string', () => {
+    const task: SpecWriterTask = { title: 'Some title', body: '' };
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), task);
+    expect(prompt).toContain('## Task');
+    expect(prompt).toContain('(no description provided)');
+  });
+
+  it('uses placeholder body when task body is undefined', () => {
+    const task: SpecWriterTask = { title: 'Some title' };
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), task);
+    expect(prompt).toContain('## Task');
+    expect(prompt).toContain('(no description provided)');
+  });
+
+  it('uses placeholder body when task body is whitespace-only', () => {
+    const task: SpecWriterTask = { title: 'Some title', body: '   \n  ' };
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), task);
+    expect(prompt).toContain('(no description provided)');
+  });
+
+  it('omits ## Task section when task is undefined', () => {
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct());
+    expect(prompt).not.toContain('## Task');
+  });
+
+  it('instructs the agent to specify THIS task when task is provided', () => {
+    const task: SpecWriterTask = { title: 'Add dark mode toggle' };
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), task);
+    expect(prompt).toContain('based on the task described above');
+  });
+
+  it('instructs the agent to write spec without "based on" qualifier when task is absent', () => {
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct());
+    expect(prompt).not.toContain('based on the task described above');
+  });
+
+  it('includes both ## Task and ## Product Context when both are provided', () => {
+    const task: SpecWriterTask = { title: 'Add dark mode toggle', body: 'Description here.' };
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct(), task, {
+      readme: '# Project README',
+    });
+    expect(prompt).toContain('## Task');
+    expect(prompt).toContain('Add dark mode toggle');
+    expect(prompt).toContain('## Product Context');
+    expect(prompt).toContain('# Project README');
   });
 });
 

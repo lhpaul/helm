@@ -7,13 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Honest dispatch status (fix/dispatch-status-honesty):** `DispatchResult.status` now reflects the entire pipeline outcome — agent run **plus** post-agent steps (publish, PR creation, stage transition) — not just the raw agent exit code. Previously a `'done'` agent result was forwarded verbatim even when the publish or transition step had failed, causing jobs to report `status: 'done'` with no PR and an item stuck in an intermediate stage.
-  - `resolveStatus(agentResult, handlerOutcome)` — new shared helper in `dispatcher.ts`. Rules: agent cancelled/errored → propagate directly; agent done + handler `error` field defined → `'error'`; agent done + handler succeeded → `'done'`. The helper is called in all three specialist branches (spec-writer, plan-writer, implementer).
-  - `dispatcher.test.ts` — updated one existing assertion (spec file not created was already an error path but wrongly expected `'done'`); added 6 new test cases: spec-writer transition fails, spec-writer publish clone fails, plan-writer plan file not written, plan-writer publish clone fails, implementer no file changes (the exact e2e scenario that surfaced the bug), and implementer PR opened but code-review transition fails (verifies `prUrl` is preserved in error result).
-
 ### Added
+
+- **Task ingestion into spec-writer (Session 17):** The spec-writer now reads the issue title and description from the tracker and injects them as a `## Task` section at the top of its prompt, so it specifies the real task rather than inventing a placeholder.
+  - `NormalizedItem.body?: string` — optional field added to the tracker-agnostic `NormalizedItem` type. GitHub Issues expose a body; trackers with no description leave it `undefined`.
+  - `GET_PROJECT_ITEMS` GraphQL query extended with `body` in the `... on Issue` fragment. `GitHubIssueContent.body: string` added to the GraphQL type. `normalizeItem` in `GitHubProjectsAdapter` propagates `body` to the `NormalizedItem`.
+  - `buildSpecWriterPrompt(externalId, product, task?, context?)` — new optional `task?: { title: string; body?: string }` parameter (3rd, before `context`). When present, a `## Task` section is injected and the instruction says "based on the task described above". Missing/empty body falls back to "(no description provided)". When absent, the prompt is unchanged (backward-compatible).
+  - `buildSpecWriterParams` passes `task` through to the prompt builder.
+  - `DispatchOptions.fetchTask?: (externalId) => Promise<{ title; body? } | null>` — injectable fetch function (same pattern as `transition`). Called best-effort in the spec-writer branch; `null` return or any thrown error → graceful fallback (spec written without `## Task`).
+  - `apps/api` `dispatch.ts`: `fetchTask` wired from `getGitHubAdapter().getItem(externalId)`, mapping `NormalizedItem` → `{ title, body }`. Wrapped in best-effort `try/catch` returning `null` on any failure.
+  - ADR-015: documents the fetch-at-dispatch decision (Approach B vs persist-at-creation A), the injected-function decoupling pattern, `NormalizedItem.body`, graceful degradation, and spec-only ingestion scope. Opened as PR against the knowledge repo.
 
 - **Implementer hardening (Session 16b):** Robustness and verification improvements on top of the Session 16a implementer foundation.
   - _Transition order fix:_ `provisionCodeWorkspace` now runs **before** the `plan-ready → in-development` transition. A clone/network failure leaves the item in `plan-ready` (re-dispatchable) rather than stuck in `in-development` with no agent and no workspace to clean up. The in-development transition still fires before the agent is spawned, preserving the "work in progress" signal.
@@ -50,3 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `apps/api`: Hono v4 + Bun with `GET /health` (returns status, version, timestamp, uptime) and `GET /ws` WebSocket endpoint via `hono/bun`
 - `apps/web`: React 18 + Vite 5 + Tailwind v4 with WebSocket hook (connects to api `/ws`, displays connection status)
 - `HELM_VERSION` constant in `@helm/shared` — consumed by api `/health` and available to web
+
+### Fixed
+
+- **Honest dispatch status (fix/dispatch-status-honesty):** `DispatchResult.status` now reflects the entire pipeline outcome — agent run **plus** post-agent steps (publish, PR creation, stage transition) — not just the raw agent exit code. Previously a `'done'` agent result was forwarded verbatim even when the publish or transition step had failed, causing jobs to report `status: 'done'` with no PR and an item stuck in an intermediate stage.
+  - `resolveStatus(agentResult, handlerOutcome)` — new shared helper in `dispatcher.ts`. Rules: agent cancelled/errored → propagate directly; agent done + handler `error` field defined → `'error'`; agent done + handler succeeded → `'done'`. The helper is called in all three specialist branches (spec-writer, plan-writer, implementer).
+  - `dispatcher.test.ts` — updated one existing assertion (spec file not created was already an error path but wrongly expected `'done'`); added 6 new test cases: spec-writer transition fails, spec-writer publish clone fails, plan-writer plan file not written, plan-writer publish clone fails, implementer no file changes (the exact e2e scenario that surfaced the bug), and implementer PR opened but code-review transition fails (verifies `prUrl` is preserved in error result).

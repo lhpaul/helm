@@ -154,6 +154,7 @@ export const GET_PROJECT_ITEMS = `
                 id
                 number
                 title
+                body
                 url
                 state
               }

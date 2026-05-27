@@ -454,5 +454,18 @@ describe('POST /api/webhooks/github', () => {
       expect(res.status).toBe(200);
       expect(mockTransition).not.toHaveBeenCalled();
     });
+
+    it('returns 200 and does not transition for a dot-traversal impl headRef', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'pull_request_merged',
+        headRef: 'helm/impl/../etc/passwd',
+        timestamp: 't',
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockTransition).not.toHaveBeenCalled();
+    });
   });
 });

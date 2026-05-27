@@ -209,12 +209,12 @@ describe('dispatchStageHandler', () => {
       makeProduct(),
       runtime,
       transition as ItemTransitionFn,
-      { workdir, specialistId: 'implementer' },
+      { workdir, specialistId: 'future-specialist' },
     );
 
     expect(result.status).toBe('error');
     expect(result.error).toContain('not implemented');
-    expect(result.specialistId).toBe('implementer');
+    expect(result.specialistId).toBe('future-specialist');
   });
 
   it('calls fetchFn when githubToken is provided', async () => {
@@ -481,5 +481,178 @@ describe('dispatchStageHandler', () => {
     expect(result.error).toContain("Spec not found for item 'issue_1'");
     expect(spawnSpy).not.toHaveBeenCalled();
     expect(transition).not.toHaveBeenCalled();
+  });
+
+  // ── implementer routing ───────────────────────────────────────────────────
+
+  it('implementer returns error without spawning when githubToken is absent', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir }, // no githubToken
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('GITHUB_TOKEN');
+    expect(result.specialistId).toBe('implementer');
+    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('implementer returns error without spawning when plan is not found', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+
+    // fetchFn always returns 404 — plan is absent in knowledge repo
+    const fetchFn: FetchFn = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: () => Promise.resolve('Not Found'),
+    } as Response);
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain("Plan not found for item 'issue_1'");
+    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('implementer routes plan-ready, transitions in-development then code-review, returns prUrl', async () => {
+    // transition mock: first call → in-development, second call → code-review
+    transition
+      .mockResolvedValueOnce({ currentStage: 'in-development' })
+      .mockResolvedValueOnce({ currentStage: 'code-review' });
+
+    // fetchFn: returns plan content for knowledge repo, 404 for everything else
+    const fetchFn: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if ((url as string).includes('/plans/')) {
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve('# Plan content'),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      } as Response);
+    });
+
+    const expectedPrUrl = 'https://github.com/test-org/test/pull/7';
+
+    // runGit: clone creates .git dir; status returns dirty; other calls succeed
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const dest = args[args.length - 1]!;
+        await mkdir(join(dest, '.git'), { recursive: true });
+      }
+      if (args[0] === 'status') return { stdout: 'M  src/impl.ts\n' };
+      return { stdout: '' };
+    });
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create') return { stdout: `${expectedPrUrl}\n` };
+      return { stdout: '' };
+    });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+      makeProduct(),
+      // The implementer agent succeeds without side-effects (the workspace was
+      // provisioned via provisionCodeWorkspace — the mock write doesn't matter here)
+      new MockAgentRuntime({ messages: [] }),
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn, runGit, runGh },
+    );
+
+    expect(result.specialistId).toBe('implementer');
+    expect(result.status).toBe('done');
+    // plan-ready → in-development (before agent), in-development → code-review (after PR)
+    expect(transition).toHaveBeenCalledTimes(2);
+    expect(transition).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ toStage: 'in-development' }),
+    );
+    expect(transition).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ toStage: 'code-review' }),
+    );
+    expect(result.newStage).toBe('code-review');
+    expect(result.prUrl).toBe(expectedPrUrl);
+  });
+
+  it('implementer returns error without spawning when product has no code_repos', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+
+    // Cast through unknown to bypass the strict Zod-generated type — this
+    // simulates a product that passed validation but has an empty code_repos
+    // array (possible if the Zod schema is relaxed in a future version).
+    const productNoRepos = { ...makeProduct(), code_repos: [] } as unknown as Product;
+
+    const fetchFn: FetchFn = vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve('# Plan content'),
+    } as Response);
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+      productNoRepos,
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('code_repo');
+    expect(result.specialistId).toBe('implementer');
+    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('implementer returns error when provisionCodeWorkspace fails (clone error)', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+
+    const fetchFn: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if ((url as string).includes('/plans/')) {
+        return Promise.resolve({ ok: true, text: () => Promise.resolve('# Plan') } as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      } as Response);
+    });
+
+    // runGit throws on clone — simulates network/auth failure
+    const runGit: RunGit = vi.fn().mockRejectedValue(new Error('fatal: repository not found'));
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn, runGit },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('provision code workspace');
+    expect(spawnSpy).not.toHaveBeenCalled();
+    // plan-ready → in-development transition fires before provision attempt
+    expect(transition).toHaveBeenCalledOnce();
+    expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'in-development' }));
   });
 });

@@ -17,9 +17,12 @@ export type FetchFn = typeof fetch;
 const MAX_CHARS = 2000;
 const TRUNCATION_SUFFIX = '\n\n[...truncated]';
 
-/** Cap for spec content fetched as plan-writer input. Generous — the spec IS the input. */
+/** Cap for spec/plan content fetched as specialist input. Generous — the artifact IS the input. */
 const SPEC_MAX_CHARS = 32_000;
 const SPEC_TRUNCATION_SUFFIX = '\n\n[...truncated — spec exceeds 32000 chars]';
+
+const PLAN_MAX_CHARS = 32_000;
+const PLAN_TRUNCATION_SUFFIX = '\n\n[...truncated — plan exceeds 32000 chars]';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -170,6 +173,47 @@ export async function fetchSpecForPlan(
 
   if (content.length > SPEC_MAX_CHARS) {
     return content.slice(0, SPEC_MAX_CHARS) + SPEC_TRUNCATION_SUFFIX;
+  }
+  return content;
+}
+
+// ── Plan fetch (for implementer) ──────────────────────────────────────────────
+
+/**
+ * Fetches the approved plan from the product's knowledge repo.
+ *
+ * The plan is the primary input for the implementer: it is fetched from
+ * `plans/{externalId}.md` on the knowledge repo's default branch.
+ *
+ * Mirror of `fetchSpecForPlan` — same 32 000-char cap, same null-on-404
+ * semantics, same traversal guard on externalId.
+ *
+ * @param product     The parsed product config.
+ * @param externalId  The item identifier.
+ * @param token       GitHub personal access token (repo scope).
+ * @param fetchFn     HTTP fetch function — injectable for testing.
+ */
+export async function fetchPlanForImplementer(
+  product: Product,
+  externalId: string,
+  token: string,
+  fetchFn: FetchFn = fetch,
+): Promise<string | null> {
+  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+    throw new Error(`[fetch-plan] Invalid externalId: "${externalId}"`);
+  }
+
+  const parsed = parseGitHubRepoUrl(product.knowledge_repo.url);
+  if (!parsed) return null;
+
+  const { owner, repo } = parsed;
+  const branch = product.knowledge_repo.default_branch;
+
+  const content = await fetchRawFile(owner, repo, branch, `plans/${externalId}.md`, token, fetchFn);
+  if (content === null) return null;
+
+  if (content.length > PLAN_MAX_CHARS) {
+    return content.slice(0, PLAN_MAX_CHARS) + PLAN_TRUNCATION_SUFFIX;
   }
   return content;
 }

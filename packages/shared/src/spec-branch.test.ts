@@ -4,6 +4,8 @@ import {
   specBranchName,
   PLAN_BRANCH_PREFIX,
   planBranchName,
+  IMPL_BRANCH_PREFIX,
+  implBranchName,
   parseArtifactBranch,
 } from './spec-branch.js';
 
@@ -38,6 +40,26 @@ describe('planBranchName', () => {
     expect(planBranchName('HLM-42')).not.toBe(specBranchName('HLM-42'));
     expect(planBranchName('HLM-42')).toBe('helm/plan/HLM-42');
     expect(specBranchName('HLM-42')).toBe('helm/spec/HLM-42');
+  });
+});
+
+describe('IMPL_BRANCH_PREFIX', () => {
+  it('is helm/impl/', () => {
+    expect(IMPL_BRANCH_PREFIX).toBe('helm/impl/');
+  });
+});
+
+describe('implBranchName', () => {
+  it('prepends helm/impl/ to the externalId', () => {
+    expect(implBranchName('HLM-42')).toBe('helm/impl/HLM-42');
+    expect(implBranchName('issue_1')).toBe('helm/impl/issue_1');
+    expect(implBranchName('feature.v2')).toBe('helm/impl/feature.v2');
+  });
+
+  it('produces a different branch than specBranchName and planBranchName for the same id', () => {
+    expect(implBranchName('HLM-42')).not.toBe(specBranchName('HLM-42'));
+    expect(implBranchName('HLM-42')).not.toBe(planBranchName('HLM-42'));
+    expect(implBranchName('HLM-42')).toBe('helm/impl/HLM-42');
   });
 });
 

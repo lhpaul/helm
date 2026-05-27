@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { ClaudeCodeRuntime } from './claude-code.js';
-import type { SubprocessLike } from './claude-code.js';
+import { ClaudeCodeRuntime, buildSubprocessEnv } from './claude-code.js';
+import type { SubprocessLike, SpawnFn } from './claude-code.js';
 import type { AgentMessage, SpawnParams } from '../runtime.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -447,5 +447,145 @@ describe('ClaudeCodeRuntime', () => {
 
     expect(result.status).toBe('cancelled');
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  // ── permissionMode and timeoutMs per-spawn ────────────────────────────────
+
+  it('uses acceptEdits by default when permissionMode is not set', async () => {
+    const capturedArgs: string[][] = [];
+    const fakeSpawn: SpawnFn = (args) => {
+      capturedArgs.push([...args]);
+      return makeFakeProcess(loadFixture('write-success.jsonl'));
+    };
+
+    const runtime = new ClaudeCodeRuntime(fakeSpawn);
+    await runtime.spawn(makeParams());
+    const args = capturedArgs[0] ?? [];
+    const modeIdx = args.indexOf('--permission-mode');
+    expect(modeIdx).toBeGreaterThan(-1);
+    expect(args[modeIdx + 1]).toBe('acceptEdits');
+  });
+
+  it('passes bypassPermissions when permissionMode is set', async () => {
+    const capturedArgs: string[][] = [];
+    const fakeSpawn: SpawnFn = (args) => {
+      capturedArgs.push([...args]);
+      return makeFakeProcess(loadFixture('write-success.jsonl'));
+    };
+
+    const runtime = new ClaudeCodeRuntime(fakeSpawn);
+    const params: SpawnParams = { ...makeParams(), permissionMode: 'bypassPermissions' };
+    await runtime.spawn(params);
+    const args = capturedArgs[0] ?? [];
+    const modeIdx = args.indexOf('--permission-mode');
+    expect(modeIdx).toBeGreaterThan(-1);
+    expect(args[modeIdx + 1]).toBe('bypassPermissions');
+  });
+
+  it('uses params.timeoutMs over runtime-level timeoutMs', async () => {
+    // Runtime has a 30-second timeout, but the spawn overrides it to 50ms
+    const proc = makeHangingProcess();
+    const runtime = new ClaudeCodeRuntime(() => proc, { timeoutMs: 30_000 });
+
+    const params: SpawnParams = { ...makeParams(), timeoutMs: 50 };
+    const session = await runtime.spawn(params);
+    const result = await session.wait();
+
+    expect(result.status).toBe('error');
+    expect(result.finalOutput).toContain('[timeout]');
+    expect(result.finalOutput).toContain('50ms');
+    expect(proc.wasKilled).toBe(true);
+  });
+
+  // ── buildSubprocessEnv ────────────────────────────────────────────────────
+
+  it('buildSubprocessEnv scrubs GITHUB_TOKEN from process.env', () => {
+    const original = process.env['GITHUB_TOKEN'];
+    try {
+      process.env['GITHUB_TOKEN'] = 'ghp_secret123';
+      const env = buildSubprocessEnv();
+      expect(env['GITHUB_TOKEN']).toBeUndefined();
+    } finally {
+      if (original === undefined) {
+        delete process.env['GITHUB_TOKEN'];
+      } else {
+        process.env['GITHUB_TOKEN'] = original;
+      }
+    }
+  });
+
+  it('buildSubprocessEnv scrubs GH_TOKEN from process.env', () => {
+    const original = process.env['GH_TOKEN'];
+    try {
+      process.env['GH_TOKEN'] = 'ghp_other456';
+      const env = buildSubprocessEnv();
+      expect(env['GH_TOKEN']).toBeUndefined();
+    } finally {
+      if (original === undefined) {
+        delete process.env['GH_TOKEN'];
+      } else {
+        process.env['GH_TOKEN'] = original;
+      }
+    }
+  });
+
+  it('buildSubprocessEnv merges extra env on top of scrubbed process.env', () => {
+    const extra = { MY_API_KEY: 'key-abc', CUSTOM_FLAG: '1' };
+    const env = buildSubprocessEnv(extra);
+    expect(env['MY_API_KEY']).toBe('key-abc');
+    expect(env['CUSTOM_FLAG']).toBe('1');
+    // Scrub still applies even with extra env
+    expect(env['GITHUB_TOKEN']).toBeUndefined();
+  });
+
+  it('spawn() passes scrubbed env to spawnFn', async () => {
+    const capturedEnvs: Record<string, string>[] = [];
+    const fakeSpawn: SpawnFn = (args, cwd, env) => {
+      void args;
+      void cwd;
+      capturedEnvs.push({ ...env });
+      return makeFakeProcess(loadFixture('write-success.jsonl'));
+    };
+
+    const original = process.env['GITHUB_TOKEN'];
+    try {
+      process.env['GITHUB_TOKEN'] = 'ghp_should_be_scrubbed';
+      const runtime = new ClaudeCodeRuntime(fakeSpawn);
+      await runtime.spawn(makeParams());
+    } finally {
+      if (original === undefined) {
+        delete process.env['GITHUB_TOKEN'];
+      } else {
+        process.env['GITHUB_TOKEN'] = original;
+      }
+    }
+
+    const capturedEnv = capturedEnvs[0] ?? {};
+    expect(capturedEnv['GITHUB_TOKEN']).toBeUndefined();
+  });
+
+  it('spawn() includes params.env in the subprocess environment', async () => {
+    const capturedEnvs: Record<string, string>[] = [];
+    const fakeSpawn: SpawnFn = (args, cwd, env) => {
+      void args;
+      void cwd;
+      capturedEnvs.push({ ...env });
+      return makeFakeProcess(loadFixture('write-success.jsonl'));
+    };
+
+    const runtime = new ClaudeCodeRuntime(fakeSpawn);
+    const params: SpawnParams = { ...makeParams(), env: { HELM_TEST_VAR: 'hello' } };
+    await runtime.spawn(params);
+
+    const capturedEnv = capturedEnvs[0] ?? {};
+    expect(capturedEnv['HELM_TEST_VAR']).toBe('hello');
+  });
+
+  it('buildSubprocessEnv does not allow token re-injection via extra env', () => {
+    // Regression test for C2: merging extra after the first scrub must not
+    // re-introduce GITHUB_TOKEN or GH_TOKEN into the subprocess environment.
+    const env = buildSubprocessEnv({ GITHUB_TOKEN: 'injected-token', GH_TOKEN: 'other-token' });
+    expect(env['GITHUB_TOKEN']).toBeUndefined();
+    expect(env['GH_TOKEN']).toBeUndefined();
   });
 });

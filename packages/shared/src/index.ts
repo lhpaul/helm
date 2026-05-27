@@ -8,6 +8,8 @@ export {
   specBranchName,
   PLAN_BRANCH_PREFIX,
   planBranchName,
+  IMPL_BRANCH_PREFIX,
+  implBranchName,
   parseArtifactBranch,
 } from './spec-branch.js';
 export type { ArtifactBranchKind } from './spec-branch.js';

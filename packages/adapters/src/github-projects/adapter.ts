@@ -489,6 +489,7 @@ export class GitHubProjectsAdapter implements IssueTrackerAdapter {
     return {
       externalId,
       title: issue.title,
+      body: issue.body,
       subStage,
       status: issue.state === 'OPEN' ? 'open' : 'closed',
       url: issue.url,

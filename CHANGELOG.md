@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Task ingestion into spec-writer (Session 17):** The spec-writer now reads the issue title and description from the tracker and injects them as a `## Task` section at the top of its prompt, so it specifies the real task rather than inventing a placeholder.
+  - `NormalizedItem.body?: string` — optional field added to the tracker-agnostic `NormalizedItem` type. GitHub Issues expose a body; trackers with no description leave it `undefined`.
+  - `GET_PROJECT_ITEMS` GraphQL query extended with `body` in the `... on Issue` fragment. `GitHubIssueContent.body: string` added to the GraphQL type. `normalizeItem` in `GitHubProjectsAdapter` propagates `body` to the `NormalizedItem`.
+  - `buildSpecWriterPrompt(externalId, product, task?, context?)` — new optional `task?: { title: string; body?: string }` parameter (3rd, before `context`). When present, a `## Task` section is injected and the instruction says "based on the task described above". Missing/empty body falls back to "(no description provided)". When absent, the prompt is unchanged (backward-compatible).
+  - `buildSpecWriterParams` passes `task` through to the prompt builder.
+  - `DispatchOptions.fetchTask?: (externalId) => Promise<{ title; body? } | null>` — injectable fetch function (same pattern as `transition`). Called best-effort in the spec-writer branch; `null` return or any thrown error → graceful fallback (spec written without `## Task`).
+  - `apps/api` `dispatch.ts`: `fetchTask` wired from `getGitHubAdapter().getItem(externalId)`, mapping `NormalizedItem` → `{ title, body }`. Wrapped in best-effort `try/catch` returning `null` on any failure.
+  - ADR-015: documents the fetch-at-dispatch decision (Approach B vs persist-at-creation A), the injected-function decoupling pattern, `NormalizedItem.body`, graceful degradation, and spec-only ingestion scope. Opened as PR against the knowledge repo.
+
 ### Fixed
 
 - **Honest dispatch status (fix/dispatch-status-honesty):** `DispatchResult.status` now reflects the entire pipeline outcome — agent run **plus** post-agent steps (publish, PR creation, stage transition) — not just the raw agent exit code. Previously a `'done'` agent result was forwarded verbatim even when the publish or transition step had failed, causing jobs to report `status: 'done'` with no PR and an item stuck in an intermediate stage.

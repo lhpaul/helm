@@ -847,4 +847,121 @@ describe('dispatchStageHandler', () => {
       consoleSpy.mockRestore();
     }
   });
+
+  // ── fetchTask: task ingestion into the spec-writer prompt ─────────────────────
+
+  it('spec-writer: injects task into prompt when fetchTask returns a task', async () => {
+    let capturedPrompt = '';
+    const capturingRuntime = new MockAgentRuntime({
+      messages: [],
+      sideEffects: async (dir) => {
+        await mkdir(join(dir, 'specs'), { recursive: true });
+        await writeFile(join(dir, 'specs', 'issue_1.md'), '# Spec\n');
+      },
+    });
+    // Intercept spawn to capture the prompt before the side effect runs
+    const originalSpawn = capturingRuntime.spawn.bind(capturingRuntime);
+    capturingRuntime.spawn = async (params) => {
+      capturedPrompt = params.prompt;
+      return originalSpawn(params);
+    };
+
+    const fetchTask = vi
+      .fn()
+      .mockResolvedValue({ title: 'Add dark mode toggle', body: 'Allow switching themes.' });
+
+    await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      capturingRuntime,
+      transition as ItemTransitionFn,
+      { workdir, fetchTask },
+    );
+
+    expect(fetchTask).toHaveBeenCalledWith('issue_1');
+    expect(capturedPrompt).toContain('## Task');
+    expect(capturedPrompt).toContain('Add dark mode toggle');
+    expect(capturedPrompt).toContain('Allow switching themes.');
+  });
+
+  it('spec-writer: proceeds without ## Task section when fetchTask returns null', async () => {
+    let capturedPrompt = '';
+    const capturingRuntime = new MockAgentRuntime({
+      messages: [],
+      sideEffects: async (dir) => {
+        await mkdir(join(dir, 'specs'), { recursive: true });
+        await writeFile(join(dir, 'specs', 'issue_1.md'), '# Spec\n');
+      },
+    });
+    const originalSpawn = capturingRuntime.spawn.bind(capturingRuntime);
+    capturingRuntime.spawn = async (params) => {
+      capturedPrompt = params.prompt;
+      return originalSpawn(params);
+    };
+
+    const fetchTask = vi.fn().mockResolvedValue(null);
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      capturingRuntime,
+      transition as ItemTransitionFn,
+      { workdir, fetchTask },
+    );
+
+    expect(result.status).toBe('done');
+    expect(capturedPrompt).not.toContain('## Task');
+  });
+
+  it('spec-writer: proceeds without ## Task section when fetchTask throws (graceful degradation)', async () => {
+    let capturedPrompt = '';
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const capturingRuntime = new MockAgentRuntime({
+      messages: [],
+      sideEffects: async (dir) => {
+        await mkdir(join(dir, 'specs'), { recursive: true });
+        await writeFile(join(dir, 'specs', 'issue_1.md'), '# Spec\n');
+      },
+    });
+    const originalSpawn = capturingRuntime.spawn.bind(capturingRuntime);
+    capturingRuntime.spawn = async (params) => {
+      capturedPrompt = params.prompt;
+      return originalSpawn(params);
+    };
+
+    const fetchTask = vi.fn().mockRejectedValue(new Error('tracker unavailable'));
+
+    try {
+      const result = await dispatchStageHandler(
+        { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+        makeProduct(),
+        capturingRuntime,
+        transition as ItemTransitionFn,
+        { workdir, fetchTask },
+      );
+
+      expect(result.status).toBe('done'); // dispatch still succeeds
+      expect(capturedPrompt).not.toContain('## Task');
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('spec-writer: fetchTask is not called for plan-writer or implementer stages', async () => {
+    const fetchTask = vi.fn().mockResolvedValue({ title: 'Some task', body: 'Some body' });
+
+    // plan-writer stage (spec-ready) — fetchTask must NOT be called
+    transition.mockResolvedValueOnce({ currentStage: 'plan-draft' }); // plan-writer transition
+
+    const planResult = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-ready' },
+      makeProduct(),
+      makePlanWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn: makePlanFetchFn(), fetchTask },
+    );
+
+    expect(planResult.specialistId).toBe('plan-writer');
+    expect(fetchTask).not.toHaveBeenCalled();
+  });
 });

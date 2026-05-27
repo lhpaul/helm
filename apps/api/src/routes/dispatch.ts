@@ -2,7 +2,12 @@ import { Hono } from 'hono';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { dispatchStageHandler } from '@helm/orchestrator';
-import { getProductRegistry, getItemStore, getJobStore } from '../services/index.js';
+import {
+  getProductRegistry,
+  getItemStore,
+  getJobStore,
+  getGitHubAdapter,
+} from '../services/index.js';
 import { createRuntimeForProduct } from '../services/runtime-factory.js';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
 import type { Job } from '../services/job-store.js';
@@ -32,6 +37,9 @@ async function runDispatchJob(
     dataRoot: string;
     specialistId: string | undefined;
     githubToken: string | undefined;
+    fetchTask:
+      | ((externalId: string) => Promise<{ title: string; body?: string } | null>)
+      | undefined;
   },
 ): Promise<void> {
   const jobStore = await getJobStore();
@@ -51,6 +59,7 @@ async function runDispatchJob(
         dataRoot: ctx.dataRoot,
         specialistId: ctx.specialistId,
         githubToken: ctx.githubToken,
+        fetchTask: ctx.fetchTask,
       },
     );
 
@@ -164,6 +173,22 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   }
   const { job } = outcome;
 
+  // Build fetchTask: best-effort wrapper around the GitHubProjectsAdapter.
+  // On any error (adapter init, network, item not found) it returns null so
+  // the spec-writer falls back to writing without a ## Task section.
+  const fetchTask = async (
+    externalId: string,
+  ): Promise<{ title: string; body?: string } | null> => {
+    try {
+      const adapter = await getGitHubAdapter();
+      const trackerItem = await adapter.getItem(externalId);
+      if (!trackerItem) return null;
+      return { title: trackerItem.title, body: trackerItem.body };
+    } catch {
+      return null;
+    }
+  };
+
   // Fire and forget — returns 202 immediately
   void runDispatchJob(job, {
     product,
@@ -173,6 +198,7 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
     dataRoot,
     specialistId: bodyResult.data.specialistId,
     githubToken: process.env.GITHUB_TOKEN?.trim(),
+    fetchTask,
   });
 
   return c.json({ jobId: job.jobId, status: 'running' }, 202);

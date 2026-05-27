@@ -71,7 +71,13 @@ function createFieldRes(): CreateSingleSelectFieldResponse {
 }
 
 function itemsPage(
-  issues: Array<{ number: number; title: string; state: 'OPEN' | 'CLOSED'; optionId?: string }>,
+  issues: Array<{
+    number: number;
+    title: string;
+    body?: string;
+    state: 'OPEN' | 'CLOSED';
+    optionId?: string;
+  }>,
   hasNextPage: boolean,
   endCursor: string | null,
 ): GetProjectItemsResponse {
@@ -98,6 +104,7 @@ function itemsPage(
             id: `I_${iss.number}`,
             number: iss.number,
             title: iss.title,
+            body: iss.body ?? '',
             url: `https://github.com/test-org/repo/issues/${iss.number}`,
             state: iss.state,
           },
@@ -128,7 +135,13 @@ function makeAdapter(options?: { ttlMs?: number }): {
 /** Registers the standard 3-call sequence: GET_PROJECT + GET_PROJECT_FIELDS (no field) + GET_PROJECT_ITEMS */
 function setupReadMocks(
   gql: Mock,
-  issues: Array<{ number: number; title: string; state: 'OPEN' | 'CLOSED'; optionId?: string }>,
+  issues: Array<{
+    number: number;
+    title: string;
+    body?: string;
+    state: 'OPEN' | 'CLOSED';
+    optionId?: string;
+  }>,
   fieldName = 'Helm Stage',
 ): void {
   gql
@@ -266,10 +279,36 @@ describe('GitHubProjectsAdapter', () => {
       expect(item).toEqual({
         externalId: 'issue_42',
         title: 'Fix bug',
+        body: '',
         subStage: null,
         status: 'open',
         url: 'https://github.com/test-org/repo/issues/42',
       });
+    });
+
+    it('populates body from the issue body field when non-empty', async () => {
+      const { adapter, gql } = makeAdapter();
+      setupReadMocks(gql, [
+        {
+          number: 7,
+          title: 'Add dark mode',
+          body: 'Users want a dark theme option.',
+          state: 'OPEN',
+        },
+      ]);
+
+      const item = await adapter.getItem('issue_7');
+
+      expect(item?.body).toBe('Users want a dark theme option.');
+    });
+
+    it('stores empty string in body when the issue has no description', async () => {
+      const { adapter, gql } = makeAdapter();
+      setupReadMocks(gql, [{ number: 3, title: 'No body issue', body: '', state: 'OPEN' }]);
+
+      const item = await adapter.getItem('issue_3');
+
+      expect(item?.body).toBe('');
     });
 
     it('returns null when externalId is not found', async () => {

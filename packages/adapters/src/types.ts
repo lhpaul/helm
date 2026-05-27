@@ -8,6 +8,11 @@ export type NormalizedItem = {
   /** Tracker-specific identifier: 'MOM-142', 'issue_3', 'HLM-7', etc. */
   externalId: string;
   title: string;
+  /**
+   * Long-form description of the item (the issue body in GitHub).
+   * Optional — trackers or items that have no description leave this undefined.
+   */
+  body?: string;
   /** Current Helm workflow sub-stage, or null if not yet assigned. */
   subStage: WorkflowStage | null;
   status: 'open' | 'closed';

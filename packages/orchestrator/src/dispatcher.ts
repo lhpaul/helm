@@ -79,6 +79,15 @@ export type DispatchOptions = {
    * Defaults to the real gh binary via execFile.
    */
   runGh?: RunGh;
+  /**
+   * Injectable function to fetch the tracker task (title + body) for the given
+   * externalId. Called best-effort in the spec-writer branch — if absent, returns
+   * null, or throws, the spec is written without a Task section (graceful degradation).
+   *
+   * Keeping this injectable avoids a hard dependency on any specific tracker
+   * adapter and makes the dispatch path trivially testable without real network calls.
+   */
+  fetchTask?: (externalId: string) => Promise<{ title: string; body?: string } | null>;
 };
 
 // ── Status resolution ─────────────────────────────────────────────────────────
@@ -166,7 +175,18 @@ export async function dispatchStageHandler(
         })
       : undefined;
 
-    const params = buildSpecWriterParams(item.externalId, product, workdir, context);
+    // ── Part A2: Fetch tracker task (title + body) ───────────────────────────
+    // Best-effort: null return (item absent in tracker) or network error → write
+    // spec without a ## Task section, matching pre-ingestion behaviour.
+    const taskRaw = options?.fetchTask
+      ? await options.fetchTask(item.externalId).catch((err) => {
+          console.error('[dispatcher] Failed to fetch tracker task (continuing without it):', err);
+          return null;
+        })
+      : null;
+    const task = taskRaw ?? undefined;
+
+    const params = buildSpecWriterParams(item.externalId, product, workdir, context, task);
     const session = await runtime.spawn(params);
     const agentResult = await session.wait();
 

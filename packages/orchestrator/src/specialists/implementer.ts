@@ -139,7 +139,7 @@ function buildImplementerPrompt(
  * Key differences from spec-writer / plan-writer:
  * - `permissionMode: 'bypassPermissions'` — the agent needs to run shell
  *   commands (test runners, package managers, etc.) without prompting.
- * - `timeoutMs: 15 * 60 * 1000` — implementation typically takes longer.
+ * - `timeoutMs: IMPLEMENTER_TIMEOUT_MS` (20 minutes) — covers code generation plus test runs.
  * - `env` does NOT include GITHUB_TOKEN (scrubbed by buildSubprocessEnv in the
  *   runtime — the agent must not have direct git push access).
  */

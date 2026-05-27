@@ -6,6 +6,23 @@ import { EXTERNAL_ID_REGEX } from '../services/types.js';
 import { getGitHubAdapter, getItemStore, getProductConfig } from '../services/index.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
 
+// ── Artifact branch routing ───────────────────────────────────────────────────
+
+/** Maps artifact branch kind to the workflow stage it should transition to. */
+const ARTIFACT_STAGE_MAP: Record<ArtifactBranchKind, WorkflowStage> = {
+  spec: 'spec-ready',
+  plan: 'plan-ready',
+  impl: 'released',
+};
+
+/** Maps artifact branch kind to the triggeredBy source identifier.
+ *  spec/plan PRs live in the knowledge repo; impl PRs live in the code repo. */
+const ARTIFACT_TRIGGERED_BY_MAP: Record<ArtifactBranchKind, string> = {
+  spec: 'webhook:knowledge-repo',
+  plan: 'webhook:knowledge-repo',
+  impl: 'webhook:code-repo',
+};
+
 export const webhooksRouter = new Hono();
 
 webhooksRouter.post('/webhooks/github', async (c) => {
@@ -91,18 +108,6 @@ webhooksRouter.post('/webhooks/github', async (c) => {
     // (helm/spec/, helm/plan/, helm/impl/), advance the item to the
     // corresponding stage.  Any other branch (feature/, main, …) is silently
     // ignored — it belongs to a different workflow.
-    const ARTIFACT_STAGE_MAP: Record<ArtifactBranchKind, WorkflowStage> = {
-      spec: 'spec-ready',
-      plan: 'plan-ready',
-      impl: 'released',
-    };
-    // spec and plan PRs live in the knowledge repo; impl PRs live in the code repo.
-    const ARTIFACT_TRIGGERED_BY_MAP: Record<ArtifactBranchKind, string> = {
-      spec: 'webhook:knowledge-repo',
-      plan: 'webhook:knowledge-repo',
-      impl: 'webhook:code-repo',
-    };
-
     const parsed = parseArtifactBranch(event.headRef);
     if (parsed !== null) {
       const toStage = ARTIFACT_STAGE_MAP[parsed.kind];

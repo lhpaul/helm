@@ -2,7 +2,8 @@ import { join } from 'node:path';
 import { ensureDataDir } from '@helm/storage';
 import { parseProductConfigFromFile, loadProductRegistry, ProductConfigError } from '@helm/shared';
 import type { Product } from '@helm/shared';
-import { GitHubProjectsAdapter } from '@helm/adapters';
+import { GitHubProjectsAdapter, LinearAdapter } from '@helm/adapters';
+import type { IssueTrackerAdapter } from '@helm/adapters';
 import { ItemStore } from './item-store.js';
 import { JobStore } from './job-store.js';
 
@@ -96,7 +97,53 @@ export async function getProductConfig(): Promise<Product> {
   }
 }
 
-// ── GitHubProjectsAdapter singleton ──────────────────────────────────────────
+// ── IssueTrackerAdapter singleton (provider-aware factory) ───────────────────
+
+let _issueTrackerAdapter: IssueTrackerAdapter | null = null;
+let _issueTrackerAdapterPromise: Promise<IssueTrackerAdapter> | null = null;
+
+/**
+ * Returns the shared IssueTrackerAdapter for the configured provider.
+ * Single-flight: concurrent callers await the same initialization promise.
+ * Dispatches to GitHubProjectsAdapter or LinearAdapter based on
+ * product.issue_tracker.provider.
+ */
+export async function getIssueTrackerAdapter(): Promise<IssueTrackerAdapter> {
+  if (_issueTrackerAdapter !== null) return _issueTrackerAdapter;
+  if (_issueTrackerAdapterPromise !== null) return _issueTrackerAdapterPromise;
+
+  _issueTrackerAdapterPromise = (async () => {
+    const config = await getProductConfig();
+    const provider = config.issue_tracker.provider;
+
+    if (provider === 'github_projects') {
+      const token = process.env.GITHUB_TOKEN?.trim();
+      if (!token) throw new Error('GITHUB_TOKEN environment variable is not set or blank');
+      _issueTrackerAdapter = new GitHubProjectsAdapter(config.issue_tracker, token);
+    } else if (provider === 'linear') {
+      const linearConfig = config.issue_tracker;
+      const apiKey = process.env[linearConfig.api_key_env]?.trim();
+      if (!apiKey) {
+        throw new Error(
+          `${linearConfig.api_key_env} environment variable is not set or blank (required for Linear adapter)`,
+        );
+      }
+      _issueTrackerAdapter = new LinearAdapter(linearConfig, apiKey);
+    } else {
+      throw new Error(`Unsupported issue_tracker.provider: ${provider as string}`);
+    }
+
+    return _issueTrackerAdapter;
+  })();
+
+  try {
+    return await _issueTrackerAdapterPromise;
+  } finally {
+    _issueTrackerAdapterPromise = null;
+  }
+}
+
+// ── GitHubProjectsAdapter singleton (kept for backward compatibility) ─────────
 
 let _githubAdapter: GitHubProjectsAdapter | null = null;
 let _githubAdapterPromise: Promise<GitHubProjectsAdapter> | null = null;
@@ -105,6 +152,7 @@ let _githubAdapterPromise: Promise<GitHubProjectsAdapter> | null = null;
  * Returns the shared GitHubProjectsAdapter, initializing it on first call.
  * Single-flight: concurrent callers await the same initialization promise.
  * Reads GITHUB_TOKEN from env; requires issue_tracker.provider === 'github_projects'.
+ * @deprecated Use getIssueTrackerAdapter() instead.
  */
 export async function getGitHubAdapter(): Promise<GitHubProjectsAdapter> {
   if (_githubAdapter !== null) return _githubAdapter;
@@ -211,6 +259,8 @@ export function _resetForTests(): void {
   _jobInitPromise = null;
   _productConfig = null;
   _productInitPromise = null;
+  _issueTrackerAdapter = null;
+  _issueTrackerAdapterPromise = null;
   _githubAdapter = null;
   _githubAdapterPromise = null;
   _productRegistry = null;

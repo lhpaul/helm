@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Linear adapter (Session 20):** Helm can now track issues in Linear as an alternative to GitHub Projects, enabling the MOME pilot.
+  - `LinearAdapter` in `packages/adapters/src/linear/` — implements `IssueTrackerAdapter` in full: `ensureSubStages` (creates `helm:*` labels in the configured Linear team), `getItem`, `listItems`, `setSubStage` (swaps `helm:*` labels atomically), `setStatus`, `comment`, `parseWebhook`, and `registerWebhook` (no-op; webhook configured manually in Linear UI per ADR-020).
+  - Auth: raw `Authorization: {api_key}` header without `Bearer` prefix — Linear PATs are rejected by `@linear/sdk` and `linear-mcp@1.2.0` because they add the prefix; the adapter uses `fetch` directly with the raw key.
+  - `externalId` = Linear `identifier` (e.g. `MOM-123`); adapter maintains an `identifier → UUID` cache for GraphQL mutations.
+  - `verifyLinearSignature` — HMAC-SHA256 verification for the `Linear-Signature` header (raw hex, no `sha256=` prefix).
+  - `POST /api/webhooks/linear` route — mirrors the GitHub route: signature check, `item_created` → store, `item_updated` with `subStage` → transition, `comment_added` → no-op.
+  - `getIssueTrackerAdapter()` factory in `apps/api/src/services/index.ts` — dispatches to `GitHubProjectsAdapter` or `LinearAdapter` based on `product.issue_tracker.provider`; `getGitHubAdapter()` kept for backward compatibility.
+  - `IssueTrackerSchema` discriminated union updated: `LinearTrackerSchema` now has `api_key_env`, `team_key`, `webhook_secret_env` (removed old `workspace` / `label_prefix` fields that were pre-draft stubs).
+
 - **Remediation gate (Session 19c):** After the parallel reviewer fan-out, Helm parses severity findings and, when the security or test reviewer reports a CRITICAL or HIGH finding, runs a remediation agent that applies mechanical fixes before the item waits for human merge.
   - `parseFindings(reviewBody)` and the `Findings` type (`{ critical, high, medium, low, info }`) — count `**SEVERITY** ·` tags in a `review.md` body. Robust to surrounding markdown; bare bold (without the `·` separator) is not counted.
   - `ReviewerResult` extended with `findings?` and `commentBody?` — both populated only when a comment was posted, so downstream code can gate on severity and reuse the exact review text.

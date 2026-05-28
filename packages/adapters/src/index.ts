@@ -11,3 +11,13 @@ export {
   verifyGitHubSignature,
   parseGitHubWebhook,
 } from './github-projects/index.js';
+export { LinearAdapter } from './linear/index.js';
+export type { LinearTrackerConfig, LinearFetchFn } from './linear/index.js';
+export {
+  LinearAuthError,
+  LinearNotFoundError,
+  LinearAPIError,
+  LinearConfigError,
+  verifyLinearSignature,
+  parseLinearWebhook,
+} from './linear/index.js';

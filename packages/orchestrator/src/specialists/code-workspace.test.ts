@@ -7,6 +7,7 @@ import {
   provisionCodeWorkspace,
   provisionReviewerWorkspace,
   openCodePR,
+  pushReviewerPatches,
 } from './code-workspace.js';
 import type { RunGit, RunGh } from './git-helpers.js';
 import type { CodeRepo } from '@helm/shared';
@@ -374,7 +375,7 @@ describe('openCodePR', () => {
     ).rejects.toThrow('Invalid externalId');
   });
 
-  it('sanitizes token from git error messages', async () => {
+  it('sanitizes token from git error messages (openCodePR)', async () => {
     const sensitiveToken = 'ghp_super_secret_9x7y';
     const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === 'status') return { stdout: 'M  file.ts\n' };
@@ -394,5 +395,134 @@ describe('openCodePR', () => {
     expect(thrownError).toBeDefined();
     expect(thrownError!.message).not.toContain(sensitiveToken);
     expect(thrownError!.message).toContain('***');
+  });
+});
+
+// ── pushReviewerPatches ───────────────────────────────────────────────────────
+
+describe('pushReviewerPatches', () => {
+  let workspacePath: string;
+
+  beforeEach(async () => {
+    workspacePath = join(tmpdir(), `test-review-ws-${randomUUID()}`);
+    await mkdir(workspacePath, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+  });
+
+  const makeBaseOpts = () => ({
+    externalId: 'HLM-42',
+    codeRepo: makeCodeRepo(),
+    workspacePath,
+    githubToken: 'test-token',
+  });
+
+  it('returns { pushed: false } when workspace is clean (no changes)', async () => {
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'status') return { stdout: '' }; // clean
+      return { stdout: '' };
+    });
+
+    const result = await pushReviewerPatches(makeBaseOpts(), runGit);
+
+    expect(result).toEqual({ pushed: false });
+    // Only status was called — no add/commit/push
+    // mock.calls is [[args, opts], ...] so calls[i][0] is the args array
+    const calls = (runGit as ReturnType<typeof vi.fn>).mock.calls as [string[], unknown][];
+    const nonStatusCalls = calls.filter(([args]) => args[0] !== 'status');
+    expect(nonStatusCalls).toHaveLength(0);
+  });
+
+  it('stages, commits, and pushes when workspace has changes; returns pushed+SHA', async () => {
+    const capturedArgs: string[][] = [];
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      capturedArgs.push([...args]);
+      if (args[0] === 'status') return { stdout: 'M  src/fix.ts\n' }; // dirty
+      if (args[0] === 'rev-parse') return { stdout: 'abc123\n' };
+      return { stdout: '' };
+    });
+
+    const result = await pushReviewerPatches(makeBaseOpts(), runGit);
+
+    expect(result).toEqual({ pushed: true, commitSha: 'abc123' });
+
+    // add -A called
+    const addArgs = capturedArgs.find((a) => a[0] === 'add');
+    expect(addArgs).toContain('-A');
+
+    // commit with correct message
+    const commitArgs = capturedArgs.find((a) => a[0] === 'commit');
+    expect(commitArgs).toBeDefined();
+    expect(commitArgs!.join(' ')).toContain('apply code-reviewer patches for HLM-42');
+
+    // push with refspec and NO --force
+    const pushArgs = capturedArgs.find((a) => a[0] === 'push');
+    expect(pushArgs).toBeDefined();
+    expect(pushArgs!.join(' ')).toContain('helm/impl/HLM-42:helm/impl/HLM-42');
+    expect(pushArgs).not.toContain('--force');
+  });
+
+  it('push uses authenticated URL (x-access-token) and NOT --force', async () => {
+    const capturedArgs: string[][] = [];
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      capturedArgs.push([...args]);
+      if (args[0] === 'status') return { stdout: 'M  src/fix.ts\n' };
+      if (args[0] === 'rev-parse') return { stdout: 'deadbeef\n' };
+      return { stdout: '' };
+    });
+
+    await pushReviewerPatches(makeBaseOpts(), runGit);
+
+    const pushArgs = capturedArgs.find((a) => a[0] === 'push');
+    expect(pushArgs).toBeDefined();
+    const pushUrl = pushArgs!.find((a) => a.includes('x-access-token:'));
+    expect(pushUrl).toBeDefined();
+    expect(pushUrl).toContain('test-token');
+    expect(pushUrl).toContain('test-org/test-repo');
+    expect(pushArgs).not.toContain('--force');
+  });
+
+  it('sanitizes token from push error messages', async () => {
+    const sensitiveToken = 'ghp_reviewer_secret_9x7y';
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'status') return { stdout: 'M  src/fix.ts\n' };
+      if (args[0] === 'rev-parse') return { stdout: 'abc123\n' };
+      if (args[0] === 'push')
+        throw new Error(`fatal: push rejected, x-access-token:${sensitiveToken}@github.com`);
+      return { stdout: '' };
+    });
+
+    let thrownError: Error | undefined;
+    try {
+      await pushReviewerPatches({ ...makeBaseOpts(), githubToken: sensitiveToken }, runGit);
+    } catch (err) {
+      thrownError = err as Error;
+    }
+
+    expect(thrownError).toBeDefined();
+    expect(thrownError!.message).not.toContain(sensitiveToken);
+    expect(thrownError!.message).toContain('***');
+  });
+
+  it('rejects dot-prefixed externalIds immediately (no git calls)', async () => {
+    const runGit: RunGit = vi.fn();
+
+    await expect(
+      pushReviewerPatches({ ...makeBaseOpts(), externalId: '.hidden' }, runGit),
+    ).rejects.toThrow('Invalid externalId');
+
+    expect(runGit).not.toHaveBeenCalled();
+  });
+
+  it('rejects externalIds with slashes immediately (no git calls)', async () => {
+    const runGit: RunGit = vi.fn();
+
+    await expect(
+      pushReviewerPatches({ ...makeBaseOpts(), externalId: 'foo/bar' }, runGit),
+    ).rejects.toThrow('Invalid externalId');
+
+    expect(runGit).not.toHaveBeenCalled();
   });
 });

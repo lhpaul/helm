@@ -12,6 +12,11 @@
  *
  * `openCodePR` — stages all changes, commits as helm-bot, pushes the
  *   implementation branch, and opens an idempotent PR against the default branch.
+ *
+ * `pushReviewerPatches` — stages all changes in a reviewer workspace, commits as
+ *   helm-bot, and fast-forward pushes to the remote impl branch. Used by the
+ *   code-reviewer only (single-pusher invariant). Returns `{ pushed: false }` when
+ *   the workspace is clean.
  */
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -60,6 +65,18 @@ export type OpenCodePROpts = {
 
 export type OpenCodePRResult = {
   prUrl: string;
+};
+
+export type PushReviewerPatchesOpts = {
+  externalId: string;
+  codeRepo: CodeRepo;
+  workspacePath: string;
+  githubToken: string;
+};
+
+export type PushReviewerPatchesResult = {
+  pushed: boolean;
+  commitSha?: string;
 };
 
 // ── EXTERNAL_ID guard ─────────────────────────────────────────────────────────
@@ -426,4 +443,111 @@ export async function openCodePR(
   }
 
   return { prUrl };
+}
+
+// ── pushReviewerPatches ───────────────────────────────────────────────────────
+
+/**
+ * Stages all changes in a reviewer workspace, commits as helm-bot, and
+ * fast-forward pushes to the remote impl branch.
+ *
+ * Only the code-reviewer calls this; security and test reviewers are
+ * comment-only by design (single-pusher invariant — see ADR-017, ADR-018).
+ *
+ * Returns `{ pushed: false }` when the workspace is clean (no-op).
+ * Returns `{ pushed: true, commitSha }` when patches were committed and pushed.
+ *
+ * The push is NOT `--force` — it is a fast-forward push to an existing remote
+ * branch. The impl branch was created and pushed by the implementer; the
+ * reviewer appends a single mechanical-fix commit on top.
+ *
+ * @throws if the externalId is invalid or any git step fails.
+ *         Token is always sanitized from error messages.
+ */
+export async function pushReviewerPatches(
+  opts: PushReviewerPatchesOpts,
+  runGit: RunGit = defaultRunGit,
+): Promise<PushReviewerPatchesResult> {
+  const { externalId, codeRepo, workspacePath, githubToken } = opts;
+
+  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+    throw new Error(`[code-workspace] Invalid externalId: "${externalId}"`);
+  }
+
+  const gitEnv: NodeJS.ProcessEnv = {
+    GIT_AUTHOR_NAME: 'helm-bot',
+    GIT_AUTHOR_EMAIL: 'helm-bot@users.noreply.github.com',
+    GIT_COMMITTER_NAME: 'helm-bot',
+    GIT_COMMITTER_EMAIL: 'helm-bot@users.noreply.github.com',
+  };
+
+  // ── Step 1: Check for changes ─────────────────────────────────────────────
+  let statusOut: string;
+  try {
+    const result = await runGit(['status', '--porcelain'], { cwd: workspacePath });
+    statusOut = result.stdout.trim();
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `[code-workspace] Failed to check git status: ${sanitizeToken(raw, githubToken)}`,
+    );
+  }
+
+  if (!statusOut) {
+    return { pushed: false };
+  }
+
+  // ── Step 2: Stage all changes ─────────────────────────────────────────────
+  try {
+    await runGit(['add', '-A'], { cwd: workspacePath });
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    throw new Error(`[code-workspace] Failed to stage changes: ${sanitizeToken(raw, githubToken)}`);
+  }
+
+  // ── Step 3: Commit ────────────────────────────────────────────────────────
+  try {
+    await runGit(['commit', '-m', `chore(review): apply code-reviewer patches for ${externalId}`], {
+      cwd: workspacePath,
+      env: gitEnv,
+    });
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `[code-workspace] Failed to commit reviewer patches: ${sanitizeToken(raw, githubToken)}`,
+    );
+  }
+
+  // ── Step 4: Capture commit SHA ────────────────────────────────────────────
+  let commitSha: string;
+  try {
+    const result = await runGit(['rev-parse', 'HEAD'], { cwd: workspacePath });
+    commitSha = result.stdout.trim();
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `[code-workspace] Failed to read commit SHA: ${sanitizeToken(raw, githubToken)}`,
+    );
+  }
+
+  // ── Step 5: Resolve repo coordinates ─────────────────────────────────────
+  const parsed = parseGitHubRepoUrl(codeRepo.url);
+  if (!parsed) {
+    throw new Error(`[code-workspace] Cannot parse code repo URL: ${codeRepo.url}`);
+  }
+  const { owner, repo } = parsed;
+
+  // ── Step 6: Push (fast-forward, NO --force) ───────────────────────────────
+  const branchName = implBranchName(externalId);
+  const pushUrl = buildAuthenticatedUrl(owner, repo, githubToken);
+  try {
+    await runGit(['push', pushUrl, `${branchName}:${branchName}`], { cwd: workspacePath });
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `[code-workspace] Failed to push reviewer patches for '${branchName}': ${sanitizeToken(raw, githubToken)}`,
+    );
+  }
+
+  return { pushed: true, commitSha };
 }

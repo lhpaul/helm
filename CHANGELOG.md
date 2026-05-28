@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Real reviewer prompts and code-reviewer push (Session 19b):** Reviewer agents now produce structured findings with severity tags; the code-reviewer can apply mechanical fixes directly to the impl branch.
+  - `REVIEW_MD_FORMAT` — canonical `review.md` structure shared across all three reviewer prompts. Each finding carries a `**SEVERITY** · ` tag (`CRITICAL | HIGH | MEDIUM | LOW | INFO`) parseable by the 19c remediation gate. Matches the agent-hq severity-tag convention for zero-translation compatibility.
+  - Three real domain-focused prompts in `buildReviewerParams`: **code** (code quality, conventions, anti-patterns, applies mechanical fixes), **security** (injection, auth, secrets, input validation — comment-only), **test** (coverage vs spec ACs, edge cases, test quality — comment-only). All include the spec (if available) and the full `REVIEW_MD_FORMAT` template.
+  - `fetchSpecForPlan` called best-effort in `fanoutReviewers` before provisioning workspaces; spec injected into all three reviewer prompts as `## Spec` context. Null return or fetch error → graceful fallback (reviewers run without spec context).
+  - `pushReviewerPatches({ externalId, codeRepo, workspacePath, githubToken })` — new helper in `code-workspace.ts`. Stages all changes, commits as `helm-bot` (`chore(review): apply code-reviewer patches for {externalId}`), pushes fast-forward to the remote impl branch. Returns `{ pushed: false }` when workspace is clean (no-op). Token sanitized from all error paths.
+  - `handleReviewerResult` wires the push for `kind === 'code'` only: push is attempted before posting the PR comment; if patches were applied, the commit SHA is appended to the comment body. Push failure is non-fatal — comment is still posted, result carries `status: 'error'` and `commentPosted: true`.
+  - ADR-018: documents the review format, domain focus decisions, spec injection approach, and single-pusher rationale. Opened as PR against the knowledge repo.
+
 - **Reviewer fan-out foundation (Session 19a):** Helm can now run code, security, and test reviewers in parallel on the open implementation PR when an item reaches `code-review`.
   - `findCodePRUrl({ codeRepo, externalId, githubToken })` — queries `gh pr list` for the open `helm/impl/{externalId}` PR; returns null if not found (GitHub is source of truth, not ItemState).
   - `postPRComment({ prUrl, body, githubToken })` — posts a review comment on the implementation PR as the orchestrator (token never enters agent subprocess).

@@ -249,9 +249,9 @@ describe('GitHubProjectsAdapter', () => {
       const { adapter } = makeAdapter();
       const linearConfig = {
         provider: 'linear',
-        workspace: 'w',
+        api_key_env: 'LINEAR_API_KEY',
         team_key: 'T',
-        label_prefix: 'helm:',
+        webhook_secret_env: 'LINEAR_WEBHOOK_SECRET',
       } as const;
       await expect(adapter.ensureSubStages(linearConfig)).rejects.toThrow(GitHubConfigError);
     });

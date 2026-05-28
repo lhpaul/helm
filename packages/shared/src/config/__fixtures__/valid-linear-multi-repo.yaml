@@ -5,9 +5,9 @@ product:
 
 issue_tracker:
   provider: linear
-  workspace: acme-corp
+  api_key_env: LINEAR_API_KEY
   team_key: ACME
-  label_prefix: 'helm:'
+  webhook_secret_env: LINEAR_WEBHOOK_SECRET
 
 code_repos:
   - url: https://github.com/acme-org/acme-app

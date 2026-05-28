@@ -1,9 +1,14 @@
 import { Hono } from 'hono';
-import { verifyGitHubSignature } from '@helm/adapters';
+import { verifyGitHubSignature, verifyLinearSignature } from '@helm/adapters';
 import { WorkflowTransitionError, type WorkflowStage } from '@helm/workflow';
 import { parseArtifactBranch, type ArtifactBranchKind } from '@helm/shared';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
-import { getGitHubAdapter, getItemStore, getProductConfig } from '../services/index.js';
+import {
+  getGitHubAdapter,
+  getIssueTrackerAdapter,
+  getItemStore,
+  getProductConfig,
+} from '../services/index.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
 
 // ── Artifact branch routing ───────────────────────────────────────────────────
@@ -133,6 +138,95 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         }
       }
     }
+  }
+
+  return c.json({ processed: true });
+});
+
+// ── POST /api/webhooks/linear ─────────────────────────────────────────────────
+
+webhooksRouter.post('/webhooks/linear', async (c) => {
+  // a. Guard: product must use Linear and have a webhook secret configured.
+  const config = await getProductConfig();
+  if (config.issue_tracker.provider !== 'linear') {
+    console.error('[webhooks/linear] Product is not configured with provider linear');
+    return c.json({ error: 'Webhook endpoint not configured for this provider' }, 503);
+  }
+
+  const secretEnv = config.issue_tracker.webhook_secret_env;
+  const secret = process.env[secretEnv]?.trim();
+  if (!secret) {
+    console.error(`[webhooks/linear] ${secretEnv} is not configured`);
+    return c.json({ error: 'Webhook endpoint not configured' }, 503);
+  }
+
+  // b. Read raw body as text — MUST happen before JSON parse so the original
+  //    byte sequence is preserved for signature verification.
+  const rawBody = await c.req.text();
+
+  // c. Verify HMAC-SHA256 signature before touching the payload.
+  //    Linear sends the hex digest in Linear-Signature (no prefix).
+  const sigHeader = c.req.header('linear-signature');
+  if (!verifyLinearSignature(rawBody, sigHeader, secret)) {
+    return c.body(null, 401);
+  }
+
+  // d. JSON parse only after signature is confirmed.
+  let body: unknown;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  // e. Parse into a NormalizedEvent.
+  const adapter = await getIssueTrackerAdapter();
+  const event = adapter.parseWebhook(body);
+
+  // f. Defense-in-depth: validate externalId from webhook payload before using it.
+  if (event.type !== 'unknown') {
+    const externalId = 'externalId' in event ? event.externalId : null;
+    if (typeof externalId === 'string' && !EXTERNAL_ID_REGEX.test(externalId)) {
+      console.error(`[webhooks/linear] Rejected invalid externalId from event: ${event.type}`);
+      return c.json({ processed: true });
+    }
+  }
+
+  // g. Dispatch.
+  if (event.type === 'item_created') {
+    const [itemStore] = await Promise.all([getItemStore()]);
+    try {
+      await itemStore.create({
+        externalId: event.externalId,
+        productSlug: config.product.slug,
+        triggeredBy: 'webhook:linear',
+      });
+    } catch (err) {
+      if (err instanceof ItemAlreadyExistsError) {
+        // Idempotent — item already exists, treat as success.
+      } else {
+        console.error('[webhooks/linear] Unexpected error creating item:', err);
+        return c.json({ error: 'Internal server error' }, 500);
+      }
+    }
+  } else if (event.type === 'item_updated' && event.subStage != null) {
+    const itemStore = await getItemStore();
+    try {
+      await itemStore.transition({
+        externalId: event.externalId,
+        toStage: event.subStage,
+        triggeredBy: 'webhook:linear',
+      });
+    } catch (err) {
+      if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
+        console.error('[webhooks/linear] Transition not applied:', err.message);
+      } else {
+        console.error('[webhooks/linear] Unexpected error during transition:', err);
+        return c.json({ error: 'Internal server error' }, 500);
+      }
+    }
+  } else if (event.type === 'comment_added') {
+    console.info(`[webhooks/linear] comment_added on ${event.externalId} — no action in v0`);
   }
 
   return c.json({ processed: true });

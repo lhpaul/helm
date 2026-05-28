@@ -226,9 +226,9 @@ describe('syncProductItems', () => {
         ...BASE_PRODUCT,
         issue_tracker: {
           provider: 'linear',
-          workspace: 'helm-dev',
+          api_key_env: 'LINEAR_API_KEY',
           team_key: 'HLM',
-          label_prefix: 'helm:',
+          webhook_secret_env: 'LINEAR_WEBHOOK_SECRET',
         },
       };
 

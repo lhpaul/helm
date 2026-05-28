@@ -40,15 +40,16 @@ specialists:
   remediation: { runtime: claude_code, model: claude-sonnet-4-6 }
 `.trim();
 
-const LINEAR_WITHOUT_LABEL_PREFIX = `
+const LINEAR_VALID = `
 helm_version: "0"
 product:
   slug: test-defaults
   name: Test Defaults
 issue_tracker:
   provider: linear
-  workspace: test-workspace
+  api_key_env: LINEAR_API_KEY
   team_key: TEST
+  webhook_secret_env: LINEAR_WEBHOOK_SECRET
 code_repos:
   - url: https://github.com/test-org/test-app
     default_branch: main
@@ -89,7 +90,8 @@ describe('parseProductConfig', () => {
       // type-narrowing via discriminated union — TypeScript enforces this at compile time
       if (config.issue_tracker.provider === 'linear') {
         expect(config.issue_tracker.team_key).toBe('ACME');
-        expect(config.issue_tracker.label_prefix).toBe('helm:');
+        expect(config.issue_tracker.api_key_env).toBe('LINEAR_API_KEY');
+        expect(config.issue_tracker.webhook_secret_env).toBe('LINEAR_WEBHOOK_SECRET');
       }
       expect(config.code_repos).toHaveLength(2);
       expect(config.code_repos[1]?.role).toBe('docs');
@@ -115,12 +117,14 @@ describe('parseProductConfig', () => {
       }
     });
 
-    it('defaults label_prefix to "helm:" when omitted (linear)', () => {
-      const config = parseProductConfig(LINEAR_WITHOUT_LABEL_PREFIX);
+    it('parses linear config with required fields', () => {
+      const config = parseProductConfig(LINEAR_VALID);
 
       expect(config.issue_tracker.provider).toBe('linear');
       if (config.issue_tracker.provider === 'linear') {
-        expect(config.issue_tracker.label_prefix).toBe('helm:');
+        expect(config.issue_tracker.team_key).toBe('TEST');
+        expect(config.issue_tracker.api_key_env).toBe('LINEAR_API_KEY');
+        expect(config.issue_tracker.webhook_secret_env).toBe('LINEAR_WEBHOOK_SECRET');
       }
     });
   });

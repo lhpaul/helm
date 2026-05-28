@@ -15,9 +15,9 @@ const GitHubProjectsTrackerSchema = z
 const LinearTrackerSchema = z
   .object({
     provider: z.literal('linear'),
-    workspace: z.string().min(1),
+    api_key_env: z.string().min(1),
     team_key: z.string().min(1),
-    label_prefix: z.string().default('helm:'),
+    webhook_secret_env: z.string().min(1),
   })
   .strict();
 

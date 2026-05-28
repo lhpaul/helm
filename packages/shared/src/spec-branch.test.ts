@@ -78,6 +78,20 @@ describe('parseArtifactBranch', () => {
     });
   });
 
+  // ── Impl branches ──────────────────────────────────────────────────────────
+
+  it('returns { kind: impl, externalId } for a standard impl branch', () => {
+    expect(parseArtifactBranch('helm/impl/HLM-42')).toEqual({ kind: 'impl', externalId: 'HLM-42' });
+    expect(parseArtifactBranch('helm/impl/issue_1')).toEqual({
+      kind: 'impl',
+      externalId: 'issue_1',
+    });
+    expect(parseArtifactBranch('helm/impl/feature.v2')).toEqual({
+      kind: 'impl',
+      externalId: 'feature.v2',
+    });
+  });
+
   // ── Plan branches ──────────────────────────────────────────────────────────
 
   it('returns { kind: plan, externalId } for a standard plan branch', () => {
@@ -114,20 +128,29 @@ describe('parseArtifactBranch', () => {
     expect(parseArtifactBranch('helm/plan/..')).toBeNull();
   });
 
+  it('returns null for dot-segment traversal attempts in impl branches', () => {
+    expect(parseArtifactBranch('helm/impl/../x')).toBeNull();
+    expect(parseArtifactBranch('helm/impl/.')).toBeNull();
+    expect(parseArtifactBranch('helm/impl/..')).toBeNull();
+  });
+
   it('returns null for dot-prefixed externalIds (hidden-file style)', () => {
     expect(parseArtifactBranch('helm/spec/.hidden')).toBeNull();
     expect(parseArtifactBranch('helm/plan/.hidden')).toBeNull();
+    expect(parseArtifactBranch('helm/impl/.hidden')).toBeNull();
   });
 
   it('returns null for externalIds with disallowed characters', () => {
     // slash — path traversal
     expect(parseArtifactBranch('helm/spec/foo/bar')).toBeNull();
     expect(parseArtifactBranch('helm/plan/foo/bar')).toBeNull();
+    expect(parseArtifactBranch('helm/impl/foo/bar')).toBeNull();
     // space
     expect(parseArtifactBranch('helm/spec/foo bar')).toBeNull();
     // empty suffix
     expect(parseArtifactBranch('helm/spec/')).toBeNull();
     expect(parseArtifactBranch('helm/plan/')).toBeNull();
+    expect(parseArtifactBranch('helm/impl/')).toBeNull();
   });
 
   // ── Inverse property ──────────────────────────────────────────────────────
@@ -145,6 +168,14 @@ describe('parseArtifactBranch', () => {
     for (const id of ids) {
       const parsed = parseArtifactBranch(planBranchName(id));
       expect(parsed).toEqual({ kind: 'plan', externalId: id });
+    }
+  });
+
+  it('is the inverse of implBranchName for valid externalIds', () => {
+    const ids = ['HLM-42', 'issue_1', 'feature.v2', 'my-item'];
+    for (const id of ids) {
+      const parsed = parseArtifactBranch(implBranchName(id));
+      expect(parsed).toEqual({ kind: 'impl', externalId: id });
     }
   });
 });

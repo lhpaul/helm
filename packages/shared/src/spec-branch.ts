@@ -62,24 +62,30 @@ export function implBranchName(externalId: string): string {
 }
 
 /**
- * Discriminates between the two kinds of artifact branches in the knowledge
- * repo.  Used by `parseArtifactBranch` to communicate which workflow artifact
+ * Discriminates between the three kinds of artifact branches tracked by Helm.
+ * Used by `parseArtifactBranch` to communicate which workflow artifact
  * type a git ref belongs to.
+ *
+ * - `'spec'`  — knowledge-repo spec branch (`helm/spec/{externalId}`)
+ * - `'plan'`  — knowledge-repo plan branch (`helm/plan/{externalId}`)
+ * - `'impl'`  — code-repo implementation branch (`helm/impl/{externalId}`)
  */
-export type ArtifactBranchKind = 'spec' | 'plan';
+export type ArtifactBranchKind = 'spec' | 'plan' | 'impl';
 
 /**
  * Parses a git ref and returns the artifact kind and externalId if the ref is
- * a valid spec or plan branch, or `null` if it is not.
+ * a valid spec, plan, or impl branch, or `null` if it is not.
  *
  * A valid artifact branch:
- *   - Starts with `helm/spec/` (kind: 'spec') or `helm/plan/` (kind: 'plan')
+ *   - Starts with `helm/spec/` (kind: 'spec'), `helm/plan/` (kind: 'plan'),
+ *     or `helm/impl/` (kind: 'impl')
  *   - Has a non-empty suffix that passes the externalId regex
  *     (blocks leading dots, slashes, spaces, and other unsafe characters)
  *
  * @example
  *   parseArtifactBranch('helm/spec/HLM-42')  // → { kind: 'spec', externalId: 'HLM-42' }
  *   parseArtifactBranch('helm/plan/HLM-42')  // → { kind: 'plan', externalId: 'HLM-42' }
+ *   parseArtifactBranch('helm/impl/HLM-42')  // → { kind: 'impl', externalId: 'HLM-42' }
  *   parseArtifactBranch('helm/spec/../x')    // → null  (dot-segment traversal)
  *   parseArtifactBranch('feature/foo')       // → null  (not an artifact branch)
  */
@@ -95,6 +101,11 @@ export function parseArtifactBranch(
     const externalId = ref.slice(PLAN_BRANCH_PREFIX.length);
     if (!VALID_EXTERNAL_ID.test(externalId)) return null;
     return { kind: 'plan', externalId };
+  }
+  if (ref.startsWith(IMPL_BRANCH_PREFIX)) {
+    const externalId = ref.slice(IMPL_BRANCH_PREFIX.length);
+    if (!VALID_EXTERNAL_ID.test(externalId)) return null;
+    return { kind: 'impl', externalId };
   }
   return null;
 }

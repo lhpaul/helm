@@ -1,10 +1,27 @@
 import { Hono } from 'hono';
 import { verifyGitHubSignature } from '@helm/adapters';
-import { WorkflowTransitionError } from '@helm/workflow';
-import { parseArtifactBranch } from '@helm/shared';
+import { WorkflowTransitionError, type WorkflowStage } from '@helm/workflow';
+import { parseArtifactBranch, type ArtifactBranchKind } from '@helm/shared';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
 import { getGitHubAdapter, getItemStore, getProductConfig } from '../services/index.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
+
+// ── Artifact branch routing ───────────────────────────────────────────────────
+
+/** Maps artifact branch kind to the workflow stage it should transition to. */
+const ARTIFACT_STAGE_MAP: Record<ArtifactBranchKind, WorkflowStage> = {
+  spec: 'spec-ready',
+  plan: 'plan-ready',
+  impl: 'released',
+};
+
+/** Maps artifact branch kind to the triggeredBy source identifier.
+ *  spec/plan PRs live in the knowledge repo; impl PRs live in the code repo. */
+const ARTIFACT_TRIGGERED_BY_MAP: Record<ArtifactBranchKind, string> = {
+  spec: 'webhook:knowledge-repo',
+  plan: 'webhook:knowledge-repo',
+  impl: 'webhook:code-repo',
+};
 
 export const webhooksRouter = new Hono();
 
@@ -87,19 +104,20 @@ webhooksRouter.post('/webhooks/github', async (c) => {
   } else if (event.type === 'comment_added') {
     console.info(`[webhooks/github] comment_added on ${event.externalId} — no action in v0`);
   } else if (event.type === 'pull_request_merged') {
-    // Interpret the head ref: if it matches helm/spec/{externalId} or
-    // helm/plan/{externalId}, advance the item to the corresponding stage.
-    // Any other branch (feature/, main, …) is silently ignored — it belongs
-    // to a different workflow.
+    // Interpret the head ref: if it matches a Helm artifact branch prefix
+    // (helm/spec/, helm/plan/, helm/impl/), advance the item to the
+    // corresponding stage.  Any other branch (feature/, main, …) is silently
+    // ignored — it belongs to a different workflow.
     const parsed = parseArtifactBranch(event.headRef);
     if (parsed !== null) {
-      const toStage = parsed.kind === 'spec' ? 'spec-ready' : 'plan-ready';
+      const toStage = ARTIFACT_STAGE_MAP[parsed.kind];
+      const triggeredBy = ARTIFACT_TRIGGERED_BY_MAP[parsed.kind];
       const itemStore = await getItemStore();
       try {
         await itemStore.transition({
           externalId: parsed.externalId,
           toStage,
-          triggeredBy: 'webhook:knowledge-repo',
+          triggeredBy,
         });
       } catch (err) {
         if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {

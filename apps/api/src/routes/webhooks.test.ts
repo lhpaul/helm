@@ -350,6 +350,70 @@ describe('POST /api/webhooks/github', () => {
       expect(res.status).toBe(500);
     });
 
+    // ── Impl merge (helm/impl/ → released) ──────────────────────────────────
+
+    it('transitions code-review → released when helm/impl/ branch is merged', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'pull_request_merged',
+        headRef: 'helm/impl/issue_42',
+        timestamp: 't',
+      });
+      mockTransition.mockResolvedValue({});
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockTransition).toHaveBeenCalledWith({
+        externalId: 'issue_42',
+        toStage: 'released',
+        triggeredBy: 'webhook:code-repo',
+      });
+    });
+
+    it('returns 200 on WorkflowTransitionError for impl merge (item already past code-review)', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'pull_request_merged',
+        headRef: 'helm/impl/issue_42',
+        timestamp: 't',
+      });
+      const { WorkflowTransitionError } = await import('@helm/workflow');
+      mockTransition.mockRejectedValue(
+        new WorkflowTransitionError('Cannot transition', 'code-review', 'released'),
+      );
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockTransition).toHaveBeenCalledOnce();
+    });
+
+    it('returns 200 on ItemNotFoundError for impl merge (item not in this Helm instance)', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'pull_request_merged',
+        headRef: 'helm/impl/HLM-7',
+        timestamp: 't',
+      });
+      const { ItemNotFoundError } = await import('../services/errors.js');
+      mockTransition.mockRejectedValue(new ItemNotFoundError('HLM-7'));
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+    });
+
+    it('returns 500 on unexpected error during impl merge transition', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'pull_request_merged',
+        headRef: 'helm/impl/issue_42',
+        timestamp: 't',
+      });
+      mockTransition.mockRejectedValue(new Error('storage failure'));
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(500);
+    });
+
     // ── Non-artifact branches ─────────────────────────────────────────────────
 
     it('returns 200 without transition when branch is not an artifact branch', async () => {
@@ -383,6 +447,19 @@ describe('POST /api/webhooks/github', () => {
       mockParseWebhook.mockReturnValue({
         type: 'pull_request_merged',
         headRef: 'helm/plan/../etc/passwd',
+        timestamp: 't',
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockTransition).not.toHaveBeenCalled();
+    });
+
+    it('returns 200 and does not transition for a dot-traversal impl headRef', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'pull_request_merged',
+        headRef: 'helm/impl/../etc/passwd',
         timestamp: 't',
       });
 

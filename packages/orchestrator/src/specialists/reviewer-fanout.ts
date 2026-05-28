@@ -292,7 +292,9 @@ export async function fanoutReviewers(
       }),
     );
 
-    for (const spawnResult of spawnResults) {
+    for (let i = 0; i < spawnResults.length; i++) {
+      const spawnResult = spawnResults[i]!;
+      const kind = REVIEWER_KINDS[i]!;
       if (spawnResult.status === 'fulfilled') {
         reviewerResults.push(spawnResult.value);
       } else {
@@ -300,7 +302,7 @@ export async function fanoutReviewers(
         // This path is a safety net; handleReviewerResult is designed to never throw.
         const err = spawnResult.reason;
         reviewerResults.push({
-          kind: 'code', // placeholder — shouldn't happen in practice
+          kind,
           status: 'error',
           costUsd: 0,
           durationMs: 0,

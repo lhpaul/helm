@@ -1,5 +1,3 @@
-// All queries omit .strict() — Linear may add fields without notice.
-
 export const LIST_TEAM_ISSUES = `
   query ListTeamIssues($teamKey: String!, $after: String) {
     issues(

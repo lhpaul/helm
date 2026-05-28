@@ -56,8 +56,6 @@ const GQLErrorSchema = z.object({
 type IssueEntry = {
   /** Linear UUID for GraphQL mutations */
   id: string;
-  /** Cached state IDs for open/close transitions */
-  stateIds: { open: string; closed: string } | null;
 };
 
 export class LinearAdapter implements IssueTrackerAdapter {
@@ -142,8 +140,8 @@ export class LinearAdapter implements IssueTrackerAdapter {
     });
     if (!res.issue) return null;
     const item = this.normalizeIssue(res.issue);
-    this.identifierToEntry.set(item.externalId, { id: res.issue.id, stateIds: null });
-    return item;
+    this.identifierToEntry.set(item.externalId, { id: res.issue.id });
+    return { ...item };
   }
 
   async listItems(filter?: ItemFilter): Promise<NormalizedItem[]> {
@@ -166,12 +164,12 @@ export class LinearAdapter implements IssueTrackerAdapter {
     await this.ensureLabels();
 
     const newLabelName = `${HELM_LABEL_PREFIX}${subStage}`;
-    const newLabelId = this.labelNameToId.get(newLabelName);
-    if (!newLabelId) {
+    let resolvedLabelId = this.labelNameToId.get(newLabelName);
+    if (!resolvedLabelId) {
       // Label is missing — create it and retry once.
       await this.ensureSubStages(this.config);
-      const retryId = this.labelNameToId.get(newLabelName);
-      if (!retryId) {
+      resolvedLabelId = this.labelNameToId.get(newLabelName);
+      if (!resolvedLabelId) {
         throw new LinearNotFoundError(
           `Helm label '${newLabelName}' not found even after ensureSubStages`,
         );
@@ -188,7 +186,7 @@ export class LinearAdapter implements IssueTrackerAdapter {
 
     // Remove all existing helm:* labels (except the one we're about to add).
     for (const label of helmLabels) {
-      if (label.id !== this.labelNameToId.get(newLabelName)) {
+      if (label.id !== resolvedLabelId) {
         await this.executeGraphQL<IssueRemoveLabelResponse>(ISSUE_REMOVE_LABEL, {
           issueId,
           labelId: label.id,
@@ -199,8 +197,10 @@ export class LinearAdapter implements IssueTrackerAdapter {
     // Add the new label (if not already present).
     const alreadyPresent = currentLabels.some((l) => l.name === newLabelName);
     if (!alreadyPresent) {
-      const labelId = this.labelNameToId.get(newLabelName)!;
-      await this.executeGraphQL<IssueAddLabelResponse>(ISSUE_ADD_LABEL, { issueId, labelId });
+      await this.executeGraphQL<IssueAddLabelResponse>(ISSUE_ADD_LABEL, {
+        issueId,
+        labelId: resolvedLabelId,
+      });
     }
 
     this.itemCache = null;
@@ -394,7 +394,7 @@ export class LinearAdapter implements IssueTrackerAdapter {
     if (!res.issue) {
       throw new LinearNotFoundError(`Linear issue not found: ${externalId}`);
     }
-    this.identifierToEntry.set(externalId, { id: res.issue.id, stateIds: null });
+    this.identifierToEntry.set(externalId, { id: res.issue.id });
     return res.issue.id;
   }
 
@@ -425,7 +425,7 @@ export class LinearAdapter implements IssueTrackerAdapter {
       for (const issue of res.issues.nodes) {
         const item = this.normalizeIssue(issue);
         items.push(item);
-        nextEntries.set(issue.identifier, { id: issue.id, stateIds: null });
+        nextEntries.set(issue.identifier, { id: issue.id });
       }
       cursor =
         res.issues.pageInfo.hasNextPage === true ? (res.issues.pageInfo.endCursor ?? null) : null;

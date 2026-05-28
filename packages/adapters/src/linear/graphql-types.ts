@@ -1,3 +1,5 @@
+// Response types use open shapes — Linear may add fields without notice; unknown fields are ignored.
+
 // ── Shared primitives ──────────────────────────────────────────────────────────
 
 export type LinearLabel = {

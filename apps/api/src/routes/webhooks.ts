@@ -194,7 +194,7 @@ webhooksRouter.post('/webhooks/linear', async (c) => {
 
   // g. Dispatch.
   if (event.type === 'item_created') {
-    const [itemStore] = await Promise.all([getItemStore()]);
+    const itemStore = await getItemStore();
     try {
       await itemStore.create({
         externalId: event.externalId,

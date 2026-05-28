@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Reviewer fan-out foundation (Session 19a):** Helm can now run code, security, and test reviewers in parallel on the open implementation PR when an item reaches `code-review`.
+  - `findCodePRUrl({ codeRepo, externalId, githubToken })` — queries `gh pr list` for the open `helm/impl/{externalId}` PR; returns null if not found (GitHub is source of truth, not ItemState).
+  - `postPRComment({ prUrl, body, githubToken })` — posts a review comment on the implementation PR as the orchestrator (token never enters agent subprocess).
+  - `fanoutReviewers(externalId, product, prUrl, githubToken, runtime)` — provisions three isolated workspaces (one per reviewer kind), spawns code/security/test reviewers in parallel via `Promise.allSettled`, reads each `review.md` produced by the agent, posts it as a PR comment, cleans up all workspaces in `finally`. Single-pusher invariant: only the `code-reviewer` may commit+push patches (TODO 19b); security and test reviewers are comment-only by design.
+  - `STAGE_TO_SPECIALIST['code-review'] = 'reviewer-fanout'` — the dispatcher now routes items in `code-review` to the reviewer fan-out. The item stays in `code-review` during the entire fan-out; the remediation gate (Session 19c) decides the next move based on findings severity.
+  - `DispatchResult` aggregation: `costUsd` = sum of all reviewer costs; `durationMs` = max of reviewer durations (parallel wall-clock).
+  - ADR-017: documents fan-out design decisions. Opened as PR against the knowledge repo.
+
 - **Close release loop (Session 18):** The pipeline is now completable end-to-end — Helm can take an item from `discovery` all the way to `released` without manual intervention.
   - **State machine:** `code-review` now lists `released` as a valid next stage (alongside `in-development` and `remediation`). Previously `released` was unreachable from any automated path.
   - **`ArtifactBranchKind`** extended from `'spec' | 'plan'` to `'spec' | 'plan' | 'impl'`. `parseArtifactBranch` now recognises `helm/impl/{externalId}` branches with the same traversal/injection guards applied to spec and plan branches.

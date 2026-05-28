@@ -20,6 +20,8 @@ import {
 } from './specialists/fetch-product-context.js';
 import type { FetchFn } from './specialists/fetch-product-context.js';
 import type { RunGit, RunGh } from './specialists/spec-publisher.js';
+import { fanoutReviewers } from './specialists/reviewer-fanout.js';
+import { findCodePRUrl } from './specialists/pr-helpers.js';
 
 // ── Stage → specialist mapping ────────────────────────────────────────────────
 
@@ -27,6 +29,7 @@ const STAGE_TO_SPECIALIST: Partial<Record<WorkflowStage, string>> = {
   discovery: 'spec-writer',
   'spec-ready': 'plan-writer',
   'plan-ready': 'implementer',
+  'code-review': 'reviewer-fanout',
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -457,6 +460,81 @@ export async function dispatchStageHandler(
         await rm(actualWorkspacePath, { recursive: true, force: true }).catch(() => {});
       }
     }
+  }
+
+  if (specialistId === 'reviewer-fanout') {
+    // Token is required — reviewer-fanout needs it to find the impl PR and post comments.
+    if (!options?.githubToken) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: 'reviewer-fanout requires GITHUB_TOKEN',
+      };
+    }
+
+    // Code repo is required — reviewers clone it to inspect the implementation.
+    const codeRepo = product.code_repos[0];
+    if (!codeRepo) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: 'reviewer-fanout requires at least one code_repo in product config',
+      };
+    }
+
+    // Find the open impl PR — prerequisite for all reviewers.
+    let prUrl: string;
+    try {
+      const found = await findCodePRUrl(
+        { codeRepo, externalId: item.externalId, githubToken: options.githubToken },
+        options?.runGh,
+      );
+      if (found === null) {
+        return {
+          specialistId,
+          status: 'error',
+          costUsd: 0,
+          durationMs: 0,
+          error: `No open PR found for impl branch of item '${item.externalId}'`,
+        };
+      }
+      prUrl = found;
+    } catch (err) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: `Failed to find impl PR: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    // Fan-out across code/security/test reviewers in parallel.
+    // NOTE: the item stays in 'code-review' — no transition here.
+    // Session 19c decides between remediation and waiting for human merge.
+    const fanoutResult = await fanoutReviewers(
+      item.externalId,
+      product,
+      prUrl,
+      options.githubToken,
+      runtime,
+      options?.runGit,
+      options?.runGh,
+    );
+
+    return {
+      specialistId,
+      status: fanoutResult.status,
+      costUsd: fanoutResult.costUsd,
+      durationMs: fanoutResult.durationMs,
+      prUrl: fanoutResult.prUrl,
+      error: fanoutResult.error,
+      // No newStage — item stays in code-review
+    };
   }
 
   // Stub for future specialists

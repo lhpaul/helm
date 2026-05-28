@@ -8,20 +8,25 @@
  *   reviewer failure does not cancel the others.
  * - Orchestrator posts PR comments (not agents) — GITHUB_TOKEN never enters
  *   agent subprocesses.
- * - Single-pusher invariant: only the code-reviewer may push patches (TODO 19b);
+ * - Single-pusher invariant: only the code-reviewer may push patches (ADR-018);
  *   security and test reviewers are comment-only by design.
  * - Item stays in code-review — no transition in this session (Session 19c decides
  *   the next move based on review findings severity).
  * - costUsd = sum of all reviewer costs (all three ran in parallel, all were paid for).
  * - durationMs = max of reviewer durations (represents total wall-clock time).
+ * - Spec fetched best-effort before provisioning workspaces; injected into all
+ *   three reviewer prompts as a `## Spec` section. Null return or fetch error →
+ *   graceful fallback (reviewers run without spec context).
  */
 import { readFile } from 'node:fs/promises';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Product } from '@helm/shared';
+import type { CodeRepo, Product } from '@helm/shared';
 import type { AgentResult, IAgentRuntime, SpawnParams } from '../runtime.js';
-import { provisionReviewerWorkspace } from './code-workspace.js';
+import { provisionReviewerWorkspace, pushReviewerPatches } from './code-workspace.js';
+import { fetchSpecForPlan, type FetchFn } from './fetch-product-context.js';
 import { postPRComment } from './pr-helpers.js';
+import { sanitizeToken } from './git-helpers.js';
 import type { RunGit, RunGh } from './git-helpers.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -66,13 +71,43 @@ const SPECIALIST_CONFIG_KEY: Record<
   test: 'test_reviewer',
 };
 
+/**
+ * Canonical format for review.md produced by reviewer agents.
+ * Session 19c parses comments posted from this format, matching
+ * /\*\*(CRITICAL|HIGH)\*\* · / to detect findings that gate remediation.
+ * Matches the agent-hq severity-tag convention for zero-translation parsing.
+ *
+ * Severity levels: CRITICAL | HIGH | MEDIUM | LOW | INFO
+ * Status: APPROVED (no findings ≥ MEDIUM) | CHANGES_REQUESTED
+ */
+export const REVIEW_MD_FORMAT = `# {Kind} Review: {externalId}
+
+## Summary
+<one-paragraph executive summary>
+
+## Findings
+- **CRITICAL** · <short finding title>
+  <description, impacted files, suggested fix>
+- **HIGH** · <…>
+- **MEDIUM** · <…>
+- **LOW** · <…>
+- **INFO** · <…>
+
+Omit severity levels with no findings — do NOT write "None" or "No findings".
+
+## Status
+APPROVED | CHANGES_REQUESTED
+
+(Use APPROVED only if there are no findings of severity MEDIUM or above.)`.trim();
+
 // ── buildReviewerParams ───────────────────────────────────────────────────────
 
 /**
  * Builds SpawnParams for a reviewer specialist.
  *
- * NOTE (19a): the prompt is a stub that instructs the agent to write a minimal
- * review.md. In 19b this will be replaced with a real structured review prompt.
+ * Each reviewer kind gets a real domain-focused prompt. If `spec` is provided,
+ * it is injected as a `## Spec` section so reviewers can check implementation
+ * against acceptance criteria.
  */
 export function buildReviewerParams(
   kind: ReviewerKind,
@@ -80,31 +115,86 @@ export function buildReviewerParams(
   product: Product,
   workspacePath: string,
   prUrl: string,
+  spec?: string,
 ): SpawnParams {
   const specialistCfg = product.specialists[SPECIALIST_CONFIG_KEY[kind]];
   const specialistId = `${kind}-reviewer`;
 
-  // NOTE (19a stub): minimal prompt to produce a review.md file.
-  // In 19b this will be replaced with a real structured review prompt that
-  // inspects the diff, considers security/tests/code quality respectively, and
-  // produces findings with severity ratings.
-  const prompt = [
-    `You are Helm's ${kind} reviewer specialist. Your task is to review item \`${externalId}\` in the \`${product.product.name}\` product.`,
+  const kindLabel = kind.charAt(0).toUpperCase() + kind.slice(1);
+  const defaultBranch = product.code_repos[0]?.default_branch ?? 'main';
+
+  const commonHeader = [
+    `You are Helm's ${kindLabel} reviewer specialist. Your task is to review item \`${externalId}\`.`,
     '',
-    `The implementation PR is available at: ${prUrl}`,
+    `The implementation PR is available at: ${prUrl} (for context only — do not merge or close it).`,
     '',
-    'The working directory is a shallow clone of the code repository on the implementation branch.',
+    `The working directory is a shallow clone of the \`helm/impl/${externalId}\` implementation branch.`,
     '',
-    '**Your task (19a stub):**',
-    `Write a file named \`review.md\` in the working directory with a brief review summary from the ${kind} reviewer perspective.`,
-    '',
-    'The review.md must contain at minimum:',
-    `- A heading: \`# ${kind.charAt(0).toUpperCase() + kind.slice(1)} Review: ${externalId}\``,
-    '- A one-paragraph summary of your findings.',
-    '- A `## Status` section with either `APPROVED` or `CHANGES_REQUESTED`.',
-    '',
-    'Do not commit or push — the orchestrator handles posting your review.md as a PR comment.',
+    `To inspect the diff: \`git fetch --depth 1 origin ${defaultBranch}\` then \`git diff origin/${defaultBranch}...HEAD\``,
   ].join('\n');
+
+  const specSection = spec ? ['', '## Spec', '', spec, ''].join('\n') : '';
+
+  const outputInstruction = [
+    '',
+    '## Output',
+    '',
+    'Write a file named `review.md` in the working directory using the following format exactly:',
+    '',
+    REVIEW_MD_FORMAT.replace('{Kind}', kindLabel).replace('{externalId}', externalId),
+    '',
+    'Do not commit or push — the orchestrator reads review.md and posts it as a PR comment.',
+  ].join('\n');
+
+  let kindSpecificInstructions: string;
+
+  switch (kind) {
+    case 'code':
+      kindSpecificInstructions = [
+        '',
+        '**Your task — code quality review:**',
+        '- Assess code quality against repository conventions (check AGENT.md, CLAUDE.md, README.md in the working directory if present).',
+        '- Flag naming issues, structural problems, anti-patterns, dead code, and regression risks.',
+        '- Identify missing or inadequate error handling.',
+        '- Assess whether the implementation matches the spec requirements (if a spec is provided above).',
+        '',
+        '**Applying mechanical fixes (code reviewer only):**',
+        'If you identify mechanical, low-risk fixes (typos, formatting, dead-code removal, obvious simplifications without logic changes), apply them directly to the files in the working directory. The orchestrator will commit and push. For non-mechanical or invasive changes, surface them as findings only — do NOT modify files.',
+      ].join('\n');
+      break;
+
+    case 'security':
+      kindSpecificInstructions = [
+        '',
+        '**Your task — security review:**',
+        '- Identify injection vulnerabilities (SQL, command, path traversal, template).',
+        '- Check authentication and authorization controls.',
+        '- Look for secrets or credentials embedded in code.',
+        '- Assess input validation for externally-controlled data.',
+        '- Check for insecure dependencies, unsafe permissions, and information leaks.',
+        '',
+        '**Do not modify any files in the working directory.** Surface all findings in review.md only. The orchestrator does not push changes from security or test reviewers.',
+      ].join('\n');
+      break;
+
+    case 'test':
+      kindSpecificInstructions = [
+        '',
+        '**Your task — test coverage review:**',
+        '- Assess test coverage against Acceptance Criteria in the spec (if provided above).',
+        '- Identify edge cases and error paths not covered by existing tests.',
+        '- Evaluate test quality: are assertions meaningful, or are they trivial/tautological?',
+        '- Flag excessive mocking that may hide real bugs.',
+        '- Identify tests that may be flaky (time-dependent, order-dependent, environment-dependent).',
+        '',
+        '**Do not modify any files in the working directory.** Surface all findings in review.md only. The orchestrator does not push changes from security or test reviewers.',
+      ].join('\n');
+      break;
+  }
+
+  const prompt = [commonHeader, specSection, kindSpecificInstructions, outputInstruction].join(
+    '\n',
+  );
 
   return {
     specialistId,
@@ -113,7 +203,7 @@ export function buildReviewerParams(
     productSlug: product.product.slug,
     externalId,
     model: specialistCfg.model,
-    permissionMode: 'acceptEdits',
+    permissionMode: 'bypassPermissions',
     timeoutMs: REVIEWER_TIMEOUT_MS,
   };
 }
@@ -125,8 +215,10 @@ export function buildReviewerParams(
  *
  * 1. Checks agent status.
  * 2. Reads review.md from workspacePath (falls back to a placeholder if missing).
- * 3. Posts the review content as a PR comment.
- * 4. For code-reviewer: TODO (19b) — check for staged patches and push to impl branch.
+ * 3. For code-reviewer only: calls pushReviewerPatches — if patches were applied,
+ *    appends the commit SHA to the review comment body.
+ * 4. Posts the review content as a PR comment.
+ * 5. If the push failed: returns status 'error' with commentPosted: true.
  *
  * Never throws; all errors are captured in ReviewerResult.error.
  */
@@ -137,7 +229,9 @@ export async function handleReviewerResult(
   workspacePath: string,
   prUrl: string,
   githubToken: string,
+  codeRepo: CodeRepo,
   runGh?: RunGh,
+  runGit?: RunGit,
 ): Promise<ReviewerResult> {
   const baseResult = {
     kind,
@@ -170,6 +264,26 @@ export async function handleReviewerResult(
     ].join('\n');
   }
 
+  // For code-reviewer only: attempt to push any mechanical fixes.
+  let pushError: string | undefined;
+  if (kind === 'code') {
+    try {
+      const pushResult = await pushReviewerPatches(
+        { externalId, codeRepo, workspacePath, githubToken },
+        runGit,
+      );
+      if (pushResult.pushed && pushResult.commitSha) {
+        reviewContent += `\n\n---\n🤖 _Code-reviewer applied mechanical fixes — commit \`${pushResult.commitSha}\`_`;
+      }
+    } catch (err) {
+      console.error('[reviewer-fanout] pushReviewerPatches failed:', err);
+      // Defense-in-depth: sanitize the token even though pushReviewerPatches
+      // already does so — a second pass costs nothing and prevents regressions
+      // if the error originates outside pushReviewerPatches.
+      pushError = sanitizeToken(err instanceof Error ? err.message : String(err), githubToken);
+    }
+  }
+
   // Post the review content as a PR comment.
   try {
     await postPRComment({ prUrl, body: reviewContent, githubToken }, runGh);
@@ -182,7 +296,15 @@ export async function handleReviewerResult(
     };
   }
 
-  // TODO (19b): For code-reviewer, check for staged patches and push to impl branch.
+  // If the push failed (code reviewer), report error — comment was still posted.
+  if (pushError !== undefined) {
+    return {
+      ...baseResult,
+      status: 'error',
+      commentPosted: true,
+      error: `Comment posted but push failed: ${pushError}`,
+    };
+  }
 
   return {
     ...baseResult,
@@ -195,11 +317,12 @@ export async function handleReviewerResult(
 
 /**
  * Orchestrates the full reviewer fan-out for one item:
- *   1. Provisions 3 isolated workspaces (one per reviewer kind) using provisionReviewerWorkspace.
- *   2. Spawns all 3 reviewer agents in parallel via Promise.allSettled.
- *   3. Handles each result (reads review.md, posts PR comment).
- *   4. Cleans up all workspaces in a finally block.
- *   5. Returns an aggregated result.
+ *   1. Fetches spec best-effort (injected into all three reviewer prompts).
+ *   2. Provisions 3 isolated workspaces (one per reviewer kind) using provisionReviewerWorkspace.
+ *   3. Spawns all 3 reviewer agents in parallel via Promise.allSettled.
+ *   4. Handles each result (reads review.md, pushes patches for code-reviewer, posts PR comment).
+ *   5. Cleans up all workspaces in a finally block.
+ *   6. Returns an aggregated result.
  *
  * The item is NOT transitioned — it stays in code-review.
  * The remediation gate (Session 19c) decides the next move.
@@ -215,6 +338,7 @@ export async function fanoutReviewers(
   runtime: IAgentRuntime,
   runGit?: RunGit,
   runGh?: RunGh,
+  fetchFn?: FetchFn,
 ): Promise<ReviewerFanoutResult> {
   const codeRepo = product.code_repos[0];
   if (!codeRepo) {
@@ -226,6 +350,18 @@ export async function fanoutReviewers(
       durationMs: 0,
       error: 'fanoutReviewers requires at least one code_repo in product config',
     };
+  }
+
+  // Best-effort spec fetch — reviewers get context but dispatch is not blocked.
+  let spec: string | undefined;
+  try {
+    const fetched = await fetchSpecForPlan(product, externalId, githubToken, fetchFn ?? fetch);
+    spec = fetched ?? undefined;
+  } catch (err) {
+    console.warn(
+      '[fanout] Spec fetch failed, continuing without spec:',
+      err instanceof Error ? err.message : String(err),
+    );
   }
 
   // Provision all 3 workspaces in parallel.
@@ -278,7 +414,7 @@ export async function fanoutReviewers(
     const spawnResults = await Promise.allSettled(
       REVIEWER_KINDS.map(async (kind) => {
         const workspacePath = workspacePaths.get(kind)!;
-        const params = buildReviewerParams(kind, externalId, product, workspacePath, prUrl);
+        const params = buildReviewerParams(kind, externalId, product, workspacePath, prUrl, spec);
         const session = await runtime.spawn(params);
         const agentResult = await session.wait();
         const reviewerResult = await handleReviewerResult(
@@ -288,7 +424,9 @@ export async function fanoutReviewers(
           workspacePath,
           prUrl,
           githubToken,
+          codeRepo,
           runGh,
+          runGit,
         );
         return reviewerResult;
       }),

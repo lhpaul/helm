@@ -16,12 +16,33 @@ vi.mock('./specialists/reviewer-fanout.js', () => ({
     costUsd: 0.03,
     durationMs: 100,
   }),
+  shouldRemediate: vi.fn().mockReturnValue(false),
+}));
+vi.mock('./specialists/remediation.js', () => ({
+  buildRemediationParams: vi.fn().mockReturnValue({
+    specialistId: 'remediation',
+    prompt: 'remediate',
+    workdir: '/tmp',
+    productSlug: 'test-product',
+    externalId: 'issue_1',
+    permissionMode: 'bypassPermissions',
+    timeoutMs: 1000,
+  }),
+  handleRemediationResult: vi.fn().mockResolvedValue({
+    status: 'done',
+    costUsd: 0.02,
+    durationMs: 200,
+    commentPosted: true,
+    pushed: true,
+    commitSha: 'sha789',
+  }),
 }));
 
 // Lazy imports for the mocked modules (imported after vi.mock hoisting).
 // We use type-safe lazy accessors so we can manipulate mock return values per test.
 import { findCodePRUrl } from './specialists/pr-helpers.js';
-import { fanoutReviewers } from './specialists/reviewer-fanout.js';
+import { fanoutReviewers, shouldRemediate } from './specialists/reviewer-fanout.js';
+import { buildRemediationParams, handleRemediationResult } from './specialists/remediation.js';
 import { MockAgentRuntime } from './runtimes/mock.js';
 import type { Product } from '@helm/shared';
 import type { ItemTransitionFn } from './specialists/spec-writer.js';
@@ -995,7 +1016,8 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     await mkdir(workdir, { recursive: true });
     transition = vi.fn().mockResolvedValue({ currentStage: 'code-review' });
 
-    // Reset mocked modules to default behaviour before each test
+    // Clear accumulated call history, then re-establish default mock behaviour.
+    vi.clearAllMocks();
     vi.mocked(findCodePRUrl).mockResolvedValue('https://github.com/test-org/test-repo/pull/42');
     vi.mocked(fanoutReviewers).mockResolvedValue({
       reviewerResults: [],
@@ -1004,7 +1026,35 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
       costUsd: 0.03,
       durationMs: 100,
     });
+    vi.mocked(shouldRemediate).mockReturnValue(false);
+    vi.mocked(buildRemediationParams).mockReturnValue({
+      specialistId: 'remediation',
+      prompt: 'remediate',
+      workdir: '/tmp',
+      productSlug: 'test-product',
+      externalId: 'issue_1',
+      permissionMode: 'bypassPermissions',
+      timeoutMs: 1000,
+    });
+    vi.mocked(handleRemediationResult).mockResolvedValue({
+      status: 'done',
+      costUsd: 0.02,
+      durationMs: 200,
+      commentPosted: true,
+      pushed: true,
+      commitSha: 'sha789',
+    });
   });
+
+  /** runGit that simulates provisionReviewerWorkspace's clone (creates .git dir). */
+  const makeProvisionRunGit = (): RunGit =>
+    vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const dest = args[args.length - 1]!;
+        await mkdir(join(dest, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
 
   afterEach(async () => {
     await rm(workdir, { recursive: true, force: true });
@@ -1071,5 +1121,106 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     // No newStage — item stays in code-review
     expect(result.newStage).toBeUndefined();
     expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('gate inactive: no transition, status from fan-out (item stays in code-review)', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    vi.mocked(shouldRemediate).mockReturnValue(false);
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token' },
+    );
+
+    expect(result.status).toBe('done');
+    expect(result.newStage).toBeUndefined();
+    expect(transition).not.toHaveBeenCalled();
+    expect(handleRemediationResult).not.toHaveBeenCalled();
+  });
+
+  it('block-level fan-out failure (no reviewer results): returns error, no gate, no transition', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    vi.mocked(fanoutReviewers).mockResolvedValue({
+      reviewerResults: [],
+      prUrl: 'https://github.com/test-org/test-repo/pull/42',
+      status: 'error',
+      costUsd: 0,
+      durationMs: 0,
+      error: 'Failed to provision reviewer workspaces',
+    });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token' },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('provision reviewer workspaces');
+    expect(shouldRemediate).not.toHaveBeenCalled();
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('gate active + remediation done: two transitions, status done, aggregated cost/duration', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', runGit: makeProvisionRunGit() },
+    );
+
+    expect(result.status).toBe('done');
+    expect(result.newStage).toBe('code-review');
+    // cost = fan-out (0.03) + remediation (0.02); duration = max(100, 200)
+    expect(result.costUsd).toBeCloseTo(0.05, 5);
+    expect(result.durationMs).toBe(200);
+
+    // Two transitions: code-review → remediation, then remediation → code-review
+    expect(transition).toHaveBeenCalledTimes(2);
+    expect(transition).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ toStage: 'remediation' }),
+    );
+    expect(transition).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ toStage: 'code-review' }),
+    );
+  });
+
+  it('gate active + remediation error: one transition (to remediation), status error', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(handleRemediationResult).mockResolvedValue({
+      status: 'error',
+      costUsd: 0.02,
+      durationMs: 200,
+      commentPosted: false,
+      pushed: false,
+      error: 'Failed to push remediation patches: boom',
+    });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', runGit: makeProvisionRunGit() },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('push remediation patches');
+    // Only the transition INTO remediation happened — no return transition.
+    expect(transition).toHaveBeenCalledTimes(1);
+    expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'remediation' }));
+    expect(result.newStage).toBeUndefined();
   });
 });

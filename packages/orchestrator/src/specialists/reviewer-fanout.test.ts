@@ -9,6 +9,9 @@ import {
   buildReviewerParams,
   handleReviewerResult,
   REVIEW_MD_FORMAT,
+  parseFindings,
+  shouldRemediate,
+  type ReviewerResult,
 } from './reviewer-fanout.js';
 import type { IAgentRuntime, SpawnParams, AgentResult, AgentSession } from '../runtime.js';
 import type { RunGit, RunGh } from './git-helpers.js';
@@ -719,5 +722,163 @@ describe('fanoutReviewers', () => {
     for (const params of spawnedParams) {
       expect(params.prompt).not.toContain('## Spec');
     }
+  });
+});
+
+// ── parseFindings ─────────────────────────────────────────────────────────────
+
+describe('parseFindings', () => {
+  it('counts each severity level', () => {
+    const body = [
+      '# Security Review: HLM-42',
+      '## Findings',
+      '- **CRITICAL** · SQL injection in query builder',
+      '- **HIGH** · Missing auth check on /admin',
+      '- **HIGH** · Secrets logged in plaintext',
+      '- **MEDIUM** · Weak password policy',
+      '- **LOW** · Verbose error message',
+      '- **INFO** · Consider rate limiting',
+    ].join('\n');
+
+    const findings = parseFindings(body);
+    expect(findings).toEqual({ critical: 1, high: 2, medium: 1, low: 1, info: 1 });
+  });
+
+  it('returns all zeros when there are no findings', () => {
+    const body = '# Code Review: HLM-42\n\n## Status\nAPPROVED';
+    expect(parseFindings(body)).toEqual({ critical: 0, high: 0, medium: 0, low: 0, info: 0 });
+  });
+
+  it('is robust to additional markdown and varied spacing around the separator', () => {
+    const body = [
+      '## Findings',
+      '',
+      '### Issue 1',
+      '> **CRITICAL** ·   Path traversal',
+      '',
+      'Some prose with **bold** that is not a finding tag.',
+      '',
+      '1. **HIGH** · Broken access control',
+      '   nested description line',
+    ].join('\n');
+
+    const findings = parseFindings(body);
+    expect(findings.critical).toBe(1);
+    expect(findings.high).toBe(1);
+    expect(findings.medium).toBe(0);
+  });
+
+  it('does not count bare bold severity words without the separator', () => {
+    const body = 'We rate this **CRITICAL** overall but found no specific issues.';
+    expect(parseFindings(body).critical).toBe(0);
+  });
+});
+
+// ── shouldRemediate ───────────────────────────────────────────────────────────
+
+describe('shouldRemediate', () => {
+  const make = (
+    kind: ReviewerResult['kind'],
+    findings: ReviewerResult['findings'],
+  ): ReviewerResult => ({
+    kind,
+    status: 'done',
+    costUsd: 0,
+    durationMs: 0,
+    commentPosted: true,
+    findings,
+  });
+
+  const zero = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+
+  it('true when security has a CRITICAL finding', () => {
+    expect(shouldRemediate([make('security', { ...zero, critical: 1 })])).toBe(true);
+  });
+
+  it('true when test has a HIGH finding', () => {
+    expect(shouldRemediate([make('test', { ...zero, high: 1 })])).toBe(true);
+  });
+
+  it('false when only code has a CRITICAL finding (code does not gate)', () => {
+    expect(shouldRemediate([make('code', { ...zero, critical: 3 })])).toBe(false);
+  });
+
+  it('false when sec/test only have MEDIUM/LOW/INFO', () => {
+    expect(
+      shouldRemediate([
+        make('security', { ...zero, medium: 2, low: 1 }),
+        make('test', { ...zero, info: 5 }),
+      ]),
+    ).toBe(false);
+  });
+
+  it('false for an empty array', () => {
+    expect(shouldRemediate([])).toBe(false);
+  });
+
+  it('false when a sec reviewer errored and has no findings field', () => {
+    const errored: ReviewerResult = {
+      kind: 'security',
+      status: 'error',
+      costUsd: 0,
+      durationMs: 0,
+      commentPosted: false,
+    };
+    expect(shouldRemediate([errored])).toBe(false);
+  });
+});
+
+// ── handleReviewerResult: findings + commentBody ───────────────────────────────
+
+describe('handleReviewerResult findings population', () => {
+  let workspacePath: string;
+
+  beforeEach(async () => {
+    workspacePath = join(tmpdir(), `test-findings-ws-${randomUUID()}`);
+    await mkdir(workspacePath, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('populates findings and commentBody when a comment is posted', async () => {
+    await writeFile(
+      join(workspacePath, 'review.md'),
+      '# Security Review: HLM-42\n\n## Findings\n- **CRITICAL** · injection\n- **HIGH** · authz',
+    );
+    const runGh = makeMockRunGh();
+
+    const result = await handleReviewerResult(
+      'security',
+      'HLM-42',
+      { status: 'done', finalOutput: '', totalCostUsd: 0.01, durationMs: 100 },
+      workspacePath,
+      PR_URL,
+      'test-token',
+      makeCodeRepo(),
+      runGh,
+      vi.fn().mockResolvedValue({ stdout: '' }),
+    );
+
+    expect(result.findings).toEqual({ critical: 1, high: 1, medium: 0, low: 0, info: 0 });
+    expect(result.commentBody).toContain('**CRITICAL** · injection');
+  });
+
+  it('omits findings and commentBody when the agent errored (no comment)', async () => {
+    const result = await handleReviewerResult(
+      'security',
+      'HLM-42',
+      { status: 'error', finalOutput: '', totalCostUsd: 0.01, durationMs: 100 },
+      workspacePath,
+      PR_URL,
+      'test-token',
+      makeCodeRepo(),
+      vi.fn(),
+      vi.fn(),
+    );
+
+    expect(result.findings).toBeUndefined();
+    expect(result.commentBody).toBeUndefined();
   });
 });

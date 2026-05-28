@@ -38,12 +38,25 @@ export const REVIEWER_KINDS: readonly ReviewerKind[] = ['code', 'security', 'tes
 /** 10 minutes per reviewer — covers reading codebase + generating structured review. */
 export const REVIEWER_TIMEOUT_MS = 10 * 60 * 1_000;
 
+/** Per-severity finding counts parsed from a review.md body. */
+export type Findings = {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  info: number;
+};
+
 export type ReviewerResult = {
   kind: ReviewerKind;
   status: 'done' | 'error' | 'cancelled';
   costUsd: number;
   durationMs: number;
   commentPosted: boolean;
+  /** Per-severity finding counts. Present only when a comment was posted. */
+  findings?: Findings;
+  /** Full review.md body posted as the comment. Present only when a comment was posted. */
+  commentBody?: string;
   error?: string;
 };
 
@@ -99,6 +112,49 @@ Omit severity levels with no findings — do NOT write "None" or "No findings".
 APPROVED | CHANGES_REQUESTED
 
 (Use APPROVED only if there are no findings of severity MEDIUM or above.)`.trim();
+
+// ── parseFindings ─────────────────────────────────────────────────────────────
+
+const SEVERITY_LEVELS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const;
+
+/**
+ * Counts severity-tagged findings in a review.md body.
+ *
+ * A finding is any occurrence of a `**SEVERITY** ·` tag (the dialect defined by
+ * REVIEW_MD_FORMAT). Matching is anchored only on the tag, so the parser is
+ * robust to arbitrary surrounding markdown — it does not assume bullet lists,
+ * heading structure, or one finding per line beyond the tag itself.
+ *
+ * The separator after the severity tag is the middle dot (`·`); intervening
+ * whitespace is tolerated so minor agent formatting drift does not drop counts.
+ */
+export function parseFindings(reviewBody: string): Findings {
+  const findings: Findings = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  for (const level of SEVERITY_LEVELS) {
+    const re = new RegExp(`\\*\\*${level}\\*\\*\\s*·`, 'g');
+    const matches = reviewBody.match(re);
+    findings[level.toLowerCase() as keyof Findings] = matches ? matches.length : 0;
+  }
+  return findings;
+}
+
+/**
+ * Remediation gate: returns true iff a security or test reviewer surfaced at
+ * least one CRITICAL or HIGH finding.
+ *
+ * The code-reviewer is excluded by design — it already applies its mechanical
+ * fixes in-flow (ADR-018), so its findings do not trigger remediation. Only
+ * security and test findings of CRITICAL/HIGH severity gate the remediation
+ * stage (MEDIUM/LOW/INFO are commented but do not gate).
+ */
+export function shouldRemediate(results: ReviewerResult[]): boolean {
+  return results.some(
+    (r) =>
+      (r.kind === 'security' || r.kind === 'test') &&
+      r.findings !== undefined &&
+      (r.findings.critical > 0 || r.findings.high > 0),
+  );
+}
 
 // ── buildReviewerParams ───────────────────────────────────────────────────────
 
@@ -296,12 +352,17 @@ export async function handleReviewerResult(
     };
   }
 
+  // Parse findings from the posted body so the remediation gate can inspect them.
+  const findings = parseFindings(reviewContent);
+
   // If the push failed (code reviewer), report error — comment was still posted.
   if (pushError !== undefined) {
     return {
       ...baseResult,
       status: 'error',
       commentPosted: true,
+      findings,
+      commentBody: reviewContent,
       error: `Comment posted but push failed: ${pushError}`,
     };
   }
@@ -310,6 +371,8 @@ export async function handleReviewerResult(
     ...baseResult,
     status: 'done',
     commentPosted: true,
+    findings,
+    commentBody: reviewContent,
   };
 }
 

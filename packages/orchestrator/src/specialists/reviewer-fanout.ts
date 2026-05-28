@@ -20,7 +20,7 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Product } from '@helm/shared';
 import type { AgentResult, IAgentRuntime, SpawnParams } from '../runtime.js';
-import { provisionCodeWorkspace } from './code-workspace.js';
+import { provisionReviewerWorkspace } from './code-workspace.js';
 import { postPRComment } from './pr-helpers.js';
 import type { RunGit, RunGh } from './git-helpers.js';
 
@@ -195,7 +195,7 @@ export async function handleReviewerResult(
 
 /**
  * Orchestrates the full reviewer fan-out for one item:
- *   1. Provisions 3 isolated workspaces (one per reviewer kind) using provisionCodeWorkspace.
+ *   1. Provisions 3 isolated workspaces (one per reviewer kind) using provisionReviewerWorkspace.
  *   2. Spawns all 3 reviewer agents in parallel via Promise.allSettled.
  *   3. Handles each result (reads review.md, posts PR comment).
  *   4. Cleans up all workspaces in a finally block.
@@ -229,9 +229,11 @@ export async function fanoutReviewers(
   }
 
   // Provision all 3 workspaces in parallel.
+  // provisionReviewerWorkspace clones helm/impl/{externalId} directly from the
+  // remote, so each reviewer workspace contains the real implementation code.
   const provisionResults = await Promise.allSettled(
     REVIEWER_KINDS.map((kind) =>
-      provisionCodeWorkspace({ externalId, codeRepo, githubToken }, runGit).then((result) => ({
+      provisionReviewerWorkspace({ externalId, codeRepo, githubToken }, runGit).then((result) => ({
         kind,
         workspacePath: result.workspacePath,
       })),

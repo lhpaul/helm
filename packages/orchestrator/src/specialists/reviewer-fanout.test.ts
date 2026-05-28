@@ -55,8 +55,8 @@ const makeProduct = (): Product => ({
 const PR_URL = 'https://github.com/test-org/test-repo/pull/42';
 
 /**
- * Creates a mock runGit that simulates provisionCodeWorkspace's clone step by
- * creating a minimal .git directory in the clone destination.
+ * Creates a mock runGit that simulates provisionReviewerWorkspace's clone step
+ * by creating a minimal .git directory in the clone destination.
  */
 const makeMockRunGit = (): RunGit =>
   vi.fn().mockImplementation(async (args: string[]) => {

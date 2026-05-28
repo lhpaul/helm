@@ -464,6 +464,26 @@ describe('pushReviewerPatches', () => {
     expect(pushArgs).not.toContain('--force');
   });
 
+  it('uses a custom commitMessage when provided', async () => {
+    const capturedArgs: string[][] = [];
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      capturedArgs.push([...args]);
+      if (args[0] === 'status') return { stdout: 'M  src/fix.ts\n' };
+      if (args[0] === 'rev-parse') return { stdout: 'abc123\n' };
+      return { stdout: '' };
+    });
+
+    await pushReviewerPatches(
+      { ...makeBaseOpts(), commitMessage: 'chore(remediation): apply fixes for HLM-42' },
+      runGit,
+    );
+
+    const commitArgs = capturedArgs.find((a) => a[0] === 'commit');
+    expect(commitArgs).toBeDefined();
+    expect(commitArgs!.join(' ')).toContain('chore(remediation): apply fixes for HLM-42');
+    expect(commitArgs!.join(' ')).not.toContain('code-reviewer');
+  });
+
   it('push uses authenticated URL (x-access-token) and NOT --force', async () => {
     const capturedArgs: string[][] = [];
     const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {

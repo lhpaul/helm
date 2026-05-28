@@ -72,6 +72,12 @@ export type PushReviewerPatchesOpts = {
   codeRepo: CodeRepo;
   workspacePath: string;
   githubToken: string;
+  /**
+   * Commit message for the patch commit. Defaults to the code-reviewer message
+   * (`chore(review): apply code-reviewer patches for {externalId}`). The
+   * remediation specialist passes a `chore(remediation): …` message.
+   */
+  commitMessage?: string;
 };
 
 export type PushReviewerPatchesResult = {
@@ -469,6 +475,8 @@ export async function pushReviewerPatches(
   runGit: RunGit = defaultRunGit,
 ): Promise<PushReviewerPatchesResult> {
   const { externalId, codeRepo, workspacePath, githubToken } = opts;
+  const commitMessage =
+    opts.commitMessage ?? `chore(review): apply code-reviewer patches for ${externalId}`;
 
   if (!EXTERNAL_ID_SAFE.test(externalId)) {
     throw new Error(`[code-workspace] Invalid externalId: "${externalId}"`);
@@ -507,7 +515,7 @@ export async function pushReviewerPatches(
 
   // ── Step 3: Commit ────────────────────────────────────────────────────────
   try {
-    await runGit(['commit', '-m', `chore(review): apply code-reviewer patches for ${externalId}`], {
+    await runGit(['commit', '-m', commitMessage], {
       cwd: workspacePath,
       env: gitEnv,
     });

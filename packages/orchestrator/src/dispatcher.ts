@@ -12,7 +12,10 @@ import {
   handleImplementerResult,
   type ImplementerPublishOptions,
 } from './specialists/implementer.js';
-import { provisionCodeWorkspace } from './specialists/code-workspace.js';
+import {
+  provisionCodeWorkspace,
+  provisionReviewerWorkspace,
+} from './specialists/code-workspace.js';
 import {
   fetchProductContext,
   fetchSpecForPlan,
@@ -20,7 +23,12 @@ import {
 } from './specialists/fetch-product-context.js';
 import type { FetchFn } from './specialists/fetch-product-context.js';
 import type { RunGit, RunGh } from './specialists/spec-publisher.js';
-import { fanoutReviewers } from './specialists/reviewer-fanout.js';
+import {
+  fanoutReviewers,
+  shouldRemediate,
+  type ReviewerKind,
+} from './specialists/reviewer-fanout.js';
+import { buildRemediationParams, handleRemediationResult } from './specialists/remediation.js';
 import { findCodePRUrl } from './specialists/pr-helpers.js';
 
 // ── Stage → specialist mapping ────────────────────────────────────────────────
@@ -514,8 +522,8 @@ export async function dispatchStageHandler(
     }
 
     // Fan-out across code/security/test reviewers in parallel.
-    // NOTE: the item stays in 'code-review' — no transition here.
-    // Session 19c decides between remediation and waiting for human merge.
+    // The item stays in 'code-review' during the fan-out; the remediation gate
+    // below decides whether to run remediation or wait for a human merge.
     const fanoutResult = await fanoutReviewers(
       item.externalId,
       product,
@@ -526,15 +534,151 @@ export async function dispatchStageHandler(
       options?.runGh,
     );
 
-    return {
-      specialistId,
-      status: fanoutResult.status,
-      costUsd: fanoutResult.costUsd,
-      durationMs: fanoutResult.durationMs,
-      prUrl: fanoutResult.prUrl,
-      error: fanoutResult.error,
-      // No newStage — item stays in code-review
-    };
+    // If the fan-out failed at the block level (e.g. workspace provisioning) with
+    // no reviewer results, there is nothing to gate on — return the failure as-is.
+    if (fanoutResult.status === 'error' && fanoutResult.reviewerResults.length === 0) {
+      return {
+        specialistId,
+        status: fanoutResult.status,
+        costUsd: fanoutResult.costUsd,
+        durationMs: fanoutResult.durationMs,
+        prUrl: fanoutResult.prUrl,
+        error: fanoutResult.error,
+      };
+    }
+
+    // ── Remediation gate ──────────────────────────────────────────────────────
+    // Only security/test CRITICAL/HIGH findings trigger remediation (ADR-019).
+    // No high findings → no-op; the item stays in code-review awaiting human merge.
+    if (!shouldRemediate(fanoutResult.reviewerResults)) {
+      return {
+        specialistId,
+        status: fanoutResult.status,
+        costUsd: fanoutResult.costUsd,
+        durationMs: fanoutResult.durationMs,
+        prUrl: fanoutResult.prUrl,
+        error: fanoutResult.error,
+        // No newStage — item stays in code-review
+      };
+    }
+
+    // Gate active → transition to remediation, run the agent, return to code-review.
+    // The whole remediation step runs inside this same dispatch (composite Job):
+    // cost is summed across fan-out + remediation; durationMs is the max of the
+    // two phases (fan-out ran its reviewers in parallel, remediation runs after).
+    try {
+      await transition({
+        externalId: item.externalId,
+        toStage: 'remediation',
+        triggeredBy: 'specialist:remediation',
+      });
+    } catch (err) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: fanoutResult.costUsd,
+        durationMs: fanoutResult.durationMs,
+        prUrl: fanoutResult.prUrl,
+        error: `Failed to transition to remediation: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    // Provision a fresh workspace cloned from the impl branch (now including any
+    // mechanical fixes the code-reviewer already pushed during fan-out).
+    let remediationWorkspace = '';
+    try {
+      const provisioned = await provisionReviewerWorkspace(
+        { externalId: item.externalId, codeRepo, githubToken: options.githubToken },
+        options.runGit,
+      );
+      remediationWorkspace = provisioned.workspacePath;
+    } catch (err) {
+      // Workspace provisioning failed — the item stays in 'remediation' for an
+      // operator to inspect and re-dispatch.
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: fanoutResult.costUsd,
+        durationMs: fanoutResult.durationMs,
+        prUrl: fanoutResult.prUrl,
+        error: `Failed to provision remediation workspace: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    try {
+      // Inject the full security/test review bodies so the agent has context.
+      const findingsByKind = new Map<ReviewerKind, string>();
+      for (const r of fanoutResult.reviewerResults) {
+        if ((r.kind === 'security' || r.kind === 'test') && r.commentBody) {
+          findingsByKind.set(r.kind, r.commentBody);
+        }
+      }
+
+      const params = buildRemediationParams(
+        item.externalId,
+        product,
+        remediationWorkspace,
+        prUrl,
+        findingsByKind,
+      );
+      const session = await runtime.spawn(params);
+      const agentResult = await session.wait();
+
+      const remediationResult = await handleRemediationResult(
+        item.externalId,
+        agentResult,
+        remediationWorkspace,
+        prUrl,
+        options.githubToken,
+        codeRepo,
+        options.runGit,
+        options.runGh,
+      );
+
+      const aggregatedCost = fanoutResult.costUsd + remediationResult.costUsd;
+      const aggregatedDuration = Math.max(fanoutResult.durationMs, remediationResult.durationMs);
+
+      if (remediationResult.status !== 'done') {
+        // Remediation failed — leave the item in 'remediation' (no return transition).
+        return {
+          specialistId,
+          status: 'error',
+          costUsd: aggregatedCost,
+          durationMs: aggregatedDuration,
+          prUrl: fanoutResult.prUrl,
+          error: remediationResult.error,
+        };
+      }
+
+      // Remediation succeeded — transition back to code-review for re-review/merge.
+      try {
+        await transition({
+          externalId: item.externalId,
+          toStage: 'code-review',
+          triggeredBy: 'specialist:remediation',
+        });
+      } catch (err) {
+        return {
+          specialistId,
+          status: 'error',
+          costUsd: aggregatedCost,
+          durationMs: aggregatedDuration,
+          prUrl: fanoutResult.prUrl,
+          error: `Failed to transition back to code-review: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+
+      return {
+        specialistId,
+        status: 'done',
+        newStage: 'code-review',
+        costUsd: aggregatedCost,
+        durationMs: aggregatedDuration,
+        prUrl: fanoutResult.prUrl,
+      };
+    } finally {
+      await rm(remediationWorkspace, { recursive: true, force: true }).catch(() => {});
+    }
   }
 
   // Stub for future specialists

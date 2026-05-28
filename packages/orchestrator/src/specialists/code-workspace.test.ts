@@ -525,4 +525,95 @@ describe('pushReviewerPatches', () => {
 
     expect(runGit).not.toHaveBeenCalled();
   });
+
+  it('rejects unparseable codeRepo.url with a clear error message', async () => {
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'status') return { stdout: 'M  src/fix.ts\n' };
+      return { stdout: '' };
+    });
+
+    await expect(
+      pushReviewerPatches({ ...makeBaseOpts(), codeRepo: makeCodeRepo('not-a-valid-url') }, runGit),
+    ).rejects.toThrow('[code-workspace]');
+  });
+
+  it('sanitizes token from git status error messages', async () => {
+    const sensitiveToken = 'ghp_status_secret';
+    const runGit: RunGit = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(`fatal: not a git repository x-access-token:${sensitiveToken}@github.com`),
+      );
+
+    let thrownError: Error | undefined;
+    try {
+      await pushReviewerPatches({ ...makeBaseOpts(), githubToken: sensitiveToken }, runGit);
+    } catch (err) {
+      thrownError = err as Error;
+    }
+
+    expect(thrownError).toBeDefined();
+    expect(thrownError!.message).not.toContain(sensitiveToken);
+    expect(thrownError!.message).toContain('[code-workspace]');
+  });
+
+  it('sanitizes token from git add error messages', async () => {
+    const sensitiveToken = 'ghp_add_secret';
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'status') return { stdout: 'M  src/fix.ts\n' };
+      throw new Error(`fatal: add failed x-access-token:${sensitiveToken}@github.com`);
+    });
+
+    let thrownError: Error | undefined;
+    try {
+      await pushReviewerPatches({ ...makeBaseOpts(), githubToken: sensitiveToken }, runGit);
+    } catch (err) {
+      thrownError = err as Error;
+    }
+
+    expect(thrownError).toBeDefined();
+    expect(thrownError!.message).not.toContain(sensitiveToken);
+    expect(thrownError!.message).toContain('[code-workspace]');
+  });
+
+  it('sanitizes token from git commit error messages', async () => {
+    const sensitiveToken = 'ghp_commit_secret';
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'status') return { stdout: 'M  src/fix.ts\n' };
+      if (args[0] === 'add') return { stdout: '' };
+      throw new Error(`fatal: commit failed x-access-token:${sensitiveToken}@github.com`);
+    });
+
+    let thrownError: Error | undefined;
+    try {
+      await pushReviewerPatches({ ...makeBaseOpts(), githubToken: sensitiveToken }, runGit);
+    } catch (err) {
+      thrownError = err as Error;
+    }
+
+    expect(thrownError).toBeDefined();
+    expect(thrownError!.message).not.toContain(sensitiveToken);
+    expect(thrownError!.message).toContain('[code-workspace]');
+  });
+
+  it('sanitizes token from git rev-parse error messages', async () => {
+    const sensitiveToken = 'ghp_revparse_secret';
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'status') return { stdout: 'M  src/fix.ts\n' };
+      if (args[0] === 'add') return { stdout: '' };
+      if (args[0] === 'commit') return { stdout: '' };
+      throw new Error(`fatal: rev-parse error x-access-token:${sensitiveToken}@github.com`);
+    });
+
+    let thrownError: Error | undefined;
+    try {
+      await pushReviewerPatches({ ...makeBaseOpts(), githubToken: sensitiveToken }, runGit);
+    } catch (err) {
+      thrownError = err as Error;
+    }
+
+    expect(thrownError).toBeDefined();
+    expect(thrownError!.message).not.toContain(sensitiveToken);
+    expect(thrownError!.message).toContain('[code-workspace]');
+  });
 });

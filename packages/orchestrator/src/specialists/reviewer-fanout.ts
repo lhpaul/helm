@@ -26,6 +26,7 @@ import type { AgentResult, IAgentRuntime, SpawnParams } from '../runtime.js';
 import { provisionReviewerWorkspace, pushReviewerPatches } from './code-workspace.js';
 import { fetchSpecForPlan, type FetchFn } from './fetch-product-context.js';
 import { postPRComment } from './pr-helpers.js';
+import { sanitizeToken } from './git-helpers.js';
 import type { RunGit, RunGh } from './git-helpers.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -276,7 +277,10 @@ export async function handleReviewerResult(
       }
     } catch (err) {
       console.error('[reviewer-fanout] pushReviewerPatches failed:', err);
-      pushError = err instanceof Error ? err.message : String(err);
+      // Defense-in-depth: sanitize the token even though pushReviewerPatches
+      // already does so — a second pass costs nothing and prevents regressions
+      // if the error originates outside pushReviewerPatches.
+      pushError = sanitizeToken(err instanceof Error ? err.message : String(err), githubToken);
     }
   }
 

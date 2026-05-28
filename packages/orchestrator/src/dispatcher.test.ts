@@ -4,6 +4,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchStageHandler } from './dispatcher.js';
+
+vi.mock('./specialists/pr-helpers.js', () => ({
+  findCodePRUrl: vi.fn().mockResolvedValue('https://github.com/test-org/test-repo/pull/42'),
+}));
+vi.mock('./specialists/reviewer-fanout.js', () => ({
+  fanoutReviewers: vi.fn().mockResolvedValue({
+    reviewerResults: [],
+    prUrl: 'https://github.com/test-org/test-repo/pull/42',
+    status: 'done',
+    costUsd: 0.03,
+    durationMs: 100,
+  }),
+}));
+
+// Lazy imports for the mocked modules (imported after vi.mock hoisting).
+// We use type-safe lazy accessors so we can manipulate mock return values per test.
+import { findCodePRUrl } from './specialists/pr-helpers.js';
+import { fanoutReviewers } from './specialists/reviewer-fanout.js';
 import { MockAgentRuntime } from './runtimes/mock.js';
 import type { Product } from '@helm/shared';
 import type { ItemTransitionFn } from './specialists/spec-writer.js';
@@ -963,5 +981,95 @@ describe('dispatchStageHandler', () => {
 
     expect(planResult.specialistId).toBe('plan-writer');
     expect(fetchTask).not.toHaveBeenCalled();
+  });
+});
+
+// ── dispatchStageHandler > reviewer-fanout ────────────────────────────────────
+
+describe('dispatchStageHandler > reviewer-fanout', () => {
+  let workdir: string;
+  let transition: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    workdir = join(tmpdir(), `dispatcher-rf-${randomUUID()}`);
+    await mkdir(workdir, { recursive: true });
+    transition = vi.fn().mockResolvedValue({ currentStage: 'code-review' });
+
+    // Reset mocked modules to default behaviour before each test
+    vi.mocked(findCodePRUrl).mockResolvedValue('https://github.com/test-org/test-repo/pull/42');
+    vi.mocked(fanoutReviewers).mockResolvedValue({
+      reviewerResults: [],
+      prUrl: 'https://github.com/test-org/test-repo/pull/42',
+      status: 'done',
+      costUsd: 0.03,
+      durationMs: 100,
+    });
+  });
+
+  afterEach(async () => {
+    await rm(workdir, { recursive: true, force: true });
+  });
+
+  it('returns error without provision when githubToken is absent', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir }, // no githubToken
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('GITHUB_TOKEN');
+    expect(result.specialistId).toBe('reviewer-fanout');
+    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(transition).not.toHaveBeenCalled();
+    expect(findCodePRUrl).not.toHaveBeenCalled();
+  });
+
+  it('returns error without spawning when PR is not found (findCodePRUrl returns null)', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+
+    vi.mocked(findCodePRUrl).mockResolvedValue(null);
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token' },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain("No open PR found for impl branch of item 'issue_1'");
+    expect(result.specialistId).toBe('reviewer-fanout');
+    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(transition).not.toHaveBeenCalled();
+    expect(fanoutReviewers).not.toHaveBeenCalled();
+  });
+
+  it('happy path with mock runtime: status done, prUrl set, no newStage', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token' },
+    );
+
+    expect(result.specialistId).toBe('reviewer-fanout');
+    expect(result.status).toBe('done');
+    expect(result.prUrl).toBe('https://github.com/test-org/test-repo/pull/42');
+    expect(result.costUsd).toBe(0.03);
+    expect(result.durationMs).toBe(100);
+    // No newStage — item stays in code-review
+    expect(result.newStage).toBeUndefined();
+    expect(transition).not.toHaveBeenCalled();
   });
 });

@@ -3,7 +3,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { provisionCodeWorkspace, openCodePR } from './code-workspace.js';
+import {
+  provisionCodeWorkspace,
+  provisionReviewerWorkspace,
+  openCodePR,
+} from './code-workspace.js';
 import type { RunGit, RunGh } from './git-helpers.js';
 import type { CodeRepo } from '@helm/shared';
 
@@ -125,6 +129,136 @@ describe('provisionCodeWorkspace', () => {
 
     await expect(
       provisionCodeWorkspace(
+        { externalId: 'HLM-42', codeRepo: makeCodeRepo(), githubToken: 'tok-secret' },
+        runGit,
+      ),
+    ).rejects.toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining('tok-secret') }),
+    );
+  });
+});
+
+// ── provisionReviewerWorkspace ────────────────────────────────────────────────
+
+describe('provisionReviewerWorkspace', () => {
+  let clonedPath: string | undefined;
+
+  afterEach(async () => {
+    if (clonedPath) {
+      await rm(clonedPath, { recursive: true, force: true }).catch(() => {});
+      clonedPath = undefined;
+    }
+  });
+
+  it('clones impl branch directly (--depth 1 --branch helm/impl/{externalId})', async () => {
+    const capturedArgs: string[][] = [];
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      capturedArgs.push([...args]);
+      if (args[0] === 'clone') {
+        const dest = args[args.length - 1]!;
+        await mkdir(join(dest, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
+
+    const result = await provisionReviewerWorkspace(
+      { externalId: 'HLM-42', codeRepo: makeCodeRepo(), githubToken: 'test-token' },
+      runGit,
+    );
+
+    clonedPath = result.workspacePath;
+
+    // Clone uses --depth 1 --branch helm/impl/{externalId}
+    const cloneArgs = capturedArgs.find((a) => a[0] === 'clone');
+    expect(cloneArgs).toBeDefined();
+    expect(cloneArgs).toContain('--depth');
+    expect(cloneArgs).toContain('1');
+    expect(cloneArgs).toContain('--branch');
+    expect(cloneArgs).toContain('helm/impl/HLM-42');
+
+    // No checkout -B — impl branch is already set by the clone
+    const checkoutArgs = capturedArgs.find((a) => a[0] === 'checkout');
+    expect(checkoutArgs).toBeUndefined();
+
+    // Token scrub: remote set-url resets origin to canonical (no token)
+    const setUrlArgs = capturedArgs.find((a) => a[0] === 'remote' && a[1] === 'set-url');
+    expect(setUrlArgs).toBeDefined();
+    expect(setUrlArgs).toContain('origin');
+    expect(setUrlArgs).toContain('https://github.com/test-org/test-repo');
+    expect(setUrlArgs?.join(' ')).not.toContain('test-token');
+
+    // Returns the correct branch name
+    expect(result.branchName).toBe('helm/impl/HLM-42');
+  });
+
+  it('uses helm-review- prefix to distinguish from implementer workspaces', async () => {
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const dest = args[args.length - 1]!;
+        await mkdir(join(dest, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
+
+    const result = await provisionReviewerWorkspace(
+      { externalId: 'HLM-42', codeRepo: makeCodeRepo(), githubToken: 'test-token' },
+      runGit,
+    );
+
+    clonedPath = result.workspacePath;
+    expect(result.workspacePath).toContain('helm-review-');
+    expect(result.workspacePath).not.toContain('helm-impl-');
+  });
+
+  it('rejects SSH code repo URLs', async () => {
+    const runGit: RunGit = vi.fn();
+    const sshRepo = makeCodeRepo('git@github.com:test-org/test-repo');
+
+    await expect(
+      provisionReviewerWorkspace(
+        { externalId: 'HLM-42', codeRepo: sshRepo, githubToken: 'test-token' },
+        runGit,
+      ),
+    ).rejects.toThrow('SSH code repo URLs are not supported');
+
+    expect(runGit).not.toHaveBeenCalled();
+  });
+
+  it('rejects dot-prefixed externalIds', async () => {
+    const runGit: RunGit = vi.fn();
+
+    await expect(
+      provisionReviewerWorkspace(
+        { externalId: '.hidden', codeRepo: makeCodeRepo(), githubToken: 'test-token' },
+        runGit,
+      ),
+    ).rejects.toThrow('Invalid externalId');
+
+    expect(runGit).not.toHaveBeenCalled();
+  });
+
+  it('rejects externalIds with slashes', async () => {
+    const runGit: RunGit = vi.fn();
+
+    await expect(
+      provisionReviewerWorkspace(
+        { externalId: 'foo/bar', codeRepo: makeCodeRepo(), githubToken: 'test-token' },
+        runGit,
+      ),
+    ).rejects.toThrow('Invalid externalId');
+  });
+
+  it('sanitizes token from clone error messages (e.g. impl branch not found)', async () => {
+    const runGit: RunGit = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'fatal: Remote branch helm/impl/HLM-42 not found in upstream x-access-token:tok-secret@github.com',
+        ),
+      );
+
+    await expect(
+      provisionReviewerWorkspace(
         { externalId: 'HLM-42', codeRepo: makeCodeRepo(), githubToken: 'tok-secret' },
         runGit,
       ),

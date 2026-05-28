@@ -1,8 +1,14 @@
 /**
- * Provisioning and PR-opening helpers for the implementer specialist.
+ * Provisioning and PR-opening helpers for the implementer and reviewer specialists.
  *
- * `provisionCodeWorkspace` — shallow-clones the code repo, creates the
- *   `helm/impl/{externalId}` branch, and returns the checkout path.
+ * `provisionCodeWorkspace` — shallow-clones the **default branch** and creates
+ *   the `helm/impl/{externalId}` branch; used by the implementer (fresh start).
+ *
+ * `provisionReviewerWorkspace` — shallow-clones the **existing impl branch**
+ *   (`helm/impl/{externalId}`) directly; used by reviewers (read the
+ *   implementer's code as pushed). Separate from provisionCodeWorkspace so the
+ *   semantics are unambiguous: reviewers always land on the real implementation,
+ *   never on a locally-created branch with default-branch content.
  *
  * `openCodePR` — stages all changes, commits as helm-bot, pushes the
  *   implementation branch, and opens an idempotent PR against the default branch.
@@ -153,6 +159,101 @@ export async function provisionCodeWorkspace(
   // codeRepo.url verbatim — codeRepo.url could contain userinfo credentials
   // if the caller passed an already-authenticated URL, which would persist
   // those credentials in .git/config instead of removing them.
+  const canonicalUrl = `https://github.com/${owner}/${repo}`;
+  try {
+    await runGit(['remote', 'set-url', 'origin', canonicalUrl], { cwd: workspacePath });
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+    throw new Error(
+      `[code-workspace] Failed to strip token from git config: ${sanitizeToken(raw, githubToken)}`,
+    );
+  }
+
+  return { workspacePath, branchName: branch };
+}
+
+// ── provisionReviewerWorkspace ────────────────────────────────────────────────
+
+/**
+ * Shallow-clones the **existing** `helm/impl/{externalId}` branch of the
+ * product's primary code repo into an isolated temporary directory for
+ * reviewer use.
+ *
+ * Unlike `provisionCodeWorkspace` (which clones the default branch and then
+ * creates a fresh `helm/impl/{externalId}` branch for the implementer to
+ * write code on), this helper clones the *already-pushed* remote impl branch
+ * directly — so the workspace contains the real implementation code.
+ *
+ * Using a shared helper for both would risk reviewers landing on a workspace
+ * whose local branch diverges from the actual implementation.  More
+ * critically, a code-reviewer that pushes patches from a "default-branch +
+ * patch" workspace would overwrite the implementer's commits on the remote
+ * branch — a destructive outcome.  Two helpers, zero ambiguity.
+ *
+ * Design notes:
+ * - `--depth 1 --branch helm/impl/{externalId}` positions the clone on the
+ *   pushed impl branch; no `checkout -B` needed or performed.
+ * - The clone path is `os.tmpdir()/helm-review-{externalId}-{uuid}` — the
+ *   `helm-review-` prefix distinguishes reviewer workspaces from the
+ *   `helm-impl-` implementer workspaces at a glance.
+ * - If the impl branch does not exist on the remote, git fails with a clear
+ *   message ("Remote branch … not found"), which is surfaced via the
+ *   standard sanitized throw.
+ * - SSH URLs are rejected early; token auth requires HTTPS.
+ *
+ * @throws if the externalId is invalid, the URL is SSH, or any git step fails.
+ */
+export async function provisionReviewerWorkspace(
+  opts: ProvisionWorkspaceOpts,
+  runGit: RunGit = defaultRunGit,
+): Promise<ProvisionWorkspaceResult> {
+  const { externalId, codeRepo, githubToken } = opts;
+
+  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+    throw new Error(`[code-workspace] Invalid externalId: "${externalId}"`);
+  }
+
+  // SSH URLs are not supported for token-based authentication.
+  if (codeRepo.url.startsWith('git@') || codeRepo.url.startsWith('ssh://')) {
+    throw new Error(
+      `[code-workspace] SSH code repo URLs are not supported for token-based auth. ` +
+        `Use an HTTPS URL instead.`,
+    );
+  }
+
+  const parsed = parseGitHubRepoUrl(codeRepo.url);
+  if (!parsed) {
+    throw new Error(`[code-workspace] Cannot parse code repo URL: ${codeRepo.url}`);
+  }
+  const { owner, repo } = parsed;
+
+  const authenticatedUrl = buildAuthenticatedUrl(owner, repo, githubToken);
+  const branch = implBranchName(externalId);
+  const workspacePath = join(tmpdir(), `helm-review-${externalId}-${randomUUID()}`);
+  await mkdir(workspacePath, { recursive: true });
+
+  // ── Step 1: Shallow clone of the impl branch ─────────────────────────────
+  // Clones directly onto helm/impl/{externalId} — no checkout -B needed.
+  // If the branch does not exist on the remote, git will fail with a clear
+  // "Remote branch X not found in upstream origin" message.
+  try {
+    await runGit(['clone', '--depth', '1', '--branch', branch, authenticatedUrl, workspacePath], {
+      cwd: tmpdir(),
+    });
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+    throw new Error(
+      `[code-workspace] Failed to clone impl branch '${branch}' (${codeRepo.url}): ${sanitizeToken(raw, githubToken)}`,
+    );
+  }
+
+  // ── Step 2: Scrub token from .git/config ─────────────────────────────────
+  // Same rationale as provisionCodeWorkspace: the clone stores the
+  // authenticated URL in .git/config; reset origin to the plain canonical
+  // URL so reviewers running with bypassPermissions cannot read the token
+  // from disk.
   const canonicalUrl = `https://github.com/${owner}/${repo}`;
   try {
     await runGit(['remote', 'set-url', 'origin', canonicalUrl], { cwd: workspacePath });

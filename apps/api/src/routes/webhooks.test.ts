@@ -70,6 +70,19 @@ describe('POST /api/webhooks/github', () => {
     _resetForTests();
     vi.clearAllMocks();
     process.env.GITHUB_WEBHOOK_SECRET = TEST_SECRET;
+    // clearAllMocks does not reset implementations, so a per-describe override
+    // (e.g. the Linear block) would otherwise leak into later tests. Re-establish
+    // the default GitHub Projects config and a working adapter before each test.
+    vi.mocked(getProductConfig).mockResolvedValue({
+      product: { slug: 'test-app', name: 'Test' },
+      issue_tracker: {
+        provider: 'github_projects',
+        org: 'test-org',
+        project_number: 1,
+        custom_field_name: 'Helm Stage',
+      },
+    } as never);
+    vi.mocked(getGitHubAdapter).mockResolvedValue({ parseWebhook: mockParseWebhook } as never);
   });
 
   afterEach(() => {
@@ -448,16 +461,37 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
-    it('an issues event still requires the adapter and fails with a controlled 400 for a Linear product (issues arrive via /linear)', async () => {
+    it('an issues event is rejected with a controlled 400 for a Linear product (issues arrive via /linear)', async () => {
       const body = JSON.stringify({ action: 'opened', issue: { number: 1, node_id: 'I_1' } });
 
       const res = await post(body, 'issues');
 
-      // Adapter is consulted and rejects → caught and mapped to an explicit 400
-      // (not an opaque framework 500) so GitHub does not retry a misrouted delivery.
+      // The provider mismatch is detected up front → explicit 400 (not an opaque
+      // framework 500) so GitHub does not retry a misrouted delivery. The adapter
+      // is never consulted — genuine adapter/token faults are reserved for 500.
       expect(res.status).toBe(400);
-      expect(getGitHubAdapter).toHaveBeenCalled();
+      expect(getGitHubAdapter).not.toHaveBeenCalled();
       expect(mockTransition).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Genuine server-side adapter faults must NOT be masked as 400 ────────────
+
+  describe('GitHub Projects product: adapter faults surface as 500 (delivery retried)', () => {
+    it('returns 500 when the adapter fails for a correctly-routed issues event (e.g. missing token)', async () => {
+      // Provider IS github_projects (default config), so the route proceeds to the
+      // adapter — a genuine fault here must stay 500 so GitHub retries the delivery,
+      // not be collapsed into the provider-mismatch 400.
+      vi.mocked(getGitHubAdapter).mockRejectedValue(
+        new Error('GITHUB_TOKEN environment variable is not set or blank'),
+      );
+      const body = JSON.stringify({ action: 'opened', issue: { number: 7, node_id: 'I_7' } });
+
+      const res = await post(body, 'issues');
+
+      expect(res.status).toBe(500);
+      expect(getGitHubAdapter).toHaveBeenCalled();
       expect(mockCreate).not.toHaveBeenCalled();
     });
   });

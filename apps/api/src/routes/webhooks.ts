@@ -72,15 +72,17 @@ webhooksRouter.post('/webhooks/github', async (c) => {
     event = parseGitHubWebhook({ eventType, payload: body });
   } else {
     // issues / issue_comment / projects_v2_item — require the GitHub Projects
-    // adapter. It is unavailable for Linear products: their issue events arrive
-    // via /api/webhooks/linear, not here. Convert that (and any parse failure)
-    // into an explicit 400 rather than letting it escape as a framework 500 —
-    // GitHub should not retry a permanently-misrouted delivery.
-    try {
-      const adapter = await getGitHubAdapter();
-      event = adapter.parseWebhook({ eventType, payload: body });
-    } catch (err) {
-      console.error(`[webhooks/github] Cannot handle event type '${eventType}':`, err);
+    // adapter. For a non-GitHub-Projects product (e.g. Linear) this is the wrong
+    // route: issue events arrive via /api/webhooks/linear. Reject that known
+    // misroute explicitly with 400 so GitHub does not retry a permanently-
+    // misrouted delivery. Genuine server-side faults (missing token, internal
+    // adapter/parse errors) are NOT caught here — they surface as a framework
+    // 500 so the delivery is retried.
+    const config = await getProductConfig();
+    if (config.issue_tracker.provider !== 'github_projects') {
+      console.error(
+        `[webhooks/github] Event type '${eventType}' not supported for provider '${config.issue_tracker.provider}'`,
+      );
       return c.json(
         {
           error:
@@ -89,6 +91,8 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         400,
       );
     }
+    const adapter = await getGitHubAdapter();
+    event = adapter.parseWebhook({ eventType, payload: body });
   }
 
   // f. Defense-in-depth: validate externalId from webhook payload before using it.

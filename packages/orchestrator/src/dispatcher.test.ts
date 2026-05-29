@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1056,6 +1056,12 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
       return { stdout: '' };
     });
 
+  /** Lists leftover reviewer-workspace dirs in tmpdir for this item. */
+  const listReviewWorkspaces = async (): Promise<string[]> => {
+    const entries = await readdir(tmpdir());
+    return entries.filter((e) => e.startsWith('helm-review-issue_1-')).sort();
+  };
+
   afterEach(async () => {
     await rm(workdir, { recursive: true, force: true });
   });
@@ -1222,5 +1228,66 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     expect(transition).toHaveBeenCalledTimes(1);
     expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'remediation' }));
     expect(result.newStage).toBeUndefined();
+  });
+
+  it('gate active + provision fails: status error, NO transition, no agent, no workspace leftover', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+
+    // runGit that fails the clone — provisionReviewerWorkspace throws and cleans
+    // up its own workspace before propagating.
+    const failingRunGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') throw new Error('fatal: Remote branch not found');
+      return { stdout: '' };
+    });
+
+    const before = await listReviewWorkspaces();
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', runGit: failingRunGit },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Failed to provision remediation workspace');
+    // Item stays in code-review — never transitioned to remediation.
+    expect(transition).not.toHaveBeenCalled();
+    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(handleRemediationResult).not.toHaveBeenCalled();
+    // No workspace left behind.
+    const after = await listReviewWorkspaces();
+    expect(after).toEqual(before);
+  });
+
+  it('gate active + transition to remediation fails after provision: status error, workspace cleaned up', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    // First transition (code-review → remediation) rejects after the clone succeeded.
+    transition.mockRejectedValueOnce(new Error('transition denied'));
+
+    const before = await listReviewWorkspaces();
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', runGit: makeProvisionRunGit() },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Failed to transition to remediation');
+    // The transition INTO remediation was attempted; no agent spawned afterwards.
+    expect(transition).toHaveBeenCalledTimes(1);
+    expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'remediation' }));
+    expect(spawnSpy).not.toHaveBeenCalled();
+    // The provisioned workspace was removed by the finally block.
+    const after = await listReviewWorkspaces();
+    expect(after).toEqual(before);
   });
 });

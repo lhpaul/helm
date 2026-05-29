@@ -562,29 +562,10 @@ export async function dispatchStageHandler(
       };
     }
 
-    // Gate active → transition to remediation, run the agent, return to code-review.
-    // The whole remediation step runs inside this same dispatch (composite Job):
-    // cost is summed across fan-out + remediation; durationMs is the max of the
-    // two phases (fan-out ran its reviewers in parallel, remediation runs after).
-    try {
-      await transition({
-        externalId: item.externalId,
-        toStage: 'remediation',
-        triggeredBy: 'specialist:remediation',
-      });
-    } catch (err) {
-      return {
-        specialistId,
-        status: 'error',
-        costUsd: fanoutResult.costUsd,
-        durationMs: fanoutResult.durationMs,
-        prUrl: fanoutResult.prUrl,
-        error: `Failed to transition to remediation: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-
-    // Provision a fresh workspace cloned from the impl branch (now including any
-    // mechanical fixes the code-reviewer already pushed during fan-out).
+    // Gate active. Provision the workspace BEFORE the transition so a clone/auth/
+    // network failure leaves the item re-dispatchable in code-review rather than
+    // stuck in remediation with no specialist mapped to recover it (mirrors the
+    // S16b implementer provisioning-before-transition fix).
     let remediationWorkspace = '';
     try {
       const provisioned = await provisionReviewerWorkspace(
@@ -593,8 +574,8 @@ export async function dispatchStageHandler(
       );
       remediationWorkspace = provisioned.workspacePath;
     } catch (err) {
-      // Workspace provisioning failed — the item stays in 'remediation' for an
-      // operator to inspect and re-dispatch.
+      // Provisioning failed before any transition — the item stays in code-review
+      // and can be re-dispatched.
       return {
         specialistId,
         status: 'error',
@@ -605,7 +586,31 @@ export async function dispatchStageHandler(
       };
     }
 
+    // Workspace exists — everything from here must clean it up on the way out.
     try {
+      // Clone OK → transition into remediation. The whole remediation step runs
+      // inside this same dispatch (composite Job): cost is summed across fan-out +
+      // remediation; durationMs is the max of the two phases (fan-out ran its
+      // reviewers in parallel, remediation runs after).
+      try {
+        await transition({
+          externalId: item.externalId,
+          toStage: 'remediation',
+          triggeredBy: 'specialist:remediation',
+        });
+      } catch (err) {
+        // Transition failed after provisioning — the finally below removes the
+        // workspace; the item stays in code-review (re-dispatchable).
+        return {
+          specialistId,
+          status: 'error',
+          costUsd: fanoutResult.costUsd,
+          durationMs: fanoutResult.durationMs,
+          prUrl: fanoutResult.prUrl,
+          error: `Failed to transition to remediation: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+
       // Inject the full security/test review bodies so the agent has context.
       const findingsByKind = new Map<ReviewerKind, string>();
       for (const r of fanoutResult.reviewerResults) {

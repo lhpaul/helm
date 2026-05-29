@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../app.js';
-import { _resetForTests } from '../services/index.js';
+import { _resetForTests, getGitHubAdapter, getProductConfig } from '../services/index.js';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -52,6 +52,17 @@ async function post(
   return app.request('/api/webhooks/github', { method: 'POST', headers, body });
 }
 
+/** Builds a real pull_request webhook payload (parsed by the pure parseGitHubWebhook). */
+function mergedPrPayload(
+  headRef: string,
+  opts: { action?: string; merged?: boolean } = {},
+): string {
+  return JSON.stringify({
+    action: opts.action ?? 'closed',
+    pull_request: { merged: opts.merged ?? true, head: { ref: headRef } },
+  });
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('POST /api/webhooks/github', () => {
@@ -59,6 +70,19 @@ describe('POST /api/webhooks/github', () => {
     _resetForTests();
     vi.clearAllMocks();
     process.env.GITHUB_WEBHOOK_SECRET = TEST_SECRET;
+    // clearAllMocks does not reset implementations, so a per-describe override
+    // (e.g. the Linear block) would otherwise leak into later tests. Re-establish
+    // the default GitHub Projects config and a working adapter before each test.
+    vi.mocked(getProductConfig).mockResolvedValue({
+      product: { slug: 'test-app', name: 'Test' },
+      issue_tracker: {
+        provider: 'github_projects',
+        org: 'test-org',
+        project_number: 1,
+        custom_field_name: 'Helm Stage',
+      },
+    } as never);
+    vi.mocked(getGitHubAdapter).mockResolvedValue({ parseWebhook: mockParseWebhook } as never);
   });
 
   afterEach(() => {
@@ -222,15 +246,13 @@ describe('POST /api/webhooks/github', () => {
   });
 
   describe('dispatch: pull_request_merged', () => {
+    // Fix 1: pull_request events are parsed by the pure parseGitHubWebhook — the
+    // GitHub Projects adapter is NOT consulted. Each test sends a real PR payload.
+
     // ── Spec merge (helm/spec/ → spec-ready) ────────────────────────────────
 
     it('transitions spec-draft → spec-ready when helm/spec/ branch is merged', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/spec/issue_42',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/spec/issue_42');
       mockTransition.mockResolvedValue({});
 
       const res = await post(body, 'pull_request');
@@ -240,15 +262,12 @@ describe('POST /api/webhooks/github', () => {
         toStage: 'spec-ready',
         triggeredBy: 'webhook:knowledge-repo',
       });
+      // Fix 1: the adapter is never consulted for pull_request events.
+      expect(getGitHubAdapter).not.toHaveBeenCalled();
     });
 
     it('returns 200 on WorkflowTransitionError for spec merge (item already past spec-draft)', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/spec/issue_42',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/spec/issue_42');
       const { WorkflowTransitionError } = await import('@helm/workflow');
       mockTransition.mockRejectedValue(
         new WorkflowTransitionError('Cannot transition', 'spec-ready', 'spec-ready'),
@@ -260,12 +279,7 @@ describe('POST /api/webhooks/github', () => {
     });
 
     it('returns 200 on ItemNotFoundError for spec merge (item not in this Helm instance)', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/spec/issue_42',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/spec/issue_42');
       const { ItemNotFoundError } = await import('../services/errors.js');
       mockTransition.mockRejectedValue(new ItemNotFoundError('issue_42'));
 
@@ -274,12 +288,7 @@ describe('POST /api/webhooks/github', () => {
     });
 
     it('returns 500 on unexpected error during spec merge transition', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/spec/issue_42',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/spec/issue_42');
       mockTransition.mockRejectedValue(new Error('storage failure'));
 
       const res = await post(body, 'pull_request');
@@ -289,12 +298,7 @@ describe('POST /api/webhooks/github', () => {
     // ── Plan merge (helm/plan/ → plan-ready) ─────────────────────────────────
 
     it('transitions plan-draft → plan-ready when helm/plan/ branch is merged', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/plan/issue_42',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/plan/issue_42');
       mockTransition.mockResolvedValue({});
 
       const res = await post(body, 'pull_request');
@@ -307,12 +311,7 @@ describe('POST /api/webhooks/github', () => {
     });
 
     it('returns 200 on WorkflowTransitionError for plan merge (item already past plan-draft)', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/plan/issue_42',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/plan/issue_42');
       const { WorkflowTransitionError } = await import('@helm/workflow');
       mockTransition.mockRejectedValue(
         new WorkflowTransitionError('Cannot transition', 'plan-ready', 'plan-ready'),
@@ -324,12 +323,7 @@ describe('POST /api/webhooks/github', () => {
     });
 
     it('returns 200 on ItemNotFoundError for plan merge (item not in this Helm instance)', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/plan/HLM-7',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/plan/HLM-7');
       const { ItemNotFoundError } = await import('../services/errors.js');
       mockTransition.mockRejectedValue(new ItemNotFoundError('HLM-7'));
 
@@ -338,12 +332,7 @@ describe('POST /api/webhooks/github', () => {
     });
 
     it('returns 500 on unexpected error during plan merge transition', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/plan/issue_42',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/plan/issue_42');
       mockTransition.mockRejectedValue(new Error('storage failure'));
 
       const res = await post(body, 'pull_request');
@@ -353,12 +342,7 @@ describe('POST /api/webhooks/github', () => {
     // ── Impl merge (helm/impl/ → released) ──────────────────────────────────
 
     it('transitions code-review → released when helm/impl/ branch is merged', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/impl/issue_42',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/impl/issue_42');
       mockTransition.mockResolvedValue({});
 
       const res = await post(body, 'pull_request');
@@ -371,12 +355,7 @@ describe('POST /api/webhooks/github', () => {
     });
 
     it('returns 200 on WorkflowTransitionError for impl merge (item already past code-review)', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/impl/issue_42',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/impl/issue_42');
       const { WorkflowTransitionError } = await import('@helm/workflow');
       mockTransition.mockRejectedValue(
         new WorkflowTransitionError('Cannot transition', 'code-review', 'released'),
@@ -388,12 +367,7 @@ describe('POST /api/webhooks/github', () => {
     });
 
     it('returns 200 on ItemNotFoundError for impl merge (item not in this Helm instance)', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/impl/HLM-7',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/impl/HLM-7');
       const { ItemNotFoundError } = await import('../services/errors.js');
       mockTransition.mockRejectedValue(new ItemNotFoundError('HLM-7'));
 
@@ -402,27 +376,27 @@ describe('POST /api/webhooks/github', () => {
     });
 
     it('returns 500 on unexpected error during impl merge transition', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/impl/issue_42',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/impl/issue_42');
       mockTransition.mockRejectedValue(new Error('storage failure'));
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(500);
     });
 
+    // ── Non-actionable PR actions ─────────────────────────────────────────────
+
+    it('returns 200 without transition when PR is closed but not merged', async () => {
+      const body = mergedPrPayload('helm/spec/issue_42', { merged: false });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockTransition).not.toHaveBeenCalled();
+    });
+
     // ── Non-artifact branches ─────────────────────────────────────────────────
 
     it('returns 200 without transition when branch is not an artifact branch', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'feature/some-feature',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('feature/some-feature');
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
@@ -430,12 +404,7 @@ describe('POST /api/webhooks/github', () => {
     });
 
     it('returns 200 and does not transition for a dot-traversal headRef (parseArtifactBranch rejects it)', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/spec/../etc/passwd',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/spec/../etc/passwd');
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
@@ -443,12 +412,7 @@ describe('POST /api/webhooks/github', () => {
     });
 
     it('returns 200 and does not transition for a dot-traversal plan headRef', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/plan/../etc/passwd',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/plan/../etc/passwd');
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
@@ -456,16 +420,79 @@ describe('POST /api/webhooks/github', () => {
     });
 
     it('returns 200 and does not transition for a dot-traversal impl headRef', async () => {
-      const body = JSON.stringify({});
-      mockParseWebhook.mockReturnValue({
-        type: 'pull_request_merged',
-        headRef: 'helm/impl/../etc/passwd',
-        timestamp: 't',
-      });
+      const body = mergedPrPayload('helm/impl/../etc/passwd');
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
       expect(mockTransition).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Fix 1: Linear products (knowledge/code repos are still GitHub) ──────────
+
+  describe('Linear product: tracker-agnostic pull_request routing', () => {
+    beforeEach(() => {
+      // A Linear product's getGitHubAdapter() throws — its config doesn't match
+      // the GitHub Projects schema. The route must not call it for PR events.
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'mome', name: 'MOME' },
+        issue_tracker: {
+          provider: 'linear',
+          webhook_secret_env: 'LINEAR_WEBHOOK_SECRET',
+        },
+      } as never);
+      vi.mocked(getGitHubAdapter).mockRejectedValue(
+        new Error('GitHub Projects adapter is not available for a linear product'),
+      );
+    });
+
+    it('processes a pull_request_merged for a Linear product without the GitHub adapter', async () => {
+      const body = mergedPrPayload('helm/impl/issue_42');
+      mockTransition.mockResolvedValue({});
+
+      const res = await post(body, 'pull_request');
+
+      expect(res.status).toBe(200);
+      expect(getGitHubAdapter).not.toHaveBeenCalled();
+      expect(mockTransition).toHaveBeenCalledWith({
+        externalId: 'issue_42',
+        toStage: 'released',
+        triggeredBy: 'webhook:code-repo',
+      });
+    });
+
+    it('an issues event is rejected with a controlled 400 for a Linear product (issues arrive via /linear)', async () => {
+      const body = JSON.stringify({ action: 'opened', issue: { number: 1, node_id: 'I_1' } });
+
+      const res = await post(body, 'issues');
+
+      // The provider mismatch is detected up front → explicit 400 (not an opaque
+      // framework 500) so GitHub does not retry a misrouted delivery. The adapter
+      // is never consulted — genuine adapter/token faults are reserved for 500.
+      expect(res.status).toBe(400);
+      expect(getGitHubAdapter).not.toHaveBeenCalled();
+      expect(mockTransition).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Genuine server-side adapter faults must NOT be masked as 400 ────────────
+
+  describe('GitHub Projects product: adapter faults surface as 500 (delivery retried)', () => {
+    it('returns 500 when the adapter fails for a correctly-routed issues event (e.g. missing token)', async () => {
+      // Provider IS github_projects (default config), so the route proceeds to the
+      // adapter — a genuine fault here must stay 500 so GitHub retries the delivery,
+      // not be collapsed into the provider-mismatch 400.
+      vi.mocked(getGitHubAdapter).mockRejectedValue(
+        new Error('GITHUB_TOKEN environment variable is not set or blank'),
+      );
+      const body = JSON.stringify({ action: 'opened', issue: { number: 7, node_id: 'I_7' } });
+
+      const res = await post(body, 'issues');
+
+      expect(res.status).toBe(500);
+      expect(getGitHubAdapter).toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
     });
   });
 });

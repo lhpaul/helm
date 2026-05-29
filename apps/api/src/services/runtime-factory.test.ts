@@ -4,13 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, afterEach } from 'vitest';
-import { ClaudeCodeRuntime, MockAgentRuntime } from '@helm/orchestrator';
+import { ClaudeCodeRuntime, CodexRuntime, MockAgentRuntime } from '@helm/orchestrator';
 import { createRuntimeForProduct, createMockRuntimeForSpec } from './runtime-factory.js';
 import type { Product } from '@helm/shared';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const makeProduct = (runtime = 'claude_code'): Product => ({
+const makeProduct = (runtime: 'claude_code' | 'codex' = 'claude_code'): Product => ({
   helm_version: '0',
   product: { slug: 'test-product', name: 'Test Product' },
   issue_tracker: {
@@ -27,7 +27,7 @@ const makeProduct = (runtime = 'claude_code'): Product => ({
     qa_gate: 'skip',
   },
   specialists: {
-    spec_writer: { runtime: runtime as 'claude_code', model: 'claude-sonnet-4-6' },
+    spec_writer: { runtime, model: 'claude-sonnet-4-6' },
     plan_writer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     implementer: { runtime: 'claude_code', model: 'claude-opus-4-7' },
     code_reviewer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
@@ -53,6 +53,12 @@ describe('createRuntimeForProduct', () => {
     const product = makeProduct('claude_code');
     const runtime = createRuntimeForProduct(product, 'issue_1', '/tmp/workdir');
     expect(runtime).toBeInstanceOf(ClaudeCodeRuntime);
+  });
+
+  it("returns a CodexRuntime for runtime: 'codex'", () => {
+    const product = makeProduct('codex');
+    const runtime = createRuntimeForProduct(product, 'issue_1', '/tmp/workdir');
+    expect(runtime).toBeInstanceOf(CodexRuntime);
   });
 
   it('throws a descriptive error for an unknown runtime value', () => {

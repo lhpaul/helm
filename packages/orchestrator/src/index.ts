@@ -13,6 +13,8 @@ export type { MockScript, MockScriptMessage } from './runtimes/mock.js';
 export { ClaudeCodeRuntime } from './runtimes/claude-code.js';
 export type { SubprocessLike, SpawnFn } from './runtimes/claude-code.js';
 
+export { CodexRuntime } from './runtimes/codex.js';
+
 export { dispatchStageHandler } from './dispatcher.js';
 export type { DispatchInput, DispatchResult, DispatchOptions } from './dispatcher.js';
 

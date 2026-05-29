@@ -42,11 +42,11 @@ const CodeRepoSchema = z
 const WorkflowStageSchema = z.enum(WORKFLOW_STAGES);
 
 // ── Specialists ──────────────────────────────────────────────────────────────
-// runtime enum is intentionally narrow in v0; extended to deepseek | anthropic_api | ollama in v1+
+// runtime enum (v0: claude_code | codex); extended to deepseek | anthropic_api | ollama in v1+
 
 const SpecialistSchema = z
   .object({
-    runtime: z.enum(['claude_code']),
+    runtime: z.enum(['claude_code', 'codex']),
     model: z.string().min(1),
   })
   .strict();

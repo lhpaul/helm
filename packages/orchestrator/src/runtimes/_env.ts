@@ -65,6 +65,12 @@ export function buildSubprocessEnv(
 /**
  * Default spawn: delegates to Bun.spawn with stdout and stderr piped.
  * Using globalThis cast to avoid a bun-types dev-dependency in this package.
+ *
+ * `stdin: 'ignore'` is explicit and load-bearing: neither runtime feeds the
+ * agent over stdin (the prompt is passed as a CLI argument), and `codex exec`
+ * actively reads stdin to EOF ("Reading additional input from stdin…"). With an
+ * inherited/piped stdin that never closes, the subprocess would block until the
+ * timeout; '/dev/null' gives an immediate EOF so the run proceeds.
  */
 export function defaultSpawn(
   args: string[],
@@ -75,10 +81,16 @@ export function defaultSpawn(
     | {
         spawn(
           args: string[],
-          options: { cwd: string; stdout: 'pipe'; stderr: 'pipe'; env: Record<string, string> },
+          options: {
+            cwd: string;
+            stdin: 'ignore';
+            stdout: 'pipe';
+            stderr: 'pipe';
+            env: Record<string, string>;
+          },
         ): SubprocessLike;
       }
     | undefined;
   if (!bun) throw new Error('Spawn-based runtimes require the Bun runtime');
-  return bun.spawn(args, { cwd, stdout: 'pipe', stderr: 'pipe', env });
+  return bun.spawn(args, { cwd, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', env });
 }

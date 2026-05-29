@@ -286,6 +286,14 @@ class CodexSession implements AgentSession {
         // task actually succeeded (artifact exists) is the specialist's concern.
         // Cost is 0 — covered by the ChatGPT subscription, not free in absolute
         // terms (no USD figure is emitted for subscription runs).
+        //
+        // SINGLE-TURN ASSUMPTION: `codex exec` wraps the whole reasoning + tool
+        // loop in ONE turn (verified in discovery: one turn.started/turn.completed
+        // around multiple command_execution items), so settling on the first
+        // terminal turn event is correct. `settle()` is idempotent, so if a future
+        // Codex version emitted multiple turns we would resolve on the first and
+        // ignore the rest rather than hang — but finalOutput would then be the
+        // first turn's last agent_message. Revisit if multi-turn exec appears.
         this.settle({
           status: 'done',
           finalOutput: this.lastAgentText,

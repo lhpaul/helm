@@ -448,13 +448,14 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
-    it('an issues event still requires the adapter and fails for a Linear product (issues arrive via /linear)', async () => {
+    it('an issues event still requires the adapter and fails with a controlled 400 for a Linear product (issues arrive via /linear)', async () => {
       const body = JSON.stringify({ action: 'opened', issue: { number: 1, node_id: 'I_1' } });
 
       const res = await post(body, 'issues');
 
-      // Adapter is consulted and rejects → unhandled → Hono default 500.
-      expect(res.status).toBe(500);
+      // Adapter is consulted and rejects → caught and mapped to an explicit 400
+      // (not an opaque framework 500) so GitHub does not retry a misrouted delivery.
+      expect(res.status).toBe(400);
       expect(getGitHubAdapter).toHaveBeenCalled();
       expect(mockTransition).not.toHaveBeenCalled();
       expect(mockCreate).not.toHaveBeenCalled();

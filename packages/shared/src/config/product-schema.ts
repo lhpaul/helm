@@ -42,11 +42,11 @@ const CodeRepoSchema = z
 const WorkflowStageSchema = z.enum(WORKFLOW_STAGES);
 
 // ── Specialists ──────────────────────────────────────────────────────────────
-// runtime enum is intentionally narrow in v0; extended to deepseek | anthropic_api | ollama in v1+
+// runtime enum (v0: claude_code | codex); extended to deepseek | anthropic_api | ollama in v1+
 
 const SpecialistSchema = z
   .object({
-    runtime: z.enum(['claude_code']),
+    runtime: z.enum(['claude_code', 'codex']),
     model: z.string().min(1),
   })
   .strict();
@@ -61,7 +61,25 @@ const SpecialistsSchema = z
     test_reviewer: SpecialistSchema,
     remediation: SpecialistSchema,
   })
-  .strict();
+  .strict()
+  // H1 constraint: the dispatcher creates ONE runtime per product (selected from
+  // spec_writer.runtime) and reuses it for every specialist, so all specialists
+  // must share the same runtime. Reject mixed runtimes at validation instead of
+  // silently running every stage on spec_writer's runtime. Per-specialist
+  // runtimes require per-spawn runtime creation — deferred to H3 (see ADR-021).
+  .superRefine((specialists, ctx) => {
+    const runtimes = new Set(Object.values(specialists).map((s) => s.runtime));
+    if (runtimes.size > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['specialists'],
+        message:
+          `All specialists must use the same runtime (found: ${[...runtimes].sort().join(', ')}). ` +
+          `Mixed per-specialist runtimes are not supported yet — the dispatcher uses one runtime ` +
+          `per product. See ADR-021.`,
+      });
+    }
+  });
 
 // ── Root Product Schema ───────────────────────────────────────────────────────
 

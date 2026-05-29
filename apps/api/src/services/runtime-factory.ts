@@ -1,20 +1,26 @@
-import { ClaudeCodeRuntime, MockAgentRuntime } from '@helm/orchestrator';
+import { ClaudeCodeRuntime, CodexRuntime, MockAgentRuntime } from '@helm/orchestrator';
 import type { IAgentRuntime } from '@helm/orchestrator';
 import type { Product } from '@helm/shared';
 import { join } from 'node:path';
 import { EXTERNAL_ID_REGEX } from './types.js';
 
 /**
- * Creates the appropriate IAgentRuntime for the given product's spec-writer
- * specialist configuration.
+ * Creates the appropriate IAgentRuntime for the given product.
  *
- * Routing:
- *   'claude_code' → ClaudeCodeRuntime (real Claude Code CLI subprocess)
- *   others        → throws (extend this map as new runtimes are added)
+ * Routing (driven by the configured runtime):
+ *   'claude_code' → ClaudeCodeRuntime (Claude Code CLI subprocess)
+ *   'codex'       → CodexRuntime (OpenAI Codex CLI subprocess, see ADR-021)
+ *   others        → throws (extend this switch as new runtimes are added)
+ *
+ * SINGLE-RUNTIME-PER-PRODUCT CONSTRAINT (H1): the dispatcher creates ONE runtime
+ * per dispatch and reuses it for every specialist (spec/plan/impl/reviewers/…),
+ * so all specialists in a product must share the same runtime. We read
+ * `spec_writer.runtime` as the product-wide selector. A per-specialist runtime
+ * (e.g. claude_code spec-writer + codex implementer) requires moving runtime
+ * creation to per-spawn — deferred to H3.
  *
  * The `externalId` and `workdir` parameters are used only by the fallback mock
- * runtime kept here for local development without an ANTHROPIC_API_KEY.
- * Production callers always hit the 'claude_code' branch.
+ * runtime kept here for local development.
  *
  * Inject this function in tests via vi.mock to avoid spawning the real binary.
  */
@@ -24,23 +30,39 @@ export function createRuntimeForProduct(
   workdir: string,
 ): IAgentRuntime {
   // externalId and workdir are available for runtimes that need them at
-  // construction time (e.g. a future LocalFileRuntime). ClaudeCodeRuntime
-  // receives them via SpawnParams.workdir/externalId at spawn() time instead.
+  // construction time (e.g. a future LocalFileRuntime). The spawn-based runtimes
+  // receive them via SpawnParams.workdir/externalId at spawn() time instead.
   void externalId;
   void workdir;
 
-  const runtime = product.specialists.spec_writer.runtime;
-
-  if (runtime === 'claude_code') {
-    return new ClaudeCodeRuntime();
+  // Defense-in-depth for the H1 constraint above: ProductSchema already rejects
+  // mixed runtimes (see superRefine in product-schema.ts), but callers that build
+  // a Product object without going through schema validation (e.g. unit tests, or
+  // a future programmatic config path) would otherwise silently run every stage on
+  // spec_writer's runtime. Fail loudly instead.
+  const runtimes = new Set(Object.values(product.specialists).map((s) => s.runtime));
+  if (runtimes.size > 1) {
+    throw new Error(
+      `[runtime-factory] ADR-021 H1 violation: all specialists must share one runtime ` +
+        `(found: ${[...runtimes].sort().join(', ')}). Per-specialist runtimes are deferred to H3.`,
+    );
   }
 
-  // Unreachable with valid product config today — kept as a safe fallback
-  // so a bad config fails loudly rather than silently using the mock.
-  throw new Error(
-    `[runtime-factory] Unknown specialist runtime: '${runtime}'. ` +
-      `Supported values: 'claude_code'.`,
-  );
+  const runtime = product.specialists.spec_writer.runtime;
+
+  switch (runtime) {
+    case 'claude_code':
+      return new ClaudeCodeRuntime();
+    case 'codex':
+      return new CodexRuntime();
+    default:
+      // Unreachable with valid product config today — kept as a safe fallback
+      // so a bad config fails loudly rather than silently using the mock.
+      throw new Error(
+        `[runtime-factory] Unknown specialist runtime: '${runtime}'. ` +
+          `Supported values: 'claude_code', 'codex'.`,
+      );
+  }
 }
 
 /**

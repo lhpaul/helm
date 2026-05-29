@@ -4,13 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, afterEach } from 'vitest';
-import { ClaudeCodeRuntime, MockAgentRuntime } from '@helm/orchestrator';
+import { ClaudeCodeRuntime, CodexRuntime, MockAgentRuntime } from '@helm/orchestrator';
 import { createRuntimeForProduct, createMockRuntimeForSpec } from './runtime-factory.js';
 import type { Product } from '@helm/shared';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const makeProduct = (runtime = 'claude_code'): Product => ({
+const makeProduct = (runtime: 'claude_code' | 'codex' = 'claude_code'): Product => ({
   helm_version: '0',
   product: { slug: 'test-product', name: 'Test Product' },
   issue_tracker: {
@@ -26,14 +26,17 @@ const makeProduct = (runtime = 'claude_code'): Product => ({
     designer_gate: 'skip',
     qa_gate: 'skip',
   },
+  // Uniform runtime across all specialists — mirrors the H1 constraint enforced
+  // by ProductSchema (and the factory's defense-in-depth check). Tests that need
+  // a mixed config mutate a single specialist after construction.
   specialists: {
-    spec_writer: { runtime: runtime as 'claude_code', model: 'claude-sonnet-4-6' },
-    plan_writer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    implementer: { runtime: 'claude_code', model: 'claude-opus-4-7' },
-    code_reviewer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    security_reviewer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    test_reviewer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    remediation: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    spec_writer: { runtime, model: 'claude-sonnet-4-6' },
+    plan_writer: { runtime, model: 'claude-sonnet-4-6' },
+    implementer: { runtime, model: 'claude-opus-4-7' },
+    code_reviewer: { runtime, model: 'claude-sonnet-4-6' },
+    security_reviewer: { runtime, model: 'claude-sonnet-4-6' },
+    test_reviewer: { runtime, model: 'claude-sonnet-4-6' },
+    remediation: { runtime, model: 'claude-sonnet-4-6' },
   },
 });
 
@@ -55,11 +58,28 @@ describe('createRuntimeForProduct', () => {
     expect(runtime).toBeInstanceOf(ClaudeCodeRuntime);
   });
 
+  it("returns a CodexRuntime for runtime: 'codex'", () => {
+    const product = makeProduct('codex');
+    const runtime = createRuntimeForProduct(product, 'issue_1', '/tmp/workdir');
+    expect(runtime).toBeInstanceOf(CodexRuntime);
+  });
+
   it('throws a descriptive error for an unknown runtime value', () => {
     // Cast to bypass TypeScript's type check — simulates a bad config file
     const product = makeProduct('unknown_runtime' as 'claude_code');
     expect(() => createRuntimeForProduct(product, 'issue_1', '/tmp/workdir')).toThrow(
       /Unknown specialist runtime.*'unknown_runtime'/,
+    );
+  });
+
+  it('throws on mixed specialist runtimes (H1 defense-in-depth, bypassing schema)', () => {
+    // Build a Product directly (not via ProductSchema), as a programmatic caller
+    // or test might. The factory must still reject mixed runtimes rather than
+    // silently using spec_writer's runtime for every specialist.
+    const product = makeProduct('claude_code');
+    product.specialists.implementer.runtime = 'codex';
+    expect(() => createRuntimeForProduct(product, 'issue_1', '/tmp/workdir')).toThrow(
+      /ADR-021 H1 violation.*claude_code, codex/,
     );
   });
 });

@@ -72,6 +72,7 @@ const SpecialistsSchema = z
     if (runtimes.size > 1) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
+        path: ['specialists'],
         message:
           `All specialists must use the same runtime (found: ${[...runtimes].sort().join(', ')}). ` +
           `Mixed per-specialist runtimes are not supported yet — the dispatcher uses one runtime ` +

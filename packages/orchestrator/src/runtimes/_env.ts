@@ -70,7 +70,8 @@ export function buildSubprocessEnv(
  * agent over stdin (the prompt is passed as a CLI argument), and `codex exec`
  * actively reads stdin to EOF ("Reading additional input from stdin…"). With an
  * inherited/piped stdin that never closes, the subprocess would block until the
- * timeout; '/dev/null' gives an immediate EOF so the run proceeds.
+ * timeout; Bun's `'ignore'` maps stdin to /dev/null, giving an immediate EOF so
+ * the run proceeds.
  */
 export function defaultSpawn(
   args: string[],

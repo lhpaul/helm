@@ -35,6 +35,19 @@ export function createRuntimeForProduct(
   void externalId;
   void workdir;
 
+  // Defense-in-depth for the H1 constraint above: ProductSchema already rejects
+  // mixed runtimes (see superRefine in product-schema.ts), but callers that build
+  // a Product object without going through schema validation (e.g. unit tests, or
+  // a future programmatic config path) would otherwise silently run every stage on
+  // spec_writer's runtime. Fail loudly instead.
+  const runtimes = new Set(Object.values(product.specialists).map((s) => s.runtime));
+  if (runtimes.size > 1) {
+    throw new Error(
+      `[runtime-factory] ADR-021 H1 violation: all specialists must share one runtime ` +
+        `(found: ${[...runtimes].sort().join(', ')}). Per-specialist runtimes are deferred to H3.`,
+    );
+  }
+
   const runtime = product.specialists.spec_writer.runtime;
 
   switch (runtime) {

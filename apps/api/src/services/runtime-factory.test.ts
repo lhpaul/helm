@@ -26,14 +26,17 @@ const makeProduct = (runtime: 'claude_code' | 'codex' = 'claude_code'): Product 
     designer_gate: 'skip',
     qa_gate: 'skip',
   },
+  // Uniform runtime across all specialists — mirrors the H1 constraint enforced
+  // by ProductSchema (and the factory's defense-in-depth check). Tests that need
+  // a mixed config mutate a single specialist after construction.
   specialists: {
     spec_writer: { runtime, model: 'claude-sonnet-4-6' },
-    plan_writer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    implementer: { runtime: 'claude_code', model: 'claude-opus-4-7' },
-    code_reviewer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    security_reviewer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    test_reviewer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    remediation: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    plan_writer: { runtime, model: 'claude-sonnet-4-6' },
+    implementer: { runtime, model: 'claude-opus-4-7' },
+    code_reviewer: { runtime, model: 'claude-sonnet-4-6' },
+    security_reviewer: { runtime, model: 'claude-sonnet-4-6' },
+    test_reviewer: { runtime, model: 'claude-sonnet-4-6' },
+    remediation: { runtime, model: 'claude-sonnet-4-6' },
   },
 });
 
@@ -66,6 +69,17 @@ describe('createRuntimeForProduct', () => {
     const product = makeProduct('unknown_runtime' as 'claude_code');
     expect(() => createRuntimeForProduct(product, 'issue_1', '/tmp/workdir')).toThrow(
       /Unknown specialist runtime.*'unknown_runtime'/,
+    );
+  });
+
+  it('throws on mixed specialist runtimes (H1 defense-in-depth, bypassing schema)', () => {
+    // Build a Product directly (not via ProductSchema), as a programmatic caller
+    // or test might. The factory must still reject mixed runtimes rather than
+    // silently using spec_writer's runtime for every specialist.
+    const product = makeProduct('claude_code');
+    product.specialists.implementer.runtime = 'codex';
+    expect(() => createRuntimeForProduct(product, 'issue_1', '/tmp/workdir')).toThrow(
+      /ADR-021 H1 violation.*claude_code, codex/,
     );
   });
 });

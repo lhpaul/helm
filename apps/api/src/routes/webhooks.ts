@@ -65,34 +65,37 @@ webhooksRouter.post('/webhooks/github', async (c) => {
   // e. Parse into a NormalizedEvent.
   const eventType = c.req.header('x-github-event') ?? '';
   let event: NormalizedEvent;
-  if (eventType === 'pull_request') {
-    // Tracker-agnostic — pure parser. The knowledge/code repos are always on
-    // GitHub regardless of the issue tracker, so PR merge events (helm/spec/*,
-    // helm/plan/*, helm/impl/*) must process for Linear products too.
-    event = parseGitHubWebhook({ eventType, payload: body });
-  } else {
-    // issues / issue_comment / projects_v2_item — require the GitHub Projects
-    // adapter. For a non-GitHub-Projects product (e.g. Linear) this is the wrong
-    // route: issue events arrive via /api/webhooks/linear. Reject that known
-    // misroute explicitly with 400 so GitHub does not retry a permanently-
-    // misrouted delivery. Genuine server-side faults (missing token, internal
-    // adapter/parse errors) are NOT caught here — they surface as a framework
-    // 500 so the delivery is retried.
-    const config = await getProductConfig();
-    if (config.issue_tracker.provider !== 'github_projects') {
-      console.error(
-        `[webhooks/github] Event type '${eventType}' not supported for provider '${config.issue_tracker.provider}'`,
-      );
-      return c.json(
-        {
-          error:
-            'Event type requires a GitHub Projects product; Linear products receive issue events via /api/webhooks/linear',
-        },
-        400,
-      );
+  try {
+    if (eventType === 'pull_request') {
+      // Tracker-agnostic — pure parser. The knowledge/code repos are always on
+      // GitHub regardless of the issue tracker, so PR merge events (helm/spec/*,
+      // helm/plan/*, helm/impl/*) must process for Linear products too.
+      event = parseGitHubWebhook({ eventType, payload: body });
+    } else {
+      // issues / issue_comment / projects_v2_item — require the GitHub Projects
+      // adapter. For a non-GitHub-Projects product (e.g. Linear) this is the wrong
+      // route: issue events arrive via /api/webhooks/linear. Reject that known
+      // misroute explicitly with 400 so GitHub does not retry a permanently-
+      // misrouted delivery.
+      const config = await getProductConfig();
+      if (config.issue_tracker.provider !== 'github_projects') {
+        console.error(
+          `[webhooks/github] Event type '${eventType}' not supported for provider '${config.issue_tracker.provider}'`,
+        );
+        return c.json(
+          {
+            error:
+              'Event type requires a GitHub Projects product; Linear products receive issue events via /api/webhooks/linear',
+          },
+          400,
+        );
+      }
+      const adapter = await getGitHubAdapter();
+      event = adapter.parseWebhook({ eventType, payload: body });
     }
-    const adapter = await getGitHubAdapter();
-    event = adapter.parseWebhook({ eventType, payload: body });
+  } catch (err) {
+    console.error('[webhooks/github] Failed to parse webhook event:', err);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 
   // f. Defense-in-depth: validate externalId from webhook payload before using it.

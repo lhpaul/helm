@@ -69,6 +69,56 @@ specialists:
   remediation: { runtime: claude_code, model: claude-sonnet-4-6 }
 `.trim();
 
+// Builds a config with per-specialist runtimes so we can exercise the
+// "all specialists share one runtime" superRefine (H1 constraint, see ADR-021).
+const specialistsBlock = (runtimes: {
+  spec_writer?: string;
+  plan_writer?: string;
+  implementer?: string;
+  code_reviewer?: string;
+  security_reviewer?: string;
+  test_reviewer?: string;
+  remediation?: string;
+}): string => {
+  const r = {
+    spec_writer: 'claude_code',
+    plan_writer: 'claude_code',
+    implementer: 'claude_code',
+    code_reviewer: 'claude_code',
+    security_reviewer: 'claude_code',
+    test_reviewer: 'claude_code',
+    remediation: 'claude_code',
+    ...runtimes,
+  };
+  return `
+helm_version: "0"
+product:
+  slug: test-runtimes
+  name: Test Runtimes
+issue_tracker:
+  provider: github_projects
+  org: test-org
+  project_number: 1
+code_repos:
+  - url: https://github.com/test-org/test-app
+    default_branch: main
+    role: app
+knowledge_repo:
+  url: https://github.com/test-org/test-knowledge
+  default_branch: main
+workflow:
+  stages_enabled: [in-development, released]
+specialists:
+  spec_writer: { runtime: ${r.spec_writer}, model: m }
+  plan_writer: { runtime: ${r.plan_writer}, model: m }
+  implementer: { runtime: ${r.implementer}, model: m }
+  code_reviewer: { runtime: ${r.code_reviewer}, model: m }
+  security_reviewer: { runtime: ${r.security_reviewer}, model: m }
+  test_reviewer: { runtime: ${r.test_reviewer}, model: m }
+  remediation: { runtime: ${r.remediation}, model: m }
+`.trim();
+};
+
 describe('parseProductConfig', () => {
   describe('valid configs', () => {
     it('parses GitHub Projects provider with single repo', () => {
@@ -152,6 +202,36 @@ describe('parseProductConfig', () => {
     it('throws ProductConfigError with runtime path on unsupported runtime', () => {
       expect(() => parseProductConfig(fixture('invalid-runtime.yaml'))).toThrow(ProductConfigError);
       expect(() => parseProductConfig(fixture('invalid-runtime.yaml'))).toThrow('runtime');
+    });
+  });
+
+  describe('specialist runtime consistency (H1 / ADR-021)', () => {
+    it('accepts a uniform claude_code config', () => {
+      const config = parseProductConfig(specialistsBlock({}));
+      expect(config.specialists.spec_writer.runtime).toBe('claude_code');
+    });
+
+    it('accepts a uniform codex config', () => {
+      const config = parseProductConfig(
+        specialistsBlock({
+          spec_writer: 'codex',
+          plan_writer: 'codex',
+          implementer: 'codex',
+          code_reviewer: 'codex',
+          security_reviewer: 'codex',
+          test_reviewer: 'codex',
+          remediation: 'codex',
+        }),
+      );
+      expect(config.specialists.implementer.runtime).toBe('codex');
+    });
+
+    it('rejects mixed specialist runtimes with a clear message', () => {
+      const mixed = specialistsBlock({ implementer: 'codex' });
+      expect(() => parseProductConfig(mixed)).toThrow(ProductConfigError);
+      expect(() => parseProductConfig(mixed)).toThrow('All specialists must use the same runtime');
+      // surfaces both runtimes (sorted) so the operator can see the conflict
+      expect(() => parseProductConfig(mixed)).toThrow('claude_code, codex');
     });
   });
 });

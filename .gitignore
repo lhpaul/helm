@@ -155,3 +155,6 @@ data/
 # Claude Code config local (.claude/settings.local.json y .claude/projects/).
 # AGENT.md vive en root del repo, no en .claude/, por eso este patrón no lo bloquea.
 .claude/
+
+# Helm runtime data dirs (overridable via HELM_DATA_DIR)
+data-*/

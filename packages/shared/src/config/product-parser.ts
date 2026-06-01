@@ -25,6 +25,9 @@ const LEGACY_SPECIALIST_KEYS: Record<string, string> = {
   code_reviewer: 'code-reviewer',
   security_reviewer: 'security-reviewer',
   test_reviewer: 'test-reviewer',
+  // ADR-024 rename: the code-review remediator moved from `remediation` to
+  // `code-remediator` to join the spec/plan remediator family.
+  remediation: 'code-remediator',
 };
 
 /**
@@ -47,10 +50,28 @@ export function parseProductConfig(yamlContent: string): Product {
       );
       if (legacy.length > 0) {
         const renames = legacy.map((k) => `'${k}' → '${LEGACY_SPECIALIST_KEYS[k]}'`).join(', ');
+        // Two distinct legacy classes can land here, each with its own ADR and
+        // migration doc. snake_case IDs are an ADR-022 kebab-case fix; the
+        // `remediation` key is the semantic ADR-024 rename to `code-remediator`.
+        // Reference only the doc(s) that actually apply so operators aren't
+        // pointed at the wrong migration guide.
+        const hasKebabRename = legacy.some((k) => k.includes('_'));
+        const hasRemediationRename = legacy.includes('remediation');
+        const guidance: string[] = [];
+        if (hasKebabRename) {
+          guidance.push(
+            `specialist IDs must use kebab-case (e.g. 'spec-writer'). See ADR-022 and the ` +
+              `migration script in helm-knowledge/operations/migrations/2026-05-31-specialist-id-kebab.md.`,
+          );
+        }
+        if (hasRemediationRename) {
+          guidance.push(
+            `the \`remediation\` specialist was renamed to \`code-remediator\` (ADR-024). See ` +
+              `helm-knowledge/operations/migrations/2026-06-01-remediator-naming.md.`,
+          );
+        }
         throw new ProductConfigError(
-          `Invalid product.yaml — "specialists": specialist IDs must use kebab-case ` +
-            `(e.g. 'spec-writer'). Rename ${renames}. See ADR-022 and the migration script ` +
-            `in helm-knowledge/operations/migrations/2026-05-31-specialist-id-kebab.md.`,
+          `Invalid product.yaml — "specialists": rename ${renames}. ${guidance.join(' ')}`,
         );
       }
     }

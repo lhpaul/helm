@@ -69,7 +69,15 @@ const SpecialistsSchema = z
     'code-reviewer': SpecialistSchema,
     'security-reviewer': SpecialistSchema,
     'test-reviewer': SpecialistSchema,
-    remediation: SpecialistSchema,
+    // Early-stage remediators (ADR-024): iterate an already-published spec/plan
+    // PR in-place from operator feedback, mirroring the code-review remediation
+    // pattern. Each reads its own extra_hints.
+    'spec-remediator': SpecialistSchema,
+    'plan-remediator': SpecialistSchema,
+    // Renamed from `remediation` (ADR-024) so all three remediators form a
+    // coherent kebab-case family. The legacy `remediation` key is detected in
+    // product-parser with an actionable migration message (mirrors ADR-022).
+    'code-remediator': SpecialistSchema,
   })
   .strict()
   // H1 constraint: the dispatcher creates ONE runtime per product (selected from

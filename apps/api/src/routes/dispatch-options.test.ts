@@ -59,7 +59,9 @@ const makeProduct = (): Product => ({
     'code-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     'security-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     'test-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    remediation: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'spec-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'plan-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'code-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
   },
 });
 
@@ -200,5 +202,27 @@ describe('dispatch route option forwarding', () => {
     await waitForJobDone(jobId);
 
     expect(capturedOptions().githubToken).toBe('clean-token');
+  });
+
+  it('forwards feedback to dispatchStageHandler for a remediator dispatch', async () => {
+    const res = await app.request('/api/products/test-product/items/issue_1/dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ specialistId: 'spec-remediator', feedback: 'Split phase 1.' }),
+    });
+    expect(res.status).toBe(202);
+    const { jobId } = (await res.json()) as { jobId: string };
+    await waitForJobDone(jobId);
+
+    expect(capturedOptions().feedback).toBe('Split phase 1.');
+  });
+
+  it('forwards undefined feedback when none is provided', async () => {
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(202);
+    const { jobId } = (await res.json()) as { jobId: string };
+    await waitForJobDone(jobId);
+
+    expect(capturedOptions().feedback).toBeUndefined();
   });
 });

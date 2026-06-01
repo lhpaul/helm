@@ -40,7 +40,9 @@ const makeProduct = (): Product => ({
     'code-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     'security-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     'test-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    remediation: { runtime: 'claude_code', model: 'claude-haiku-4-5' },
+    'spec-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'plan-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'code-remediator': { runtime: 'claude_code', model: 'claude-haiku-4-5' },
   },
 });
 
@@ -96,7 +98,7 @@ describe('buildRemediationParams', () => {
     expect(params.permissionMode).toBe('bypassPermissions');
     expect(params.timeoutMs).toBe(REMEDIATION_TIMEOUT_MS);
     expect(params.model).toBe('claude-haiku-4-5');
-    expect(params.specialistId).toBe('remediation');
+    expect(params.specialistId).toBe('code-remediator');
   });
 
   it('REMEDIATION_TIMEOUT_MS sits between reviewer (10m) and implementer (20m)', () => {
@@ -106,7 +108,7 @@ describe('buildRemediationParams', () => {
 
   it('injects ## Hints section with the remediation specialist’s extra_hints', () => {
     const p = makeProduct();
-    p.specialists.remediation.extra_hints = [
+    p.specialists['code-remediator'].extra_hints = [
       'Prefer parameterized queries over string interpolation.',
     ];
     const params = buildRemediationParams('HLM-42', p, '/tmp/ws', PR_URL, findingsByKind());

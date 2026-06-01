@@ -7,6 +7,17 @@ import { dispatchStageHandler } from './dispatcher.js';
 
 vi.mock('./specialists/pr-helpers.js', () => ({
   findCodePRUrl: vi.fn().mockResolvedValue('https://github.com/test-org/test-repo/pull/42'),
+  findArtifactPRUrl: vi.fn().mockResolvedValue('https://github.com/test-org/test-knowledge/pull/7'),
+}));
+vi.mock('./specialists/early-remediator.js', () => ({
+  runEarlyRemediation: vi.fn().mockResolvedValue({
+    status: 'done',
+    costUsd: 0.04,
+    durationMs: 321,
+    pushed: true,
+    commitSha: 'remsha123',
+    prUrl: 'https://github.com/test-org/test-knowledge/pull/7',
+  }),
 }));
 vi.mock('./specialists/reviewer-fanout.js', () => ({
   fanoutReviewers: vi.fn().mockResolvedValue({
@@ -20,7 +31,7 @@ vi.mock('./specialists/reviewer-fanout.js', () => ({
 }));
 vi.mock('./specialists/remediation.js', () => ({
   buildRemediationParams: vi.fn().mockReturnValue({
-    specialistId: 'remediation',
+    specialistId: 'code-remediator',
     prompt: 'remediate',
     workdir: '/tmp',
     productSlug: 'test-product',
@@ -40,7 +51,8 @@ vi.mock('./specialists/remediation.js', () => ({
 
 // Lazy imports for the mocked modules (imported after vi.mock hoisting).
 // We use type-safe lazy accessors so we can manipulate mock return values per test.
-import { findCodePRUrl } from './specialists/pr-helpers.js';
+import { findCodePRUrl, findArtifactPRUrl } from './specialists/pr-helpers.js';
+import { runEarlyRemediation } from './specialists/early-remediator.js';
 import { fanoutReviewers, shouldRemediate } from './specialists/reviewer-fanout.js';
 import { buildRemediationParams, handleRemediationResult } from './specialists/remediation.js';
 import { MockAgentRuntime } from './runtimes/mock.js';
@@ -77,7 +89,9 @@ const makeProduct = (): Product => ({
     'code-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     'security-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     'test-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    remediation: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'spec-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'plan-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'code-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
   },
 });
 
@@ -1005,6 +1019,218 @@ describe('dispatchStageHandler', () => {
   });
 });
 
+// ── dispatchStageHandler > spec/plan-remediator routing (ADR-024) ─────────────
+
+describe('dispatchStageHandler > early-stage remediators', () => {
+  let workdir: string;
+  let transition: ReturnType<typeof vi.fn>;
+
+  // fetchFn that 404s everything so fetchProductContext degrades gracefully and
+  // never reaches the network during routing tests.
+  const make404Fetch = (): FetchFn =>
+    vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: () => Promise.resolve('Not Found'),
+    } as Response);
+
+  beforeEach(async () => {
+    workdir = join(tmpdir(), `dispatcher-rem-${randomUUID()}`);
+    await mkdir(workdir, { recursive: true });
+    transition = vi.fn().mockResolvedValue({ currentStage: 'spec-draft' });
+
+    vi.clearAllMocks();
+    vi.mocked(findArtifactPRUrl).mockResolvedValue(
+      'https://github.com/test-org/test-knowledge/pull/7',
+    );
+    vi.mocked(runEarlyRemediation).mockResolvedValue({
+      status: 'done',
+      costUsd: 0.04,
+      durationMs: 321,
+      pushed: true,
+      commitSha: 'remsha123',
+      prUrl: 'https://github.com/test-org/test-knowledge/pull/7',
+    });
+  });
+
+  afterEach(async () => {
+    await rm(workdir, { recursive: true, force: true });
+  });
+
+  it('routes spec-remediator: spawns remediation, returns prUrl, NO stage transition', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-draft' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        specialistId: 'spec-remediator',
+        feedback: 'Tighten the AC.',
+        githubToken: 'tok',
+        fetchFn: make404Fetch(),
+      },
+    );
+
+    expect(result.specialistId).toBe('spec-remediator');
+    expect(result.status).toBe('done');
+    expect(result.prUrl).toBe('https://github.com/test-org/test-knowledge/pull/7');
+    expect(result.costUsd).toBe(0.04);
+    expect(result.durationMs).toBe(321);
+    expect(result.newStage).toBeUndefined();
+    expect(transition).not.toHaveBeenCalled();
+
+    expect(findArtifactPRUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ externalId: 'issue_1', kind: 'spec', githubToken: 'tok' }),
+      undefined,
+    );
+    expect(runEarlyRemediation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'spec',
+        feedback: 'Tighten the AC.',
+        prUrl: 'https://github.com/test-org/test-knowledge/pull/7',
+      }),
+    );
+  });
+
+  it('routes plan-remediator with kind=plan when stage is plan-draft', async () => {
+    const product = makeProduct();
+    product.workflow.stages_enabled = ['discovery', 'plan-draft', 'released'];
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-draft' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        specialistId: 'plan-remediator',
+        feedback: 'Split phase 1.',
+        githubToken: 'tok',
+        fetchFn: make404Fetch(),
+      },
+    );
+
+    expect(result.specialistId).toBe('plan-remediator');
+    expect(result.status).toBe('done');
+    expect(findArtifactPRUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'plan' }),
+      undefined,
+    );
+    expect(runEarlyRemediation).toHaveBeenCalledWith(expect.objectContaining({ kind: 'plan' }));
+  });
+
+  it('rejects wrong stage: spec-remediator requires spec-draft', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, specialistId: 'spec-remediator', feedback: 'x', githubToken: 'tok' },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe(
+      "spec-remediator requires currentStage 'spec-draft', got 'plan-ready'",
+    );
+    expect(findArtifactPRUrl).not.toHaveBeenCalled();
+    expect(runEarlyRemediation).not.toHaveBeenCalled();
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('rejects empty feedback', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-draft' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, specialistId: 'spec-remediator', feedback: '   ', githubToken: 'tok' },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe('spec-remediator requires non-empty feedback');
+    expect(runEarlyRemediation).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing GITHUB_TOKEN', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-draft' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, specialistId: 'spec-remediator', feedback: 'fix it' }, // no token
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe('spec-remediator requires GITHUB_TOKEN');
+    expect(findArtifactPRUrl).not.toHaveBeenCalled();
+    expect(runEarlyRemediation).not.toHaveBeenCalled();
+  });
+
+  it('rejects when no open artifact PR is found', async () => {
+    vi.mocked(findArtifactPRUrl).mockResolvedValue(null);
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-draft' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        specialistId: 'spec-remediator',
+        feedback: 'fix it',
+        githubToken: 'tok',
+        fetchFn: make404Fetch(),
+      },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe('no open spec PR found for issue_1 on helm/spec/issue_1');
+    expect(runEarlyRemediation).not.toHaveBeenCalled();
+  });
+
+  it('propagates error status from runEarlyRemediation (with prUrl preserved)', async () => {
+    vi.mocked(runEarlyRemediation).mockResolvedValue({
+      status: 'error',
+      costUsd: 0,
+      durationMs: 0,
+      pushed: false,
+      prUrl: 'https://github.com/test-org/test-knowledge/pull/7',
+      error: 'spec file not found at specs/issue_1.md',
+    });
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-draft' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        specialistId: 'spec-remediator',
+        feedback: 'fix it',
+        githubToken: 'tok',
+        fetchFn: make404Fetch(),
+      },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('spec file not found');
+    expect(result.prUrl).toBe('https://github.com/test-org/test-knowledge/pull/7');
+    expect(transition).not.toHaveBeenCalled();
+  });
+});
+
 // ── dispatchStageHandler > reviewer-fanout ────────────────────────────────────
 
 describe('dispatchStageHandler > reviewer-fanout', () => {
@@ -1028,7 +1254,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     });
     vi.mocked(shouldRemediate).mockReturnValue(false);
     vi.mocked(buildRemediationParams).mockReturnValue({
-      specialistId: 'remediation',
+      specialistId: 'code-remediator',
       prompt: 'remediate',
       workdir: '/tmp',
       productSlug: 'test-product',

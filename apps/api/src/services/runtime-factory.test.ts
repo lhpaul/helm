@@ -36,7 +36,9 @@ const makeProduct = (runtime: 'claude_code' | 'codex' = 'claude_code'): Product 
     'code-reviewer': { runtime, model: 'claude-sonnet-4-6' },
     'security-reviewer': { runtime, model: 'claude-sonnet-4-6' },
     'test-reviewer': { runtime, model: 'claude-sonnet-4-6' },
-    remediation: { runtime, model: 'claude-sonnet-4-6' },
+    'spec-remediator': { runtime, model: 'claude-sonnet-4-6' },
+    'plan-remediator': { runtime, model: 'claude-sonnet-4-6' },
+    'code-remediator': { runtime, model: 'claude-sonnet-4-6' },
   },
 });
 

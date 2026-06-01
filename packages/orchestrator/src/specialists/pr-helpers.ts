@@ -5,11 +5,17 @@
  *   PR; returns null if no open PR exists (implementer hasn't opened one, or it
  *   was closed). GitHub is the source of truth — no ItemState lookup needed.
  *
+ * `findArtifactPRUrl` — the knowledge-repo analogue of `findCodePRUrl`: queries
+ *   GitHub for the open `helm/spec/{externalId}` or `helm/plan/{externalId}` PR.
+ *   Used by the early-stage remediators (ADR-024) to locate the PR they iterate
+ *   in-place. Same "GitHub is the source of truth" contract — the dispatcher
+ *   only receives DispatchInput (no transition note carrying the PR URL).
+ *
  * `postPRComment` — posts a review comment on a GitHub PR as the orchestrator
  *   (GITHUB_TOKEN never enters agent subprocesses).
  */
-import type { CodeRepo } from '@helm/shared';
-import { implBranchName } from '@helm/shared';
+import type { CodeRepo, Product } from '@helm/shared';
+import { implBranchName, specBranchName, planBranchName } from '@helm/shared';
 import { parseGitHubRepoUrl } from './fetch-product-context.js';
 import { defaultRunGh, type RunGh } from './git-helpers.js';
 
@@ -38,6 +44,61 @@ export async function findCodePRUrl(
   }
   const { owner, repo } = parsed;
   const branchName = implBranchName(externalId);
+
+  const result = await runGh(
+    [
+      'pr',
+      'list',
+      '--repo',
+      `${owner}/${repo}`,
+      '--head',
+      branchName,
+      '--state',
+      'open',
+      '--json',
+      'url',
+    ],
+    { env: { GITHUB_TOKEN: githubToken } },
+  );
+
+  const prs = JSON.parse(result.stdout.trim()) as { url: string }[];
+  if (prs.length > 0) return prs[0]!.url;
+  return null;
+}
+
+// ── findArtifactPRUrl ─────────────────────────────────────────────────────────
+
+/** Knowledge-repo artifact kinds that have a remediation flow (ADR-024). */
+export type ArtifactPRKind = 'spec' | 'plan';
+
+export type FindArtifactPROpts = {
+  knowledgeRepo: Product['knowledge_repo'];
+  externalId: string;
+  /** 'spec' → helm/spec/{id}; 'plan' → helm/plan/{id}. */
+  kind: ArtifactPRKind;
+  githubToken: string;
+};
+
+/**
+ * Finds the URL of the open spec or plan PR for the given item by querying
+ * GitHub via gh CLI. Returns null if no open PR exists (artifact was never
+ * published, or its PR was merged/closed). Throws on unexpected gh errors.
+ *
+ * Mirrors {@link findCodePRUrl} for the knowledge repo — GitHub is the source
+ * of truth, so the early-stage remediators do not need an ItemState lookup.
+ */
+export async function findArtifactPRUrl(
+  opts: FindArtifactPROpts,
+  runGh: RunGh = defaultRunGh,
+): Promise<string | null> {
+  const { knowledgeRepo, externalId, kind, githubToken } = opts;
+
+  const parsed = parseGitHubRepoUrl(knowledgeRepo.url);
+  if (!parsed) {
+    throw new Error(`[pr-helpers] Cannot parse knowledge repo URL: ${knowledgeRepo.url}`);
+  }
+  const { owner, repo } = parsed;
+  const branchName = kind === 'spec' ? specBranchName(externalId) : planBranchName(externalId);
 
   const result = await runGh(
     [

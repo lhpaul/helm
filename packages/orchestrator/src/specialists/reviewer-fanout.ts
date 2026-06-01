@@ -28,6 +28,7 @@ import { fetchSpecForPlan, type FetchFn } from './fetch-product-context.js';
 import { postPRComment } from './pr-helpers.js';
 import { sanitizeToken } from './git-helpers.js';
 import type { RunGit, RunGh } from './git-helpers.js';
+import { buildExtraHintsSection } from './extra-hints.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -191,6 +192,8 @@ export function buildReviewerParams(
 
   const specSection = spec ? ['', '## Spec', '', spec, ''].join('\n') : '';
 
+  const hintsSection = buildExtraHintsSection(specialistCfg.extra_hints);
+
   const outputInstruction = [
     '',
     '## Output',
@@ -248,9 +251,13 @@ export function buildReviewerParams(
       break;
   }
 
-  const prompt = [commonHeader, specSection, kindSpecificInstructions, outputInstruction].join(
-    '\n',
-  );
+  const prompt = [
+    commonHeader,
+    specSection,
+    hintsSection,
+    kindSpecificInstructions,
+    outputInstruction,
+  ].join('\n');
 
   return {
     specialistId,

@@ -26,6 +26,7 @@ import { pushReviewerPatches } from './code-workspace.js';
 import { postPRComment } from './pr-helpers.js';
 import { sanitizeToken } from './git-helpers.js';
 import type { RunGit, RunGh } from './git-helpers.js';
+import { buildExtraHintsSection } from './extra-hints.js';
 
 // ── Timeout ───────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,8 @@ export function buildRemediationParams(
     }
   }
 
+  const hintsSection = buildExtraHintsSection(specialistCfg.extra_hints);
+
   const prompt = [
     `You are Helm's remediation specialist. Your task is to remediate review findings on item \`${externalId}\`.`,
     '',
@@ -90,6 +93,7 @@ export function buildRemediationParams(
     'The security and test reviews below contain the findings to remediate.',
     ...reviewSections,
     '',
+    ...(hintsSection ? [hintsSection] : []),
     '**Your task — remediate CRITICAL and HIGH findings:**',
     '- Apply mechanical, low-risk fixes to the files in the working directory that resolve the CRITICAL and HIGH findings.',
     '- You MAY also address MEDIUM findings if the fix is mechanical and low-risk; the gate fired on CRITICAL/HIGH only.',

@@ -17,6 +17,7 @@ import type { AgentResult, SpawnParams } from '../runtime.js';
 import type { ProductContext } from './fetch-product-context.js';
 import type { ItemTransitionFn } from './spec-writer.js';
 import type { RunGit, RunGh } from './git-helpers.js';
+import { buildExtraHintsSection } from './extra-hints.js';
 
 export type { ItemTransitionFn };
 
@@ -126,6 +127,11 @@ function buildImplementerPrompt(
 
   if (context) {
     lines.push(buildContextSection(product, context));
+  }
+
+  const hintsSection = buildExtraHintsSection(product.specialists.implementer.extra_hints);
+  if (hintsSection) {
+    lines.push(hintsSection);
   }
 
   lines.push('## Approved Implementation Plan', '', plan, '');

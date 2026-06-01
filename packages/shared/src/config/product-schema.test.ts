@@ -163,6 +163,19 @@ describe('ProductSchema — extra_hints (ADR-023)', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects a whitespace-only hint', () => {
+    const result = ProductSchema.safeParse(withHints(['   \t\n  ']));
+    expect(result.success).toBe(false);
+  });
+
+  it('stores hints trimmed of surrounding whitespace', () => {
+    const result = ProductSchema.safeParse(withHints(['  padded hint  ']));
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.specialists['plan-writer'].extra_hints).toEqual(['padded hint']);
+    }
+  });
+
   it('rejects a hint longer than 500 chars', () => {
     const result = ProductSchema.safeParse(withHints(['x'.repeat(501)]));
     expect(result.success).toBe(false);

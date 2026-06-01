@@ -25,6 +25,9 @@ const LEGACY_SPECIALIST_KEYS: Record<string, string> = {
   code_reviewer: 'code-reviewer',
   security_reviewer: 'security-reviewer',
   test_reviewer: 'test-reviewer',
+  // ADR-024 rename: the code-review remediator moved from `remediation` to
+  // `code-remediator` to join the spec/plan remediator family.
+  remediation: 'code-remediator',
 };
 
 /**

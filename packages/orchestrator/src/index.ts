@@ -39,3 +39,26 @@ export type {
   RunGit,
   RunGh,
 } from './specialists/spec-publisher.js';
+
+// Early-stage remediators (ADR-024)
+export {
+  runEarlyRemediation,
+  buildEarlyRemediatorParams,
+  buildEarlyRemediatorPrompt,
+  EARLY_REMEDIATION_TIMEOUT_MS,
+} from './specialists/early-remediator.js';
+export type {
+  EarlyRemediatorKind,
+  EarlyRemediationResult,
+  RunEarlyRemediationParams,
+} from './specialists/early-remediator.js';
+export {
+  buildSpecRemediatorPrompt,
+  buildSpecRemediatorParams,
+  runSpecRemediation,
+} from './specialists/spec-remediator.js';
+export {
+  buildPlanRemediatorPrompt,
+  buildPlanRemediatorParams,
+  runPlanRemediation,
+} from './specialists/plan-remediator.js';

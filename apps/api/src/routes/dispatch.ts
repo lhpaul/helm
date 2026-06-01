@@ -21,7 +21,32 @@ const SlugSchema = z
   .string()
   .min(1)
   .regex(/^[a-z0-9-]+$/);
-const BodySchema = z.object({ specialistId: z.string().min(1).optional() }).strict();
+// Specialists that require operator feedback (early-stage remediators, ADR-024).
+const FEEDBACK_REQUIRED_SPECIALISTS = ['spec-remediator', 'plan-remediator'];
+
+const BodySchema = z
+  .object({
+    specialistId: z.string().min(1).optional(),
+    /**
+     * Operator feedback for the early-stage remediators. Required (and only
+     * meaningful) when specialistId is spec-remediator or plan-remediator.
+     */
+    feedback: z.string().min(1).max(10000).optional(),
+  })
+  .strict()
+  .superRefine((data, ctx) => {
+    if (
+      data.specialistId &&
+      FEEDBACK_REQUIRED_SPECIALISTS.includes(data.specialistId) &&
+      (data.feedback === undefined || data.feedback.trim().length === 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['feedback'],
+        message: `feedback is required when specialistId is '${data.specialistId}'`,
+      });
+    }
+  });
 
 /**
  * Background function that runs the dispatch job asynchronously.
@@ -36,6 +61,7 @@ async function runDispatchJob(
     workdir: string;
     dataRoot: string;
     specialistId: string | undefined;
+    feedback: string | undefined;
     githubToken: string | undefined;
     fetchTask:
       | ((externalId: string) => Promise<{ title: string; body?: string } | null>)
@@ -60,6 +86,7 @@ async function runDispatchJob(
         specialistId: ctx.specialistId,
         githubToken: ctx.githubToken,
         fetchTask: ctx.fetchTask,
+        feedback: ctx.feedback,
       },
     );
 
@@ -199,6 +226,7 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
     workdir,
     dataRoot,
     specialistId: bodyResult.data.specialistId,
+    feedback: bodyResult.data.feedback,
     githubToken: process.env.GITHUB_TOKEN?.trim(),
     fetchTask,
   });

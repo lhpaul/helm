@@ -37,7 +37,9 @@ specialists:
   code-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
   security-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
   test-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  remediation: { runtime: claude_code, model: claude-sonnet-4-6 }
+  spec-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+  plan-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+  code-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
 `.trim();
 
 const LINEAR_VALID = `
@@ -66,7 +68,9 @@ specialists:
   code-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
   security-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
   test-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  remediation: { runtime: claude_code, model: claude-sonnet-4-6 }
+  spec-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+  plan-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+  code-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
 `.trim();
 
 // Builds a config with per-specialist runtimes so we can exercise the
@@ -78,7 +82,9 @@ const specialistsBlock = (runtimes: {
   'code-reviewer'?: string;
   'security-reviewer'?: string;
   'test-reviewer'?: string;
-  remediation?: string;
+  'spec-remediator'?: string;
+  'plan-remediator'?: string;
+  'code-remediator'?: string;
 }): string => {
   const r = {
     'spec-writer': 'claude_code',
@@ -87,7 +93,9 @@ const specialistsBlock = (runtimes: {
     'code-reviewer': 'claude_code',
     'security-reviewer': 'claude_code',
     'test-reviewer': 'claude_code',
-    remediation: 'claude_code',
+    'spec-remediator': 'claude_code',
+    'plan-remediator': 'claude_code',
+    'code-remediator': 'claude_code',
     ...runtimes,
   };
   return `
@@ -115,7 +123,9 @@ specialists:
   code-reviewer: { runtime: ${r['code-reviewer']}, model: m }
   security-reviewer: { runtime: ${r['security-reviewer']}, model: m }
   test-reviewer: { runtime: ${r['test-reviewer']}, model: m }
-  remediation: { runtime: ${r.remediation}, model: m }
+  spec-remediator: { runtime: ${r['spec-remediator']}, model: m }
+  plan-remediator: { runtime: ${r['plan-remediator']}, model: m }
+  code-remediator: { runtime: ${r['code-remediator']}, model: m }
 `.trim();
 };
 
@@ -220,7 +230,9 @@ describe('parseProductConfig', () => {
           'code-reviewer': 'codex',
           'security-reviewer': 'codex',
           'test-reviewer': 'codex',
-          remediation: 'codex',
+          'spec-remediator': 'codex',
+          'plan-remediator': 'codex',
+          'code-remediator': 'codex',
         }),
       );
       expect(config.specialists.implementer.runtime).toBe('codex');

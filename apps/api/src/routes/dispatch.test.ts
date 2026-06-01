@@ -33,7 +33,9 @@ const makeProduct = (slug = 'test-product'): Product => ({
     'code-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     'security-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     'test-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    remediation: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'spec-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'plan-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'code-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
   },
 });
 
@@ -490,6 +492,66 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     expect(mockGetIssueTrackerAdapter).toHaveBeenCalled();
     expect(prompt.current).toContain('## Task');
     expect(prompt.current).toContain('Add tenant onboarding flow');
+  });
+
+  // ── feedback field (ADR-024 early-stage remediators) ───────────────────────
+
+  it('returns 400 when spec-remediator is dispatched without feedback', async () => {
+    const res = await dispatch('test-product', 'issue_1', { specialistId: 'spec-remediator' });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('Invalid request body');
+    expect(mockTransition).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when plan-remediator feedback is blank whitespace', async () => {
+    const res = await dispatch('test-product', 'issue_1', {
+      specialistId: 'plan-remediator',
+      feedback: '   ',
+    });
+    // min(1) trims to empty → superRefine rejects (blank is not meaningful feedback).
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('Invalid request body');
+  });
+
+  it('returns 400 when feedback exceeds the 10000-char limit', async () => {
+    const res = await dispatch('test-product', 'issue_1', {
+      specialistId: 'spec-remediator',
+      feedback: 'x'.repeat(10001),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts spec-remediator dispatch with valid feedback (202)', async () => {
+    mockGet.mockResolvedValue(makeItem('issue_1', 'spec-draft'));
+
+    const res = await dispatch('test-product', 'issue_1', {
+      specialistId: 'spec-remediator',
+      feedback: 'Tighten the acceptance criteria.',
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { jobId: string; status: string };
+    expect(body.status).toBe('running');
+
+    // Drain the background job so afterEach cleanup doesn't race with it. The
+    // job will error (no GITHUB_TOKEN / no real PR), but the route accepted it.
+    const { getJobStore } = await import('../services/index.js');
+    const jobStore = await getJobStore();
+    await vi.waitFor(
+      async () => {
+        const job = await jobStore.getJob(body.jobId);
+        expect(job?.status).not.toBe('running');
+      },
+      { timeout: 5000 },
+    );
+  });
+
+  it('ignores feedback for a normal (non-remediator) dispatch', async () => {
+    // feedback is optional for non-remediator specialists — accepted, just unused.
+    const res = await dispatch('test-product', 'issue_1', { feedback: 'some note' });
+    expect(res.status).toBe(202);
+    await vi.waitFor(() => expect(mockTransition).toHaveBeenCalled(), { timeout: 5000 });
   });
 
   it('writes the spec without a ## Task section when the adapter throws (no dispatch failure)', async () => {

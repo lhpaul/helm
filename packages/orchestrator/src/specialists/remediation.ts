@@ -67,7 +67,7 @@ export function buildRemediationParams(
   prUrl: string,
   findingsByKind: Map<ReviewerKind, string>,
 ): SpawnParams {
-  const specialistCfg = product.specialists.remediation;
+  const specialistCfg = product.specialists['code-remediator'];
   const defaultBranch = product.code_repos[0]?.default_branch ?? 'main';
 
   const reviewSections: string[] = [];
@@ -109,7 +109,7 @@ export function buildRemediationParams(
   ].join('\n');
 
   return {
-    specialistId: 'remediation',
+    specialistId: 'code-remediator',
     prompt,
     workdir: workspacePath,
     productSlug: product.product.slug,

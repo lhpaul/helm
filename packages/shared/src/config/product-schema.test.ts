@@ -24,7 +24,9 @@ const KEBAB_SPECIALISTS = {
   'code-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
   'security-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
   'test-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-  remediation: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+  'spec-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+  'plan-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+  'code-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
 };
 
 const SNAKE_SPECIALISTS = {
@@ -115,6 +117,69 @@ specialists:
     // kebab-case migration message — proving the prototype key didn't trip it.
     expect(() => parseProductConfig(yaml)).toThrow(ProductConfigError);
     expect(() => parseProductConfig(yaml)).not.toThrow('kebab-case');
+  });
+});
+
+describe('ProductSchema — remediator specialists (ADR-024)', () => {
+  it('accepts the 9-specialist kebab-case set including the remediators', () => {
+    const result = ProductSchema.safeParse(makeRawProduct(KEBAB_SPECIALISTS));
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.specialists['spec-remediator'].model).toBe('claude-sonnet-4-6');
+      expect(result.data.specialists['plan-remediator'].runtime).toBe('claude_code');
+      expect(result.data.specialists['code-remediator'].model).toBe('claude-sonnet-4-6');
+    }
+  });
+
+  it('rejects the product when a remediator entry is missing', () => {
+    const withoutPlanRemediator: Record<string, unknown> = { ...KEBAB_SPECIALISTS };
+    delete withoutPlanRemediator['plan-remediator'];
+    const result = ProductSchema.safeParse(makeRawProduct(withoutPlanRemediator));
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects the legacy `remediation` key at the schema level (.strict())', () => {
+    const rest: Record<string, unknown> = { ...KEBAB_SPECIALISTS };
+    delete rest['code-remediator'];
+    const legacy = { ...rest, remediation: { runtime: 'claude_code', model: 'claude-sonnet-4-6' } };
+    const result = ProductSchema.safeParse(makeRawProduct(legacy));
+    expect(result.success).toBe(false);
+  });
+
+  it('parseProductConfig surfaces an actionable `remediation` → `code-remediator` message', () => {
+    const yaml = `
+helm_version: "0"
+product:
+  slug: test-product
+  name: Test Product
+issue_tracker:
+  provider: github_projects
+  org: test-org
+  project_number: 1
+code_repos:
+  - url: https://github.com/test-org/test-app
+    default_branch: main
+    role: app
+knowledge_repo:
+  url: https://github.com/test-org/test-knowledge
+  default_branch: main
+workflow:
+  stages_enabled: [discovery, released]
+specialists:
+  spec-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  plan-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  implementer: { runtime: claude_code, model: claude-opus-4-7 }
+  code-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  security-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  test-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  spec-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+  plan-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+  remediation: { runtime: claude_code, model: claude-sonnet-4-6 }
+`.trim();
+
+    expect(() => parseProductConfig(yaml)).toThrow(ProductConfigError);
+    expect(() => parseProductConfig(yaml)).toThrow('kebab-case');
+    expect(() => parseProductConfig(yaml)).toThrow("'remediation' → 'code-remediator'");
   });
 });
 

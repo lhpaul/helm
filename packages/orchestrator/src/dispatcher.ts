@@ -29,7 +29,8 @@ import {
   type ReviewerKind,
 } from './specialists/reviewer-fanout.js';
 import { buildRemediationParams, handleRemediationResult } from './specialists/remediation.js';
-import { findCodePRUrl } from './specialists/pr-helpers.js';
+import { findCodePRUrl, findArtifactPRUrl } from './specialists/pr-helpers.js';
+import { runEarlyRemediation, type EarlyRemediatorKind } from './specialists/early-remediator.js';
 
 // ── Stage → specialist mapping ────────────────────────────────────────────────
 
@@ -99,6 +100,13 @@ export type DispatchOptions = {
    * adapter and makes the dispatch path trivially testable without real network calls.
    */
   fetchTask?: (externalId: string) => Promise<{ title: string; body?: string } | null>;
+  /**
+   * Operator feedback for the early-stage remediators (spec-remediator /
+   * plan-remediator, ADR-024). Required when dispatching either of those
+   * specialists; ignored otherwise. The API route validates presence + bounds
+   * (1..10000 chars); the dispatcher re-checks for non-empty as defense-in-depth.
+   */
+  feedback?: string;
 };
 
 // ── Status resolution ─────────────────────────────────────────────────────────
@@ -684,6 +692,118 @@ export async function dispatchStageHandler(
     } finally {
       await rm(remediationWorkspace, { recursive: true, force: true }).catch(() => {});
     }
+  }
+
+  // ── Early-stage remediators (ADR-024) ──────────────────────────────────────
+  // spec-remediator / plan-remediator iterate an already-published spec/plan PR
+  // in-place from operator feedback. They are operator-triggered (never reached
+  // via STAGE_TO_SPECIALIST) — only dispatched when options.specialistId names
+  // them. They do NOT transition the item: the artifact stays in its draft stage
+  // until the operator merges the PR (the existing spec-ready/plan-ready flow).
+  if (specialistId === 'spec-remediator' || specialistId === 'plan-remediator') {
+    const kind: EarlyRemediatorKind = specialistId === 'spec-remediator' ? 'spec' : 'plan';
+    const requiredStage: WorkflowStage = kind === 'spec' ? 'spec-draft' : 'plan-draft';
+
+    // ── Stage validation ──────────────────────────────────────────────────────
+    // A remediator only makes sense while its artifact PR is open and unmerged,
+    // i.e. the item is still in the draft stage. Reject anything else with a
+    // message that names the expected and actual stages.
+    if (item.currentStage !== requiredStage) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: `${specialistId} requires currentStage '${requiredStage}', got '${item.currentStage}'`,
+      };
+    }
+
+    // ── Feedback validation (defense-in-depth; API also validates) ────────────
+    const feedback = options?.feedback?.trim();
+    if (!feedback) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: `${specialistId} requires non-empty feedback`,
+      };
+    }
+
+    // ── Token is required — needed to clone the knowledge repo and push edits ─
+    if (!options?.githubToken) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: `${specialistId} requires GITHUB_TOKEN`,
+      };
+    }
+
+    // ── Resolve the open artifact PR (GitHub is the source of truth) ──────────
+    let prUrl: string;
+    try {
+      const found = await findArtifactPRUrl(
+        {
+          knowledgeRepo: product.knowledge_repo,
+          externalId: item.externalId,
+          kind,
+          githubToken: options.githubToken,
+        },
+        options?.runGh,
+      );
+      if (found === null) {
+        const branch =
+          kind === 'spec' ? `helm/spec/${item.externalId}` : `helm/plan/${item.externalId}`;
+        return {
+          specialistId,
+          status: 'error',
+          costUsd: 0,
+          durationMs: 0,
+          error: `no open ${kind} PR found for ${item.externalId} on ${branch}`,
+        };
+      }
+      prUrl = found;
+    } catch (err) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: `Failed to find ${kind} PR: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    // ── Fetch product context (best-effort) ───────────────────────────────────
+    const context = await fetchProductContext(product, options.githubToken, options.fetchFn).catch(
+      (err) => {
+        console.error('[dispatcher] Failed to fetch product context (continuing without it):', err);
+        return undefined;
+      },
+    );
+
+    // ── Run the remediation (provision → spawn → push). No stage transition. ──
+    const result = await runEarlyRemediation({
+      kind,
+      externalId: item.externalId,
+      product,
+      prUrl,
+      feedback,
+      githubToken: options.githubToken,
+      runtime,
+      context,
+      runGit: options?.runGit,
+    });
+
+    return {
+      specialistId,
+      status: result.status,
+      costUsd: result.costUsd,
+      durationMs: result.durationMs,
+      prUrl: result.prUrl,
+      error: result.error,
+    };
   }
 
   // Stub for future specialists

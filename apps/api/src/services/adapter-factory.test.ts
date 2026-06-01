@@ -44,7 +44,9 @@ const GITHUB_CONFIG = {
     'code-reviewer': { runtime: 'claude_code' as const, model: 'm' },
     'security-reviewer': { runtime: 'claude_code' as const, model: 'm' },
     'test-reviewer': { runtime: 'claude_code' as const, model: 'm' },
-    remediation: { runtime: 'claude_code' as const, model: 'm' },
+    'spec-remediator': { runtime: 'claude_code' as const, model: 'm' },
+    'plan-remediator': { runtime: 'claude_code' as const, model: 'm' },
+    'code-remediator': { runtime: 'claude_code' as const, model: 'm' },
   },
 };
 

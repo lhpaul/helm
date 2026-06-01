@@ -40,7 +40,9 @@ const BASE_PRODUCT: Product = {
     'code-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     'security-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     'test-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    remediation: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'spec-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'plan-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'code-remediator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
   },
 };
 

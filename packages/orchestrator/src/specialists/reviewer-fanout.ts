@@ -254,7 +254,7 @@ export function buildReviewerParams(
   const prompt = [
     commonHeader,
     specSection,
-    hintsSection,
+    ...(hintsSection ? [hintsSection] : []),
     kindSpecificInstructions,
     outputInstruction,
   ].join('\n');

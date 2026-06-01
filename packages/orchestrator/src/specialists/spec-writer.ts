@@ -148,7 +148,7 @@ export function buildSpecWriterParams(
     workdir,
     productSlug: product.product.slug,
     externalId,
-    model: product.specialists.spec_writer.model,
+    model: product.specialists['spec-writer'].model,
   };
 }
 

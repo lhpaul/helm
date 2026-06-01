@@ -128,7 +128,7 @@ export function buildPlanWriterParams(
     workdir,
     productSlug: product.product.slug,
     externalId,
-    model: product.specialists.plan_writer.model,
+    model: product.specialists['plan-writer'].model,
   };
 }
 

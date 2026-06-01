@@ -15,7 +15,7 @@ import { EXTERNAL_ID_REGEX } from './types.js';
  * SINGLE-RUNTIME-PER-PRODUCT CONSTRAINT (H1): the dispatcher creates ONE runtime
  * per dispatch and reuses it for every specialist (spec/plan/impl/reviewers/…),
  * so all specialists in a product must share the same runtime. We read
- * `spec_writer.runtime` as the product-wide selector. A per-specialist runtime
+ * `spec-writer.runtime` as the product-wide selector. A per-specialist runtime
  * (e.g. claude_code spec-writer + codex implementer) requires moving runtime
  * creation to per-spawn — deferred to H3.
  *
@@ -39,7 +39,7 @@ export function createRuntimeForProduct(
   // mixed runtimes (see superRefine in product-schema.ts), but callers that build
   // a Product object without going through schema validation (e.g. unit tests, or
   // a future programmatic config path) would otherwise silently run every stage on
-  // spec_writer's runtime. Fail loudly instead.
+  // spec-writer's runtime. Fail loudly instead.
   const runtimes = new Set(Object.values(product.specialists).map((s) => s.runtime));
   if (runtimes.size > 1) {
     throw new Error(
@@ -48,7 +48,7 @@ export function createRuntimeForProduct(
     );
   }
 
-  const runtime = product.specialists.spec_writer.runtime;
+  const runtime = product.specialists['spec-writer'].runtime;
 
   switch (runtime) {
     case 'claude_code':

@@ -6,7 +6,7 @@ import {
   getProductRegistry,
   getItemStore,
   getJobStore,
-  getGitHubAdapter,
+  getIssueTrackerAdapter,
 } from '../services/index.js';
 import { createRuntimeForProduct } from '../services/runtime-factory.js';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
@@ -173,19 +173,20 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   }
   const { job } = outcome;
 
-  // Build fetchTask: best-effort wrapper around the GitHubProjectsAdapter.
-  // On any error (adapter init, network, item not found) it returns null so
-  // the spec-writer falls back to writing without a ## Task section.
+  // Build fetchTask: best-effort wrapper around the configured issue tracker
+  // adapter (GitHub Projects or Linear, based on product.yaml). On any error
+  // (adapter init, network, item not found) it returns null so the spec-writer
+  // falls back to writing without a ## Task section.
   const fetchTask = async (
-    externalId: string,
+    taskExternalId: string,
   ): Promise<{ title: string; body?: string } | null> => {
     try {
-      const adapter = await getGitHubAdapter();
-      const trackerItem = await adapter.getItem(externalId);
+      const adapter = await getIssueTrackerAdapter();
+      const trackerItem = await adapter.getItem(taskExternalId);
       if (!trackerItem) return null;
       return { title: trackerItem.title, body: trackerItem.body };
     } catch (err) {
-      console.error(`[dispatch] fetchTask failed for externalId=${externalId}:`, err);
+      console.error(`[dispatch] fetchTask failed for externalId=${taskExternalId}:`, err);
       return null;
     }
   };

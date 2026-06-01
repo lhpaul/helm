@@ -1,5 +1,18 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalPassThroughEnv": [
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "LINEAR_API_KEY",
+    "GITHUB_WEBHOOK_SECRET",
+    "LINEAR_WEBHOOK_SECRET",
+    "HELM_KNOWLEDGE_REPO_PATH",
+    "HELM_DATA_DIR",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "CODEX_ACCESS_TOKEN"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

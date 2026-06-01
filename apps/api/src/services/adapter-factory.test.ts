@@ -38,12 +38,12 @@ const GITHUB_CONFIG = {
     qa_gate: 'skip' as const,
   },
   specialists: {
-    spec_writer: { runtime: 'claude_code' as const, model: 'm' },
-    plan_writer: { runtime: 'claude_code' as const, model: 'm' },
+    'spec-writer': { runtime: 'claude_code' as const, model: 'm' },
+    'plan-writer': { runtime: 'claude_code' as const, model: 'm' },
     implementer: { runtime: 'claude_code' as const, model: 'm' },
-    code_reviewer: { runtime: 'claude_code' as const, model: 'm' },
-    security_reviewer: { runtime: 'claude_code' as const, model: 'm' },
-    test_reviewer: { runtime: 'claude_code' as const, model: 'm' },
+    'code-reviewer': { runtime: 'claude_code' as const, model: 'm' },
+    'security-reviewer': { runtime: 'claude_code' as const, model: 'm' },
+    'test-reviewer': { runtime: 'claude_code' as const, model: 'm' },
     remediation: { runtime: 'claude_code' as const, model: 'm' },
   },
 };

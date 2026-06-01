@@ -26,22 +26,22 @@ workflow:
   qa_gate: skip
 
 specialists:
-  spec_writer:
+  spec-writer:
     runtime: claude_code
     model: claude-sonnet-4-6
-  plan_writer:
+  plan-writer:
     runtime: claude_code
     model: claude-sonnet-4-6
   implementer:
     runtime: claude_code
     model: claude-opus-4-7
-  code_reviewer:
+  code-reviewer:
     runtime: claude_code
     model: claude-sonnet-4-6
-  security_reviewer:
+  security-reviewer:
     runtime: claude_code
     model: claude-sonnet-4-6
-  test_reviewer:
+  test-reviewer:
     runtime: claude_code
     model: claude-sonnet-4-6
   remediation:

@@ -77,11 +77,11 @@ export type ReviewerFanoutResult = {
 // Map ReviewerKind → product.specialists key
 const SPECIALIST_CONFIG_KEY: Record<
   ReviewerKind,
-  'code_reviewer' | 'security_reviewer' | 'test_reviewer'
+  'code-reviewer' | 'security-reviewer' | 'test-reviewer'
 > = {
-  code: 'code_reviewer',
-  security: 'security_reviewer',
-  test: 'test_reviewer',
+  code: 'code-reviewer',
+  security: 'security-reviewer',
+  test: 'test-reviewer',
 };
 
 /**

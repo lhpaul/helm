@@ -16,6 +16,17 @@ export class ProductConfigError extends Error {
   }
 }
 
+// Legacy snake_case specialist IDs → canonical kebab-case (ADR-022). Detected
+// before schema validation so existing product.yaml files get an actionable
+// migration message instead of a generic "unrecognized key" error.
+const LEGACY_SPECIALIST_KEYS: Record<string, string> = {
+  spec_writer: 'spec-writer',
+  plan_writer: 'plan-writer',
+  code_reviewer: 'code-reviewer',
+  security_reviewer: 'security-reviewer',
+  test_reviewer: 'test-reviewer',
+};
+
 /**
  * Parses a YAML string and validates it against the ProductSchema.
  * Throws ProductConfigError with a path-aware message on failure.
@@ -26,6 +37,21 @@ export function parseProductConfig(yamlContent: string): Product {
     raw = parseYaml(yamlContent);
   } catch (err) {
     throw new ProductConfigError('Failed to parse YAML', err as Error);
+  }
+
+  if (raw && typeof raw === 'object') {
+    const specialists = (raw as { specialists?: unknown }).specialists;
+    if (specialists && typeof specialists === 'object') {
+      const legacy = Object.keys(specialists).filter((k) => k in LEGACY_SPECIALIST_KEYS);
+      if (legacy.length > 0) {
+        const renames = legacy.map((k) => `'${k}' → '${LEGACY_SPECIALIST_KEYS[k]}'`).join(', ');
+        throw new ProductConfigError(
+          `Invalid product.yaml — "specialists": specialist IDs must use kebab-case ` +
+            `(e.g. 'spec-writer'). Rename ${renames}. See ADR-022 and the migration script ` +
+            `in helm-knowledge/operations/migrations/.`,
+        );
+      }
+    }
   }
 
   const result = ProductSchema.safeParse(raw);

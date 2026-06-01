@@ -53,19 +53,19 @@ const SpecialistSchema = z
 
 const SpecialistsSchema = z
   .object({
-    spec_writer: SpecialistSchema,
-    plan_writer: SpecialistSchema,
+    'spec-writer': SpecialistSchema,
+    'plan-writer': SpecialistSchema,
     implementer: SpecialistSchema,
-    code_reviewer: SpecialistSchema,
-    security_reviewer: SpecialistSchema,
-    test_reviewer: SpecialistSchema,
+    'code-reviewer': SpecialistSchema,
+    'security-reviewer': SpecialistSchema,
+    'test-reviewer': SpecialistSchema,
     remediation: SpecialistSchema,
   })
   .strict()
   // H1 constraint: the dispatcher creates ONE runtime per product (selected from
-  // spec_writer.runtime) and reuses it for every specialist, so all specialists
+  // spec-writer.runtime) and reuses it for every specialist, so all specialists
   // must share the same runtime. Reject mixed runtimes at validation instead of
-  // silently running every stage on spec_writer's runtime. Per-specialist
+  // silently running every stage on spec-writer's runtime. Per-specialist
   // runtimes require per-spawn runtime creation — deferred to H3 (see ADR-021).
   .superRefine((specialists, ctx) => {
     const runtimes = new Set(Object.values(specialists).map((s) => s.runtime));

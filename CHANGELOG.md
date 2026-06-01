@@ -102,6 +102,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `apps/web`: React 18 + Vite 5 + Tailwind v4 with WebSocket hook (connects to api `/ws`, displays connection status)
 - `HELM_VERSION` constant in `@helm/shared` — consumed by api `/health` and available to web
 
+### Changed
+
+- **(breaking) Specialist IDs in `product.yaml` require kebab-case (post-pilot cleanup, ADR-022):** `SpecialistsSchema` keys migrated from snake_case (`spec_writer`, `plan_writer`, `code_reviewer`, `security_reviewer`, `test_reviewer`) to kebab-case (`spec-writer`, `plan-writer`, `code-reviewer`, `security-reviewer`, `test-reviewer`), aligning the config with the kebab identifiers already used everywhere else in Helm (artifact branches `helm/spec/*`, labels `helm:spec-draft`, workflow stages, and the `specialistId` values the dispatcher matches). `implementer` and `remediation` are unchanged (already single-word). `parseProductConfig` detects legacy snake_case keys and throws an actionable migration message pointing at ADR-022. Run the migration script in `helm-knowledge/operations/migrations/2026-05-31-specialist-id-kebab.md` to update existing products.
+
 ### Fixed
 
 - **Dispatch route resolves the issue tracker adapter polymorphically (post-pilot cleanup):** the `POST /api/products/:slug/items/:externalId/dispatch` route built its `fetchTask` helper around `getGitHubAdapter()` hardcoded, so for a Linear product (e.g. the Arriendo Fácil pilot) adapter initialization threw, `fetchTask` silently returned `null`, and the spec-writer wrote specs without a `## Task` section. It now calls the provider-aware `getIssueTrackerAdapter()` factory. `dispatch.test.ts` gained two cases: the spec-writer prompt carries the `## Task` section from the resolved adapter, and an adapter that throws degrades gracefully (spec written without `## Task`, dispatch still completes).

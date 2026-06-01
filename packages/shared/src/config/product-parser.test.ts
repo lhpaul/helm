@@ -31,12 +31,12 @@ knowledge_repo:
 workflow:
   stages_enabled: [in-development, released]
 specialists:
-  spec_writer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  plan_writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  spec-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  plan-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
   implementer: { runtime: claude_code, model: claude-opus-4-7 }
-  code_reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  security_reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  test_reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  code-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  security-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  test-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
   remediation: { runtime: claude_code, model: claude-sonnet-4-6 }
 `.trim();
 
@@ -60,33 +60,33 @@ knowledge_repo:
 workflow:
   stages_enabled: [in-development, released]
 specialists:
-  spec_writer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  plan_writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  spec-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  plan-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
   implementer: { runtime: claude_code, model: claude-opus-4-7 }
-  code_reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  security_reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  test_reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  code-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  security-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  test-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
   remediation: { runtime: claude_code, model: claude-sonnet-4-6 }
 `.trim();
 
 // Builds a config with per-specialist runtimes so we can exercise the
 // "all specialists share one runtime" superRefine (H1 constraint, see ADR-021).
 const specialistsBlock = (runtimes: {
-  spec_writer?: string;
-  plan_writer?: string;
+  'spec-writer'?: string;
+  'plan-writer'?: string;
   implementer?: string;
-  code_reviewer?: string;
-  security_reviewer?: string;
-  test_reviewer?: string;
+  'code-reviewer'?: string;
+  'security-reviewer'?: string;
+  'test-reviewer'?: string;
   remediation?: string;
 }): string => {
   const r = {
-    spec_writer: 'claude_code',
-    plan_writer: 'claude_code',
+    'spec-writer': 'claude_code',
+    'plan-writer': 'claude_code',
     implementer: 'claude_code',
-    code_reviewer: 'claude_code',
-    security_reviewer: 'claude_code',
-    test_reviewer: 'claude_code',
+    'code-reviewer': 'claude_code',
+    'security-reviewer': 'claude_code',
+    'test-reviewer': 'claude_code',
     remediation: 'claude_code',
     ...runtimes,
   };
@@ -109,12 +109,12 @@ knowledge_repo:
 workflow:
   stages_enabled: [in-development, released]
 specialists:
-  spec_writer: { runtime: ${r.spec_writer}, model: m }
-  plan_writer: { runtime: ${r.plan_writer}, model: m }
+  spec-writer: { runtime: ${r['spec-writer']}, model: m }
+  plan-writer: { runtime: ${r['plan-writer']}, model: m }
   implementer: { runtime: ${r.implementer}, model: m }
-  code_reviewer: { runtime: ${r.code_reviewer}, model: m }
-  security_reviewer: { runtime: ${r.security_reviewer}, model: m }
-  test_reviewer: { runtime: ${r.test_reviewer}, model: m }
+  code-reviewer: { runtime: ${r['code-reviewer']}, model: m }
+  security-reviewer: { runtime: ${r['security-reviewer']}, model: m }
+  test-reviewer: { runtime: ${r['test-reviewer']}, model: m }
   remediation: { runtime: ${r.remediation}, model: m }
 `.trim();
 };
@@ -208,18 +208,18 @@ describe('parseProductConfig', () => {
   describe('specialist runtime consistency (H1 / ADR-021)', () => {
     it('accepts a uniform claude_code config', () => {
       const config = parseProductConfig(specialistsBlock({}));
-      expect(config.specialists.spec_writer.runtime).toBe('claude_code');
+      expect(config.specialists['spec-writer'].runtime).toBe('claude_code');
     });
 
     it('accepts a uniform codex config', () => {
       const config = parseProductConfig(
         specialistsBlock({
-          spec_writer: 'codex',
-          plan_writer: 'codex',
+          'spec-writer': 'codex',
+          'plan-writer': 'codex',
           implementer: 'codex',
-          code_reviewer: 'codex',
-          security_reviewer: 'codex',
-          test_reviewer: 'codex',
+          'code-reviewer': 'codex',
+          'security-reviewer': 'codex',
+          'test-reviewer': 'codex',
           remediation: 'codex',
         }),
       );

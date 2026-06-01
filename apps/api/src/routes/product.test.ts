@@ -25,12 +25,12 @@ knowledge_repo:
 workflow:
   stages_enabled: [in-development, released]
 specialists:
-  spec_writer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  plan_writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  'spec-writer': { runtime: claude_code, model: claude-sonnet-4-6 }
+  'plan-writer': { runtime: claude_code, model: claude-sonnet-4-6 }
   implementer: { runtime: claude_code, model: claude-opus-4-7 }
-  code_reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  security_reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  test_reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  'code-reviewer': { runtime: claude_code, model: claude-sonnet-4-6 }
+  'security-reviewer': { runtime: claude_code, model: claude-sonnet-4-6 }
+  'test-reviewer': { runtime: claude_code, model: claude-sonnet-4-6 }
   remediation: { runtime: claude_code, model: claude-sonnet-4-6 }
 `.trim();
 
@@ -54,12 +54,12 @@ knowledge_repo:
 workflow:
   stages_enabled: [in-development, released]
 specialists:
-  spec_writer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  plan_writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  'spec-writer': { runtime: claude_code, model: claude-sonnet-4-6 }
+  'plan-writer': { runtime: claude_code, model: claude-sonnet-4-6 }
   implementer: { runtime: claude_code, model: claude-opus-4-7 }
-  code_reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  security_reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
-  test_reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  'code-reviewer': { runtime: claude_code, model: claude-sonnet-4-6 }
+  'security-reviewer': { runtime: claude_code, model: claude-sonnet-4-6 }
+  'test-reviewer': { runtime: claude_code, model: claude-sonnet-4-6 }
   remediation: { runtime: claude_code, model: claude-sonnet-4-6 }
 `.trim();
 

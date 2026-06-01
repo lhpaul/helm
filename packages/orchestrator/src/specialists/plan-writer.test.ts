@@ -115,6 +115,23 @@ describe('buildPlanWriterPrompt', () => {
     expect(specIndex).toBeGreaterThan(0);
     expect(plansIndex).toBeGreaterThan(specIndex);
   });
+
+  it('injects ## Hints section with configured extra_hints', () => {
+    const product = makeProduct();
+    product.specialists['plan-writer'].extra_hints = [
+      'Pin exact versions for runtime deps.',
+      'List every file to touch.',
+    ];
+    const prompt = buildPlanWriterPrompt('issue_1', product, SAMPLE_SPEC);
+    expect(prompt).toContain('## Hints');
+    expect(prompt).toContain('- Pin exact versions for runtime deps.');
+    expect(prompt).toContain('- List every file to touch.');
+  });
+
+  it('omits ## Hints section when extra_hints is not configured', () => {
+    const prompt = buildPlanWriterPrompt('issue_1', makeProduct(), SAMPLE_SPEC);
+    expect(prompt).not.toContain('## Hints');
+  });
 });
 
 // ── handlePlanWriterResult ────────────────────────────────────────────────────

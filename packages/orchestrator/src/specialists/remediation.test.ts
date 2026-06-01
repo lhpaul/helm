@@ -103,6 +103,27 @@ describe('buildRemediationParams', () => {
     expect(REMEDIATION_TIMEOUT_MS).toBeGreaterThan(10 * 60 * 1_000);
     expect(REMEDIATION_TIMEOUT_MS).toBeLessThan(20 * 60 * 1_000);
   });
+
+  it('injects ## Hints section with the remediation specialist’s extra_hints', () => {
+    const p = makeProduct();
+    p.specialists.remediation.extra_hints = [
+      'Prefer parameterized queries over string interpolation.',
+    ];
+    const params = buildRemediationParams('HLM-42', p, '/tmp/ws', PR_URL, findingsByKind());
+    expect(params.prompt).toContain('## Hints');
+    expect(params.prompt).toContain('- Prefer parameterized queries over string interpolation.');
+  });
+
+  it('omits the ## Hints section when extra_hints is not configured', () => {
+    const params = buildRemediationParams(
+      'HLM-42',
+      makeProduct(),
+      '/tmp/ws',
+      PR_URL,
+      findingsByKind(),
+    );
+    expect(params.prompt).not.toContain('## Hints');
+  });
 });
 
 // ── handleRemediationResult ──────────────────────────────────────────────────

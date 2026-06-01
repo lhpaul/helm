@@ -119,6 +119,23 @@ describe('buildImplementerParams', () => {
     expect(params.prompt).not.toContain('## Product Context');
   });
 
+  it('injects ## Hints section with configured extra_hints', () => {
+    const product = makeProduct();
+    product.specialists.implementer.extra_hints = [
+      "Use Prettier with singleQuote: true and trailingComma: 'all'.",
+    ];
+    const params = buildImplementerParams('HLM-99', product, '/workspace', '# Plan');
+    expect(params.prompt).toContain('## Hints');
+    expect(params.prompt).toContain(
+      "- Use Prettier with singleQuote: true and trailingComma: 'all'.",
+    );
+  });
+
+  it('omits the ## Hints section when extra_hints is not configured', () => {
+    const params = buildImplementerParams('HLM-99', makeProduct(), '/workspace', '# Plan');
+    expect(params.prompt).not.toContain('## Hints');
+  });
+
   // ── Auto-verification instructions ────────────────────────────────────────
 
   it('includes an instruction to run tests before finishing', () => {

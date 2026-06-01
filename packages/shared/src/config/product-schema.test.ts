@@ -178,7 +178,10 @@ specialists:
 `.trim();
 
     expect(() => parseProductConfig(yaml)).toThrow(ProductConfigError);
-    expect(() => parseProductConfig(yaml)).toThrow('kebab-case');
+    // The `remediation` rename is a semantic ADR-024 change, NOT a kebab-case
+    // fix — the message must reference ADR-024 and must not misframe it as kebab.
+    expect(() => parseProductConfig(yaml)).toThrow('ADR-024');
+    expect(() => parseProductConfig(yaml)).not.toThrow('kebab-case');
     expect(() => parseProductConfig(yaml)).toThrow("'remediation' → 'code-remediator'");
   });
 });

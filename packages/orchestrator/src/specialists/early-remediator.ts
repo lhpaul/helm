@@ -302,6 +302,11 @@ async function pushArtifactEdits(
   const cfg = KIND_CONFIG[kind];
   const { workspacePath, owner, repo, branchName } = provision;
 
+  // Scope every git operation to the single artifact file. The temp clone is not
+  // scrubbed of untracked files after the agent runs, so a blanket `status`/`add`
+  // could sweep stray files into the commit pushed onto the live artifact branch.
+  const artifactRelPath = `${cfg.destSubDir}/${externalId}.md`;
+
   const gitEnv: NodeJS.ProcessEnv = {
     GIT_AUTHOR_NAME: 'helm-bot',
     GIT_AUTHOR_EMAIL: 'helm-bot@users.noreply.github.com',
@@ -309,10 +314,12 @@ async function pushArtifactEdits(
     GIT_COMMITTER_EMAIL: 'helm-bot@users.noreply.github.com',
   };
 
-  // ── Check for changes ──────────────────────────────────────────────────────
+  // ── Check for changes (artifact file only) ─────────────────────────────────
   let statusOut: string;
   try {
-    const result = await runGit(['status', '--porcelain'], { cwd: workspacePath });
+    const result = await runGit(['status', '--porcelain', '--', artifactRelPath], {
+      cwd: workspacePath,
+    });
     statusOut = result.stdout.trim();
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
@@ -325,9 +332,9 @@ async function pushArtifactEdits(
     return { pushed: false };
   }
 
-  // ── Stage + commit ─────────────────────────────────────────────────────────
+  // ── Stage + commit (artifact file only) ────────────────────────────────────
   try {
-    await runGit(['add', '-A'], { cwd: workspacePath });
+    await runGit(['add', '--', artifactRelPath], { cwd: workspacePath });
     await runGit(['commit', '-m', `docs(${cfg.noun}): remediate ${externalId} from feedback`], {
       cwd: workspacePath,
       env: gitEnv,

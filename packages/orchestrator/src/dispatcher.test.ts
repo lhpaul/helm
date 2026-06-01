@@ -31,7 +31,7 @@ vi.mock('./specialists/reviewer-fanout.js', () => ({
 }));
 vi.mock('./specialists/remediation.js', () => ({
   buildRemediationParams: vi.fn().mockReturnValue({
-    specialistId: 'remediation',
+    specialistId: 'code-remediator',
     prompt: 'remediate',
     workdir: '/tmp',
     productSlug: 'test-product',
@@ -1254,7 +1254,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     });
     vi.mocked(shouldRemediate).mockReturnValue(false);
     vi.mocked(buildRemediationParams).mockReturnValue({
-      specialistId: 'remediation',
+      specialistId: 'code-remediator',
       prompt: 'remediate',
       workdir: '/tmp',
       productSlug: 'test-product',

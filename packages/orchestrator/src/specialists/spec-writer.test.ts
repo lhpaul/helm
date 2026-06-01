@@ -151,6 +151,25 @@ describe('buildSpecWriterPrompt', () => {
     expect(prompt).toContain('## Product Context');
     expect(prompt).toContain('# Project README');
   });
+
+  // ── ## Hints section (extra_hints) ───────────────────────────────────────────
+
+  it('injects ## Hints section with configured extra_hints', () => {
+    const product = makeProduct();
+    product.specialists['spec-writer'].extra_hints = [
+      'Always include measurable acceptance criteria.',
+      'Reference the glossary for domain terms.',
+    ];
+    const prompt = buildSpecWriterPrompt('issue_1', product);
+    expect(prompt).toContain('## Hints');
+    expect(prompt).toContain('- Always include measurable acceptance criteria.');
+    expect(prompt).toContain('- Reference the glossary for domain terms.');
+  });
+
+  it('omits ## Hints section when extra_hints is not configured', () => {
+    const prompt = buildSpecWriterPrompt('issue_1', makeProduct());
+    expect(prompt).not.toContain('## Hints');
+  });
 });
 
 // ── handleSpecWriterResult ────────────────────────────────────────────────────

@@ -190,6 +190,37 @@ describe('buildReviewerParams', () => {
     expect(REVIEW_MD_FORMAT).toContain('APPROVED');
     expect(REVIEW_MD_FORMAT).toContain('CHANGES_REQUESTED');
   });
+
+  // ── ## Hints section (per-reviewer extra_hints) ──────────────────────────────
+
+  it('injects each reviewer’s own extra_hints without contaminating the others', () => {
+    const p = makeProduct();
+    p.specialists['code-reviewer'].extra_hints = ['Check for N+1 queries.'];
+    p.specialists['security-reviewer'].extra_hints = ['Verify CSRF tokens are validated.'];
+    p.specialists['test-reviewer'].extra_hints = ['Reject tautological assertions.'];
+
+    const code = buildReviewerParams('code', 'HLM-42', p, '/tmp/ws', PR_URL);
+    const security = buildReviewerParams('security', 'HLM-42', p, '/tmp/ws', PR_URL);
+    const test = buildReviewerParams('test', 'HLM-42', p, '/tmp/ws', PR_URL);
+
+    expect(code.prompt).toContain('## Hints');
+    expect(code.prompt).toContain('- Check for N+1 queries.');
+    expect(code.prompt).not.toContain('CSRF');
+    expect(code.prompt).not.toContain('tautological');
+
+    expect(security.prompt).toContain('- Verify CSRF tokens are validated.');
+    expect(security.prompt).not.toContain('N+1');
+    expect(security.prompt).not.toContain('tautological');
+
+    expect(test.prompt).toContain('- Reject tautological assertions.');
+    expect(test.prompt).not.toContain('N+1');
+    expect(test.prompt).not.toContain('CSRF');
+  });
+
+  it('omits the ## Hints section for a reviewer with no extra_hints', () => {
+    const params = buildReviewerParams('code', 'HLM-42', makeProduct(), '/tmp/ws', PR_URL);
+    expect(params.prompt).not.toContain('## Hints');
+  });
 });
 
 // ── handleReviewerResult ──────────────────────────────────────────────────────

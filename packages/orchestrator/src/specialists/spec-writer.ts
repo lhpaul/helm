@@ -6,6 +6,7 @@ import type { AgentResult, SpawnParams } from '../runtime.js';
 import type { ProductContext } from './fetch-product-context.js';
 import type { PublishSpecOpts, RunGit, RunGh } from './spec-publisher.js';
 import { publishSpecToPR } from './spec-publisher.js';
+import { buildExtraHintsSection } from './extra-hints.js';
 
 // ── Minimal transition interface ──────────────────────────────────────────────
 // Avoids a dependency on @helm/api internals. ItemStore.transition satisfies this.
@@ -98,13 +99,15 @@ export function buildSpecWriterPrompt(
       ].join('\n')
     : '';
 
+  const hintsSection = buildExtraHintsSection(product.specialists['spec-writer'].extra_hints);
+
   const taskInstruction = task
     ? `Your task: write a specification for item ${externalId} based on the task described above.`
     : `Your task: write a specification for item ${externalId}.`;
 
   return `You are the spec writer for the product "${product.product.name}".
 
-${contextSection}${taskSection}${taskInstruction}
+${contextSection}${taskSection}${hintsSection}${taskInstruction}
 
 Steps:
 1. Review any existing context in the working directory.

@@ -117,3 +117,78 @@ specialists:
     expect(() => parseProductConfig(yaml)).not.toThrow('kebab-case');
   });
 });
+
+describe('ProductSchema — extra_hints (ADR-023)', () => {
+  const withHints = (hints: unknown) =>
+    makeRawProduct({
+      ...KEBAB_SPECIALISTS,
+      'plan-writer': { ...KEBAB_SPECIALISTS['plan-writer'], extra_hints: hints },
+    });
+
+  it('parses when extra_hints is absent (field is optional)', () => {
+    const result = ProductSchema.safeParse(makeRawProduct(KEBAB_SPECIALISTS));
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.specialists['plan-writer'].extra_hints).toBeUndefined();
+    }
+  });
+
+  it('parses a single valid hint', () => {
+    const result = ProductSchema.safeParse(withHints(['Pin exact runtime dep versions.']));
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.specialists['plan-writer'].extra_hints).toEqual([
+        'Pin exact runtime dep versions.',
+      ]);
+    }
+  });
+
+  it('parses 5 valid hints preserving order', () => {
+    const hints = ['one', 'two', 'three', 'four', 'five'];
+    const result = ProductSchema.safeParse(withHints(hints));
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.specialists['plan-writer'].extra_hints).toEqual(hints);
+    }
+  });
+
+  it('parses exactly 20 hints (upper bound)', () => {
+    const hints = Array.from({ length: 20 }, (_, i) => `hint ${i + 1}`);
+    const result = ProductSchema.safeParse(withHints(hints));
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an empty-string hint', () => {
+    const result = ProductSchema.safeParse(withHints(['valid', '']));
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a whitespace-only hint', () => {
+    const result = ProductSchema.safeParse(withHints(['   \t\n  ']));
+    expect(result.success).toBe(false);
+  });
+
+  it('stores hints trimmed of surrounding whitespace', () => {
+    const result = ProductSchema.safeParse(withHints(['  padded hint  ']));
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.specialists['plan-writer'].extra_hints).toEqual(['padded hint']);
+    }
+  });
+
+  it('rejects a hint longer than 500 chars', () => {
+    const result = ProductSchema.safeParse(withHints(['x'.repeat(501)]));
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a hint of exactly 500 chars', () => {
+    const result = ProductSchema.safeParse(withHints(['x'.repeat(500)]));
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects more than 20 hints', () => {
+    const hints = Array.from({ length: 21 }, (_, i) => `hint ${i + 1}`);
+    const result = ProductSchema.safeParse(withHints(hints));
+    expect(result.success).toBe(false);
+  });
+});

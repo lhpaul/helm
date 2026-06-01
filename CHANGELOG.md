@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-specialist `extra_hints` (Session H4):** `extra_hints` (optional, per specialist) in `product.yaml` — list of reminders injected as a `## Hints` section into the specialist's prompt for that product. Targets patterns the specialist tends to miss for a specific product (e.g. version pinning, formatter conventions). See ADR-023.
+  - Schema: optional `extra_hints: string[]` on `SpecialistSchema` (each hint 1–500 chars, max 20 per specialist).
+  - Helper: `buildExtraHintsSection` in `packages/orchestrator/src/specialists/extra-hints.ts` renders the section (empty string when unset), preserving YAML order.
+  - Injected into all five specialist prompt builders: spec-writer, plan-writer, implementer, reviewer-fanout (the single builder serving the code/security/test reviewers), and remediation. Each reviewer reads its own `extra_hints` independently.
 - **Codex runtime (Session H1):** `CodexRuntime` runs specialists via the OpenAI Codex CLI as a structural sibling of `ClaudeCodeRuntime`, so a product can run against the ChatGPT subscription (~$0 marginal) instead of metered Claude API billing. See ADR-021.
   - `CodexRuntime` / `CodexSession` in `packages/orchestrator/src/runtimes/codex.ts` — spawns `codex exec --json --skip-git-repo-check`, parses the JSONL event stream (`item.completed` → `agent_message`/`command_execution`; `turn.completed`/`turn.failed` as the terminal verdict), and reuses the same one-shot/timeout/cancel contract as `ClaudeCodeRuntime`. Discovery findings for Codex CLI v0.133.0 are documented in a header comment.
   - Permission mapping: `acceptEdits` → `--sandbox workspace-write`; `bypassPermissions` → `--dangerously-bypass-approvals-and-sandbox`. Verified in discovery that `codex exec` runs bash autonomously with no interactive approval prompts, so every specialist (including the implementer) is supported.

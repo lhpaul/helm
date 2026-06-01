@@ -7,6 +7,7 @@ import type { ProductContext } from './fetch-product-context.js';
 import type { ItemTransitionFn } from './spec-writer.js';
 import type { PublishPlanOpts, RunGit, RunGh } from './spec-publisher.js';
 import { publishPlanToPR } from './spec-publisher.js';
+import { buildExtraHintsSection } from './extra-hints.js';
 
 // ── Plan writer result ────────────────────────────────────────────────────────
 
@@ -67,11 +68,13 @@ export function buildPlanWriterPrompt(
   const contextSection =
     context && (context.readme || context.agentMd) ? buildContextSection(product, context) : '';
 
+  const hintsSection = buildExtraHintsSection(product.specialists['plan-writer'].extra_hints);
+
   return `You are the plan writer for the product "${product.product.name}".
 
 ${contextSection}Your task: write a technical implementation plan for item ${externalId}.
 
-The specification has already been written and approved. Use it as your primary input
+${hintsSection}The specification has already been written and approved. Use it as your primary input
 — do not invent requirements beyond what is described there.
 
 ## Specification

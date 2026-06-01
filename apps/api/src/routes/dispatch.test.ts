@@ -27,12 +27,12 @@ const makeProduct = (slug = 'test-product'): Product => ({
     qa_gate: 'skip',
   },
   specialists: {
-    spec_writer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    plan_writer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'spec-writer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'plan-writer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     implementer: { runtime: 'claude_code', model: 'claude-opus-4-7' },
-    code_reviewer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    security_reviewer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
-    test_reviewer: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'code-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'security-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+    'test-reviewer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
     remediation: { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
   },
 });
@@ -52,11 +52,18 @@ const makeItem = (
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-const { mockGetProductRegistry, mockGet, mockTransition, mockCreateRuntime } = vi.hoisted(() => ({
+const {
+  mockGetProductRegistry,
+  mockGet,
+  mockTransition,
+  mockCreateRuntime,
+  mockGetIssueTrackerAdapter,
+} = vi.hoisted(() => ({
   mockGetProductRegistry: vi.fn(),
   mockGet: vi.fn(),
   mockTransition: vi.fn(),
   mockCreateRuntime: vi.fn(),
+  mockGetIssueTrackerAdapter: vi.fn(),
 }));
 
 vi.mock('../services/index.js', async (importOriginal) => {
@@ -68,6 +75,7 @@ vi.mock('../services/index.js', async (importOriginal) => {
       get: mockGet,
       transition: mockTransition,
     }),
+    getIssueTrackerAdapter: mockGetIssueTrackerAdapter,
   };
 });
 
@@ -97,6 +105,9 @@ beforeEach(async () => {
   mockGetProductRegistry.mockResolvedValue([makeProduct()]);
   mockGet.mockResolvedValue(makeItem());
   mockTransition.mockResolvedValue({ currentStage: 'spec-draft' });
+  // Default: no tracker task available — fetchTask degrades to null (spec written
+  // without a ## Task section), matching the behaviour exercised by most tests.
+  mockGetIssueTrackerAdapter.mockRejectedValue(new Error('no tracker configured'));
 
   // Replace ClaudeCodeRuntime with a scriptable mock that writes the expected
   // spec file. The externalId is derived from the workdir path (last segment).
@@ -136,6 +147,40 @@ const dispatch = (slug: string, externalId: string, body?: unknown) =>
     headers: { 'Content-Type': 'application/json' },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+
+/**
+ * Installs a spec-writing MockAgentRuntime whose spawn() records the prompt it
+ * receives, so a test can assert what the dispatcher injected (e.g. the ## Task
+ * section built from the issue tracker adapter).
+ */
+const captureSpecWriterPrompt = (): { current: string | undefined } => {
+  const captured: { current: string | undefined } = { current: undefined };
+  mockCreateRuntime.mockImplementation((_product: Product, externalId: string, workdir: string) => {
+    const runtime = new MockAgentRuntime({
+      messages: [
+        {
+          role: 'agent',
+          content: `[mock] Writing spec for ${externalId}`,
+          costUsd: 0,
+          timestamp: new Date().toISOString(),
+        },
+      ],
+      sideEffects: async (dir) => {
+        const id = basename(dir);
+        await mkdir(join(dir, 'specs'), { recursive: true });
+        await writeFile(join(dir, 'specs', `${id}.md`), `# ${id}\n`);
+        void workdir;
+      },
+    });
+    const originalSpawn = runtime.spawn.bind(runtime);
+    runtime.spawn = (params) => {
+      captured.current = params.prompt;
+      return originalSpawn(params);
+    };
+    return runtime;
+  });
+  return captured;
+};
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -424,5 +469,51 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
       'issue_1',
       expect.stringContaining(join('worktrees', 'test-product', 'issue_1')),
     );
+  });
+
+  it('injects a ## Task section from the resolved issue tracker adapter', async () => {
+    // The dispatch route resolves the tracker adapter polymorphically via
+    // getIssueTrackerAdapter() (was hardcoded to GitHub Projects). Mock it for a
+    // Linear-style product and assert the spec-writer prompt carries the task.
+    mockGetIssueTrackerAdapter.mockResolvedValue({
+      getItem: vi
+        .fn()
+        .mockResolvedValue({ title: 'Add tenant onboarding flow', body: 'As a landlord…' }),
+    });
+    const prompt = captureSpecWriterPrompt();
+
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(202);
+
+    await vi.waitFor(() => expect(mockTransition).toHaveBeenCalled(), { timeout: 5000 });
+
+    expect(mockGetIssueTrackerAdapter).toHaveBeenCalled();
+    expect(prompt.current).toContain('## Task');
+    expect(prompt.current).toContain('Add tenant onboarding flow');
+  });
+
+  it('writes the spec without a ## Task section when the adapter throws (no dispatch failure)', async () => {
+    // fetchTask is best-effort: an adapter init/network error must NOT fail the
+    // whole dispatch — the spec-writer falls back to writing without a ## Task.
+    mockGetIssueTrackerAdapter.mockRejectedValue(new Error('adapter init failed'));
+    const prompt = captureSpecWriterPrompt();
+
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(202);
+    const { jobId } = (await res.json()) as { jobId: string };
+
+    const { getJobStore } = await import('../services/index.js');
+    const jobStore = await getJobStore();
+    await vi.waitFor(
+      async () => {
+        const job = await jobStore.getJob(jobId);
+        expect(job?.status).toBe('done');
+      },
+      { timeout: 5000 },
+    );
+
+    expect(mockTransition).toHaveBeenCalled();
+    expect(prompt.current).toBeDefined();
+    expect(prompt.current).not.toContain('## Task');
   });
 });

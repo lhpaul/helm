@@ -48,6 +48,13 @@ const SpecialistSchema = z
   .object({
     runtime: z.enum(['claude_code', 'codex']),
     model: z.string().min(1),
+    /**
+     * Optional reminders injected as a `## Hints` section into this
+     * specialist's prompt for this product. Free-form prose; one line per
+     * reminder. Use for patterns the specialist tends to miss (e.g. "Pin
+     * exact runtime dep versions", "Use singleQuote: true in Prettier").
+     */
+    extra_hints: z.array(z.string().min(1).max(500)).max(20).optional(),
   })
   .strict();
 

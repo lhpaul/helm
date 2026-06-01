@@ -85,4 +85,35 @@ specialists:
     expect(() => parseProductConfig(yaml)).toThrow('kebab-case');
     expect(() => parseProductConfig(yaml)).toThrow("'spec_writer' → 'spec-writer'");
   });
+
+  it('does not misfire the legacy check on Object.prototype keys', () => {
+    // The legacy-key detection uses hasOwnProperty, so a specialist literally
+    // named e.g. "toString" must not be mistaken for a snake_case legacy key.
+    const yaml = `
+helm_version: "0"
+product:
+  slug: test-product
+  name: Test Product
+issue_tracker:
+  provider: github_projects
+  org: test-org
+  project_number: 1
+code_repos:
+  - url: https://github.com/test-org/test-app
+    default_branch: main
+    role: app
+knowledge_repo:
+  url: https://github.com/test-org/test-knowledge
+  default_branch: main
+workflow:
+  stages_enabled: [discovery, released]
+specialists:
+  toString: { runtime: claude_code, model: claude-sonnet-4-6 }
+`.trim();
+
+    // It still fails (unknown specialist under .strict()), but NOT with the
+    // kebab-case migration message — proving the prototype key didn't trip it.
+    expect(() => parseProductConfig(yaml)).toThrow(ProductConfigError);
+    expect(() => parseProductConfig(yaml)).not.toThrow('kebab-case');
+  });
 });

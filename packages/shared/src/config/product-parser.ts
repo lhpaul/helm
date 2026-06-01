@@ -42,13 +42,15 @@ export function parseProductConfig(yamlContent: string): Product {
   if (raw && typeof raw === 'object') {
     const specialists = (raw as { specialists?: unknown }).specialists;
     if (specialists && typeof specialists === 'object') {
-      const legacy = Object.keys(specialists).filter((k) => k in LEGACY_SPECIALIST_KEYS);
+      const legacy = Object.keys(specialists).filter((k) =>
+        Object.prototype.hasOwnProperty.call(LEGACY_SPECIALIST_KEYS, k),
+      );
       if (legacy.length > 0) {
         const renames = legacy.map((k) => `'${k}' → '${LEGACY_SPECIALIST_KEYS[k]}'`).join(', ');
         throw new ProductConfigError(
           `Invalid product.yaml — "specialists": specialist IDs must use kebab-case ` +
             `(e.g. 'spec-writer'). Rename ${renames}. See ADR-022 and the migration script ` +
-            `in helm-knowledge/operations/migrations/.`,
+            `in helm-knowledge/operations/migrations/2026-05-31-specialist-id-kebab.md.`,
         );
       }
     }

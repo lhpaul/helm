@@ -178,15 +178,15 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   // (adapter init, network, item not found) it returns null so the spec-writer
   // falls back to writing without a ## Task section.
   const fetchTask = async (
-    externalId: string,
+    taskExternalId: string,
   ): Promise<{ title: string; body?: string } | null> => {
     try {
       const adapter = await getIssueTrackerAdapter();
-      const trackerItem = await adapter.getItem(externalId);
+      const trackerItem = await adapter.getItem(taskExternalId);
       if (!trackerItem) return null;
       return { title: trackerItem.title, body: trackerItem.body };
     } catch (err) {
-      console.error(`[dispatch] fetchTask failed for externalId=${externalId}:`, err);
+      console.error(`[dispatch] fetchTask failed for externalId=${taskExternalId}:`, err);
       return null;
     }
   };

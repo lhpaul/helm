@@ -1428,20 +1428,39 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     );
   });
 
-  it('gate active via code-reviewer HIGH: remediator receives the code-reviewer findings (ADR-025)', async () => {
+  it('gate active via code-reviewer HIGH: remediator receives findings from all three reviewer kinds (ADR-025)', async () => {
     const runtime = new MockAgentRuntime({ messages: [] });
     vi.mocked(shouldRemediate).mockReturnValue(true);
-    // Fan-out: the code-reviewer reports a HIGH and pushed no source (summary only).
+    // Fan-out: the code-reviewer reports a HIGH and pushed no source (summary
+    // only); security and test also posted comments.
     vi.mocked(fanoutReviewers).mockResolvedValue({
       reviewerResults: [
         {
           kind: 'code',
           status: 'done',
-          costUsd: 0.03,
+          costUsd: 0.01,
           durationMs: 100,
           commentPosted: true,
           findings: { critical: 0, high: 2, medium: 0, low: 0, info: 0 },
           commentBody: '# Code Review: issue_1\n- **HIGH** · tenant email not unique',
+        },
+        {
+          kind: 'security',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 100,
+          commentPosted: true,
+          findings: { critical: 1, high: 0, medium: 0, low: 0, info: 0 },
+          commentBody: '# Security Review: issue_1\n- **CRITICAL** · SQL injection',
+        },
+        {
+          kind: 'test',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 100,
+          commentPosted: true,
+          findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+          commentBody: '# Test Review: issue_1\n- **HIGH** · no edge-case coverage',
         },
       ],
       prUrl: 'https://github.com/test-org/test-repo/pull/42',
@@ -1458,11 +1477,13 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
       { workdir, githubToken: 'test-token', runGit: makeProvisionRunGit() },
     );
 
-    // The remediator was dispatched with the code-reviewer's findings in
+    // The remediator was dispatched with ALL three reviewers' bodies in
     // findingsByKind (5th positional arg) — the ADR-025 safety net.
     expect(buildRemediationParams).toHaveBeenCalledTimes(1);
     const findingsByKind = vi.mocked(buildRemediationParams).mock.calls[0]![4];
     expect(findingsByKind.get('code')).toContain('tenant email not unique');
+    expect(findingsByKind.get('security')).toContain('SQL injection');
+    expect(findingsByKind.get('test')).toContain('no edge-case coverage');
   });
 
   it('gate active + remediation error: one transition (to remediation), status error', async () => {

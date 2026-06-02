@@ -626,10 +626,12 @@ describe('fanoutReviewers', () => {
 
     await fanoutReviewers('HLM-42', makeProduct(), PR_URL, 'test-token', runtime, runGit, runGh);
 
-    // Verify all 3 workspaces were tracked and deleted
+    // Verify all 3 workspaces were tracked and deleted — along with their
+    // sibling artifacts directories (ADR-025 cleanup).
     expect(provisionedPaths).toHaveLength(3);
     for (const p of provisionedPaths) {
       await expect(access(p)).rejects.toThrow();
+      await expect(access(artifactsDirFor(p))).rejects.toThrow();
     }
   });
 

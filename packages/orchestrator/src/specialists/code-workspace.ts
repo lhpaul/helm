@@ -130,8 +130,17 @@ export function artifactsDirFor(workspacePath: string): string {
 /**
  * Absolute path to a specialist's artifact file inside the sibling artifacts
  * directory, e.g. `{workspacePath}-artifacts/code-reviewer.md`.
+ *
+ * `specialistId` is guarded against path-traversal: it must match the same
+ * safe-segment pattern as `externalId` (no slashes, no leading/embedded
+ * `.`/`..` segments), so a malformed caller cannot escape the artifacts
+ * directory. In practice specialistIds are internal constants
+ * (`code-reviewer`, `code-remediator`, …); the guard is defense in depth.
  */
 export function artifactFileFor(workspacePath: string, specialistId: string): string {
+  if (!EXTERNAL_ID_SAFE.test(specialistId)) {
+    throw new Error(`[code-workspace] Invalid specialistId for artifact path: "${specialistId}"`);
+  }
   return join(artifactsDirFor(workspacePath), `${specialistId}.md`);
 }
 

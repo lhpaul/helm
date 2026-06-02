@@ -9,6 +9,7 @@ import {
   openCodePR,
   pushReviewerPatches,
   artifactsDirFor,
+  artifactFileFor,
 } from './code-workspace.js';
 import { defaultRunGit, type RunGit, type RunGh } from './git-helpers.js';
 import type { CodeRepo } from '@helm/shared';
@@ -137,6 +138,25 @@ describe('provisionCodeWorkspace', () => {
     ).rejects.toThrow(
       expect.objectContaining({ message: expect.not.stringContaining('tok-secret') }),
     );
+  });
+});
+
+// ── artifact path helpers ─────────────────────────────────────────────────────
+
+describe('artifactFileFor / artifactsDirFor', () => {
+  it('builds a sibling path {workspacePath}-artifacts/<specialist-id>.md', () => {
+    expect(artifactsDirFor('/tmp/helm-review-HLM-42-abc')).toBe(
+      '/tmp/helm-review-HLM-42-abc-artifacts',
+    );
+    expect(artifactFileFor('/tmp/helm-review-HLM-42-abc', 'code-reviewer')).toBe(
+      '/tmp/helm-review-HLM-42-abc-artifacts/code-reviewer.md',
+    );
+  });
+
+  it('rejects a specialistId with path-traversal segments (block dot-segment inputs)', () => {
+    for (const bad of ['../../../etc/passwd', '..', 'a/b', '.hidden']) {
+      expect(() => artifactFileFor('/tmp/ws', bad)).toThrow('Invalid specialistId');
+    }
   });
 });
 

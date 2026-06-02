@@ -1,5 +1,5 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
@@ -8,10 +8,21 @@ import {
   handleRemediationResult,
   REMEDIATION_TIMEOUT_MS,
 } from './remediation.js';
+import { artifactFileFor, artifactsDirFor } from './code-workspace.js';
 import type { ReviewerKind } from './reviewer-fanout.js';
 import type { AgentResult } from '../runtime.js';
 import type { RunGit, RunGh } from './git-helpers.js';
 import type { CodeRepo, Product } from '@helm/shared';
+
+/**
+ * Writes the remediator's summary to the SIBLING artifacts directory (ADR-025),
+ * where handleRemediationResult reads it from — NOT into the workspace clone.
+ */
+async function writeRemediationArtifact(workspacePath: string, content: string): Promise<void> {
+  const file = artifactFileFor(workspacePath, 'code-remediator');
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, content);
+}
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -86,11 +97,26 @@ describe('buildRemediationParams', () => {
     expect(params.prompt).toContain('HLM-42');
   });
 
-  it('instructs the agent to write remediation.md and not push', () => {
+  it('instructs the agent to write its summary to the sibling artifacts path and not push', () => {
     const params = buildRemediationParams('HLM-42', product, '/tmp/ws', PR_URL, findingsByKind());
-    expect(params.prompt).toContain('remediation.md');
+    // Outside the clone: /tmp/ws-artifacts/code-remediator.md
+    expect(params.prompt).toContain('/tmp/ws-artifacts/code-remediator.md');
     expect(params.prompt).toContain('Deferred');
-    expect(params.prompt).toContain('Do not commit or push');
+    expect(params.prompt).toContain(
+      'Do NOT create a `remediation.md` inside the working directory',
+    );
+    expect(params.prompt).toContain('do not commit or push');
+  });
+
+  it('includes a code-reviewer review body when present (ADR-025 safety net)', () => {
+    const withCode = new Map<ReviewerKind, string>([
+      ['code', '# Code Review\n- **HIGH** · tenant email not unique'],
+      ['security', '# Security Review\n- **CRITICAL** · SQL injection in query'],
+    ]);
+    const params = buildRemediationParams('HLM-42', product, '/tmp/ws', PR_URL, withCode);
+    expect(params.prompt).toContain('## Code Review');
+    expect(params.prompt).toContain('tenant email not unique');
+    expect(params.prompt).toContain('## Security Review');
   });
 
   it('uses bypassPermissions, REMEDIATION_TIMEOUT_MS, and the remediation model', () => {
@@ -140,11 +166,12 @@ describe('handleRemediationResult', () => {
 
   afterEach(async () => {
     await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+    await rm(artifactsDirFor(workspacePath), { recursive: true, force: true }).catch(() => {});
   });
 
   it('success: reads remediation.md, pushes, posts comment with SHA footer', async () => {
-    await writeFile(
-      join(workspacePath, 'remediation.md'),
+    await writeRemediationArtifact(
+      workspacePath,
       '# Remediation: HLM-42\n\n## Applied\n- Fixed SQL injection (CRITICAL)',
     );
 
@@ -179,7 +206,7 @@ describe('handleRemediationResult', () => {
   });
 
   it('uses a remediation commit message when pushing', async () => {
-    await writeFile(join(workspacePath, 'remediation.md'), '# Remediation: HLM-42');
+    await writeRemediationArtifact(workspacePath, '# Remediation: HLM-42');
     const capturedArgs: string[][] = [];
     const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
       capturedArgs.push([...args]);
@@ -205,7 +232,7 @@ describe('handleRemediationResult', () => {
   });
 
   it('no changes: push returns pushed:false; comment still posted without footer', async () => {
-    await writeFile(join(workspacePath, 'remediation.md'), '# Remediation: HLM-42\n\nNo fixes.');
+    await writeRemediationArtifact(workspacePath, '# Remediation: HLM-42\n\nNo fixes.');
 
     const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === 'status') return { stdout: '' }; // clean
@@ -259,7 +286,7 @@ describe('handleRemediationResult', () => {
   });
 
   it('push fails after read: status error, no comment', async () => {
-    await writeFile(join(workspacePath, 'remediation.md'), '# Remediation: HLM-42');
+    await writeRemediationArtifact(workspacePath, '# Remediation: HLM-42');
     const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === 'status') return { stdout: 'M  src/db.ts\n' };
       if (args[0] === 'rev-parse') return { stdout: 'sha789\n' };
@@ -286,7 +313,7 @@ describe('handleRemediationResult', () => {
   });
 
   it('comment fails after push: status error, pushed true', async () => {
-    await writeFile(join(workspacePath, 'remediation.md'), '# Remediation: HLM-42');
+    await writeRemediationArtifact(workspacePath, '# Remediation: HLM-42');
     const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === 'status') return { stdout: 'M  src/db.ts\n' };
       if (args[0] === 'rev-parse') return { stdout: 'sha789\n' };
@@ -337,6 +364,6 @@ describe('handleRemediationResult', () => {
 
     expect(result.status).toBe('done');
     expect(result.commentPosted).toBe(true);
-    expect(capturedBodies[0]).toContain('No remediation.md was produced');
+    expect(capturedBodies[0]).toContain('No remediation summary was produced');
   });
 });

@@ -1426,6 +1426,121 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
       2,
       expect.objectContaining({ toStage: 'code-review' }),
     );
+
+    // Teardown: the remediation workspace AND its sibling artifacts dir
+    // (both match the helm-review-issue_1- prefix) are removed (ADR-025 cleanup).
+    expect(await listReviewWorkspaces()).toHaveLength(0);
+  });
+
+  it('gate active + remediation done BUT fan-out errored: status error (coverage gap surfaced), still transitions back', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    // A reviewer gated remediation, but another reviewer failed — the fan-out
+    // reports an error even though the gating findings were remediated.
+    vi.mocked(fanoutReviewers).mockResolvedValue({
+      reviewerResults: [
+        {
+          kind: 'code',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 100,
+          commentPosted: true,
+          findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+          commentBody: '# Code Review: issue_1\n- **HIGH** · x',
+        },
+        {
+          kind: 'security',
+          status: 'error',
+          costUsd: 0,
+          durationMs: 0,
+          commentPosted: false,
+          error: "Agent finished with status 'error'",
+        },
+      ],
+      prUrl: 'https://github.com/test-org/test-repo/pull/42',
+      status: 'error',
+      costUsd: 0.01,
+      durationMs: 100,
+      error: "[security]: Agent finished with status 'error'",
+    });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', runGit: makeProvisionRunGit() },
+    );
+
+    // Remediation succeeded, but the masked reviewer failure is now surfaced.
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('reviewer coverage may be incomplete');
+    expect(result.error).toContain('security');
+    // The transition still stands — the item is genuinely back in code-review.
+    expect(result.newStage).toBe('code-review');
+    expect(transition).toHaveBeenCalledTimes(2);
+    expect(transition).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ toStage: 'code-review' }),
+    );
+  });
+
+  it('gate active via code-reviewer HIGH: remediator receives findings from all three reviewer kinds (ADR-025)', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    // Fan-out: the code-reviewer reports a HIGH and pushed no source (summary
+    // only); security and test also posted comments.
+    vi.mocked(fanoutReviewers).mockResolvedValue({
+      reviewerResults: [
+        {
+          kind: 'code',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 100,
+          commentPosted: true,
+          findings: { critical: 0, high: 2, medium: 0, low: 0, info: 0 },
+          commentBody: '# Code Review: issue_1\n- **HIGH** · tenant email not unique',
+        },
+        {
+          kind: 'security',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 100,
+          commentPosted: true,
+          findings: { critical: 1, high: 0, medium: 0, low: 0, info: 0 },
+          commentBody: '# Security Review: issue_1\n- **CRITICAL** · SQL injection',
+        },
+        {
+          kind: 'test',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 100,
+          commentPosted: true,
+          findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+          commentBody: '# Test Review: issue_1\n- **HIGH** · no edge-case coverage',
+        },
+      ],
+      prUrl: 'https://github.com/test-org/test-repo/pull/42',
+      status: 'done',
+      costUsd: 0.03,
+      durationMs: 100,
+    });
+
+    await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', runGit: makeProvisionRunGit() },
+    );
+
+    // The remediator was dispatched with ALL three reviewers' bodies in
+    // findingsByKind (5th positional arg) — the ADR-025 safety net.
+    expect(buildRemediationParams).toHaveBeenCalledTimes(1);
+    const findingsByKind = vi.mocked(buildRemediationParams).mock.calls[0]![4];
+    expect(findingsByKind.get('code')).toContain('tenant email not unique');
+    expect(findingsByKind.get('security')).toContain('SQL injection');
+    expect(findingsByKind.get('test')).toContain('no edge-case coverage');
   });
 
   it('gate active + remediation error: one transition (to remediation), status error', async () => {
@@ -1454,6 +1569,9 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     expect(transition).toHaveBeenCalledTimes(1);
     expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'remediation' }));
     expect(result.newStage).toBeUndefined();
+    // Teardown still runs on the error path: workspace + sibling artifacts dir
+    // (both match the helm-review-issue_1- prefix) are removed.
+    expect(await listReviewWorkspaces()).toHaveLength(0);
   });
 
   it('gate active + provision fails: status error, NO transition, no agent, no workspace leftover', async () => {

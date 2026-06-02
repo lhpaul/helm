@@ -15,6 +15,7 @@ import {
 import {
   provisionCodeWorkspace,
   provisionReviewerWorkspace,
+  artifactsDirFor,
 } from './specialists/code-workspace.js';
 import {
   fetchProductContext,
@@ -471,9 +472,13 @@ export async function dispatchStageHandler(
         error: implResult.error,
       };
     } finally {
-      // Always clean up the provisioned workspace, even on error.
+      // Always clean up the provisioned workspace (and its sibling artifacts
+      // directory), even on error.
       if (provisionedWorkspace) {
         await rm(actualWorkspacePath, { recursive: true, force: true }).catch(() => {});
+        await rm(artifactsDirFor(actualWorkspacePath), { recursive: true, force: true }).catch(
+          () => {},
+        );
       }
     }
   }
@@ -556,7 +561,8 @@ export async function dispatchStageHandler(
     }
 
     // ── Remediation gate ──────────────────────────────────────────────────────
-    // Only security/test CRITICAL/HIGH findings trigger remediation (ADR-019).
+    // Any reviewer's CRITICAL/HIGH finding triggers remediation — code, security,
+    // or test (ADR-019, extended by ADR-025 to cover the code-reviewer too).
     // No high findings → no-op; the item stays in code-review awaiting human merge.
     if (!shouldRemediate(fanoutResult.reviewerResults)) {
       return {
@@ -619,10 +625,12 @@ export async function dispatchStageHandler(
         };
       }
 
-      // Inject the full security/test review bodies so the agent has context.
+      // Inject the full code/security/test review bodies so the agent has
+      // context. All three reviewer kinds flow to the remediator (ADR-025) — it
+      // is the unified safety net behind the code-reviewer too.
       const findingsByKind = new Map<ReviewerKind, string>();
       for (const r of fanoutResult.reviewerResults) {
-        if ((r.kind === 'security' || r.kind === 'test') && r.commentBody) {
+        if (r.commentBody) {
           findingsByKind.set(r.kind, r.commentBody);
         }
       }
@@ -681,6 +689,25 @@ export async function dispatchStageHandler(
         };
       }
 
+      // The item is back in code-review. But if the fan-out itself reported an
+      // error (a reviewer crashed or a comment failed to post), surface it: the
+      // remediator only addressed the findings that DID surface, so reviewer
+      // coverage is incomplete and a successful remediation must not paint over
+      // it with a green status (ADR-025). The transition still stands — the item
+      // is genuinely in code-review — but the job is reported as an error so the
+      // operator knows part of the review pipeline broke and can re-dispatch.
+      if (fanoutResult.status === 'error') {
+        return {
+          specialistId,
+          status: 'error',
+          newStage: 'code-review',
+          costUsd: aggregatedCost,
+          durationMs: aggregatedDuration,
+          prUrl: fanoutResult.prUrl,
+          error: `Remediation succeeded, but the reviewer fan-out reported an error (reviewer coverage may be incomplete): ${fanoutResult.error}`,
+        };
+      }
+
       return {
         specialistId,
         status: 'done',
@@ -691,6 +718,9 @@ export async function dispatchStageHandler(
       };
     } finally {
       await rm(remediationWorkspace, { recursive: true, force: true }).catch(() => {});
+      await rm(artifactsDirFor(remediationWorkspace), { recursive: true, force: true }).catch(
+        () => {},
+      );
     }
   }
 

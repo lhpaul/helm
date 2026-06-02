@@ -13,10 +13,11 @@
  * `openCodePR` — stages all changes, commits as helm-bot, pushes the
  *   implementation branch, and opens an idempotent PR against the default branch.
  *
- * `pushReviewerPatches` — stages all changes in a reviewer workspace, commits as
- *   helm-bot, and fast-forward pushes to the remote impl branch. Used by the
- *   code-reviewer only (single-pusher invariant). Returns `{ pushed: false }` when
- *   the workspace is clean.
+ * `pushReviewerPatches` — stages the workspace's SOURCE changes (scratch
+ *   artifacts excluded), commits as helm-bot, and fast-forward pushes to the
+ *   remote impl branch. Used by the code-reviewer and the remediator
+ *   (single-pusher invariant). Returns `{ pushed: false }` when there are no
+ *   source changes — a reviewer that only wrote a summary produces no commit.
  */
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -48,6 +49,15 @@ export type ProvisionWorkspaceResult = {
   workspacePath: string;
   /** The branch name created: `helm/impl/{externalId}`. */
   branchName: string;
+  /**
+   * Absolute path to the scratch-artifacts directory, a SIBLING of the
+   * workspace clone (`{workspacePath}-artifacts`). Reviewer / remediator agents
+   * write their `review.md` / `remediation.md` summaries here — outside the git
+   * working tree — so `pushReviewerPatches` can never stage them onto the impl
+   * branch (ADR-025). The directory is pre-created by the provisioner so the
+   * agent's write always succeeds.
+   */
+  artifactsPath: string;
 };
 
 export type OpenCodePROpts = {
@@ -88,6 +98,71 @@ export type PushReviewerPatchesResult = {
 // ── EXTERNAL_ID guard ─────────────────────────────────────────────────────────
 
 const EXTERNAL_ID_SAFE = /^(?!\.)[A-Za-z0-9._-]+$/;
+
+// ── Scratch-artifact helpers (ADR-025) ─────────────────────────────────────────
+
+/**
+ * Filenames / directories that are reviewer-or-remediator scratch artifacts and
+ * must NEVER be committed onto the impl branch. They normally live in the
+ * sibling artifacts directory (outside the workspace), but a misbehaving agent
+ * could write one into the workspace root; `pushReviewerPatches` excludes them
+ * as defense in depth — but only when they are UNTRACKED (a freshly-leaked
+ * scratch file). A repo that legitimately TRACKS a file named `review.md`
+ * keeps its real source edits.
+ */
+const ARTIFACT_BASENAMES: readonly string[] = ['review.md', 'remediation.md'];
+const ARTIFACT_DIR_NAME = '_helm-artifacts';
+
+/** Extracts the path from a `git status --porcelain` v1 line (`XY PATH`). */
+function porcelainPath(line: string): string {
+  const path = line.slice(3).trim();
+  // Paths with special chars are double-quoted by git; strip the quotes.
+  return path.startsWith('"') && path.endsWith('"') ? path.slice(1, -1) : path;
+}
+
+/**
+ * True when a porcelain status line is an UNTRACKED scratch artifact leaked into
+ * the workspace root (`?? review.md`, `?? remediation.md`, `?? _helm-artifacts/`).
+ * Tracked changes to a same-named file are NOT leaks — they are real source.
+ */
+function isLeakedArtifactLine(line: string): boolean {
+  if (!line.startsWith('??')) return false;
+  const path = porcelainPath(line);
+  // Match the artifacts dir whether git reports it collapsed with a trailing
+  // slash (`_helm-artifacts/`), without one, or as an individual file under it.
+  return (
+    ARTIFACT_BASENAMES.includes(path) ||
+    path === ARTIFACT_DIR_NAME ||
+    path.startsWith(`${ARTIFACT_DIR_NAME}/`)
+  );
+}
+
+/**
+ * The scratch-artifacts directory co-located with a workspace clone: a SIBLING
+ * directory `{workspacePath}-artifacts`, so it is outside the git working tree
+ * by construction. Pure/deterministic so callers (provisioner, params builders,
+ * result handlers, cleanup) all agree on the location without threading state.
+ */
+export function artifactsDirFor(workspacePath: string): string {
+  return `${workspacePath}-artifacts`;
+}
+
+/**
+ * Absolute path to a specialist's artifact file inside the sibling artifacts
+ * directory, e.g. `{workspacePath}-artifacts/code-reviewer.md`.
+ *
+ * `specialistId` is guarded against path-traversal: it must match the same
+ * safe-segment pattern as `externalId` (no slashes, no leading/embedded
+ * `.`/`..` segments), so a malformed caller cannot escape the artifacts
+ * directory. In practice specialistIds are internal constants
+ * (`code-reviewer`, `code-remediator`, …); the guard is defense in depth.
+ */
+export function artifactFileFor(workspacePath: string, specialistId: string): string {
+  if (!EXTERNAL_ID_SAFE.test(specialistId)) {
+    throw new Error(`[code-workspace] Invalid specialistId for artifact path: "${specialistId}"`);
+  }
+  return join(artifactsDirFor(workspacePath), `${specialistId}.md`);
+}
 
 // ── provisionCodeWorkspace ────────────────────────────────────────────────────
 
@@ -193,7 +268,20 @@ export async function provisionCodeWorkspace(
     );
   }
 
-  return { workspacePath, branchName: branch };
+  // ── Step 4: Pre-create the sibling artifacts directory (ADR-025) ──────────
+  const artifactsPath = artifactsDirFor(workspacePath);
+  try {
+    await mkdir(artifactsPath, { recursive: true });
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+    await rm(artifactsPath, { recursive: true, force: true }).catch(() => {});
+    throw new Error(
+      `[code-workspace] Failed to create artifacts directory: ${sanitizeToken(raw, githubToken)}`,
+    );
+  }
+
+  return { workspacePath, branchName: branch, artifactsPath };
 }
 
 // ── provisionReviewerWorkspace ────────────────────────────────────────────────
@@ -288,7 +376,22 @@ export async function provisionReviewerWorkspace(
     );
   }
 
-  return { workspacePath, branchName: branch };
+  // ── Step 3: Pre-create the sibling artifacts directory (ADR-025) ──────────
+  // Reviewers and the remediator write their summaries here, OUTSIDE the clone,
+  // so pushReviewerPatches can never stage them onto the impl branch.
+  const artifactsPath = artifactsDirFor(workspacePath);
+  try {
+    await mkdir(artifactsPath, { recursive: true });
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+    await rm(artifactsPath, { recursive: true, force: true }).catch(() => {});
+    throw new Error(
+      `[code-workspace] Failed to create artifacts directory: ${sanitizeToken(raw, githubToken)}`,
+    );
+  }
+
+  return { workspacePath, branchName: branch, artifactsPath };
 }
 
 // ── openCodePR ────────────────────────────────────────────────────────────────
@@ -460,8 +563,13 @@ export async function openCodePR(
  * Only the code-reviewer calls this; security and test reviewers are
  * comment-only by design (single-pusher invariant — see ADR-017, ADR-018).
  *
- * Returns `{ pushed: false }` when the workspace is clean (no-op).
- * Returns `{ pushed: true, commitSha }` when patches were committed and pushed.
+ * Returns `{ pushed: false }` when there are no source changes (no-op).
+ * UNTRACKED scratch artifacts leaked into the workspace root (`review.md` /
+ * `remediation.md` / `_helm-artifacts/`) are excluded from both the change check
+ * and the commit, so a reviewer that only wrote a summary — or one whose summary
+ * leaked into the workspace — produces no commit; a repo that legitimately tracks
+ * a same-named source file keeps its real edits.
+ * Returns `{ pushed: true, commitSha }` when source patches were committed and pushed.
  *
  * The push is NOT `--force` — it is a fast-forward push to an existing remote
  * branch. The impl branch was created and pushed by the implementer; the
@@ -489,11 +597,17 @@ export async function pushReviewerPatches(
     GIT_COMMITTER_EMAIL: 'helm-bot@users.noreply.github.com',
   };
 
-  // ── Step 1: Check for changes ─────────────────────────────────────────────
-  let statusOut: string;
+  // ── Step 1: Detect SOURCE changes; isolate leaked scratch artifacts ───────
+  // Defense in depth (ADR-025): scratch artifacts now live in a sibling
+  // directory outside the clone, but a misbehaving agent could still drop a
+  // `review.md` / `remediation.md` / `_helm-artifacts/` into the workspace root
+  // as an UNTRACKED file. We exclude only those leaked-untracked artifacts, so a
+  // "patch" consisting only of a leaked artifact reads as no source changes — and
+  // a repo that legitimately tracks a same-named file keeps its real edits.
+  let statusLines: string[];
   try {
     const result = await runGit(['status', '--porcelain'], { cwd: workspacePath });
-    statusOut = result.stdout.trim();
+    statusLines = result.stdout.split('\n').filter((line) => line.length > 0);
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
     throw new Error(
@@ -501,13 +615,20 @@ export async function pushReviewerPatches(
     );
   }
 
-  if (!statusOut) {
+  const leakedArtifactPaths = statusLines.filter(isLeakedArtifactLine).map(porcelainPath);
+  const sourceChangeCount = statusLines.length - leakedArtifactPaths.length;
+
+  if (sourceChangeCount === 0) {
     return { pushed: false };
   }
 
-  // ── Step 2: Stage all changes ─────────────────────────────────────────────
+  // ── Step 2: Stage source changes, excluding any leaked artifacts ──────────
+  // Exclude only the specific leaked-untracked paths detected above, so a
+  // leaked artifact never lands in the commit even alongside genuine source
+  // changes — while tracked, same-named source files are still staged.
+  const excludeSpecs = leakedArtifactPaths.map((path) => `:(exclude)${path}`);
   try {
-    await runGit(['add', '-A'], { cwd: workspacePath });
+    await runGit(['add', '-A', '--', '.', ...excludeSpecs], { cwd: workspacePath });
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
     throw new Error(`[code-workspace] Failed to stage changes: ${sanitizeToken(raw, githubToken)}`);

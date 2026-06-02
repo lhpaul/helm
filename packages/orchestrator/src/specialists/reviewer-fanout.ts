@@ -20,10 +20,14 @@
  */
 import { readFile } from 'node:fs/promises';
 import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { CodeRepo, Product } from '@helm/shared';
 import type { AgentResult, IAgentRuntime, SpawnParams } from '../runtime.js';
-import { provisionReviewerWorkspace, pushReviewerPatches } from './code-workspace.js';
+import {
+  provisionReviewerWorkspace,
+  pushReviewerPatches,
+  artifactFileFor,
+  artifactsDirFor,
+} from './code-workspace.js';
 import { fetchSpecForPlan, type FetchFn } from './fetch-product-context.js';
 import { postPRComment } from './pr-helpers.js';
 import { sanitizeToken } from './git-helpers.js';
@@ -140,20 +144,19 @@ export function parseFindings(reviewBody: string): Findings {
 }
 
 /**
- * Remediation gate: returns true iff a security or test reviewer surfaced at
- * least one CRITICAL or HIGH finding.
+ * Remediation gate: returns true iff ANY reviewer (code, security, or test)
+ * surfaced at least one CRITICAL or HIGH finding.
  *
- * The code-reviewer is excluded by design — it already applies its mechanical
- * fixes in-flow (ADR-018), so its findings do not trigger remediation. Only
- * security and test findings of CRITICAL/HIGH severity gate the remediation
- * stage (MEDIUM/LOW/INFO are commented but do not gate).
+ * The code-reviewer still gets the first chance to self-apply its mechanical
+ * fixes in-flow (ADR-018). But when it doesn't (it writes only a summary with no
+ * source edits), its CRITICAL/HIGH findings used to pass through review unfixed
+ * because they never reached the remediator. As of ADR-025 the remediator is the
+ * unified safety net behind all three reviewers, so code-reviewer findings gate
+ * remediation too. MEDIUM/LOW/INFO are commented but do not gate.
  */
 export function shouldRemediate(results: ReviewerResult[]): boolean {
   return results.some(
-    (r) =>
-      (r.kind === 'security' || r.kind === 'test') &&
-      r.findings !== undefined &&
-      (r.findings.critical > 0 || r.findings.high > 0),
+    (r) => r.findings !== undefined && (r.findings.critical > 0 || r.findings.high > 0),
   );
 }
 
@@ -194,15 +197,21 @@ export function buildReviewerParams(
 
   const hintsSection = buildExtraHintsSection(specialistCfg.extra_hints);
 
+  // Reviewers write their summary to a SIBLING artifacts directory, OUTSIDE the
+  // git clone (ADR-025), so it can never be staged onto the impl branch.
+  const artifactPath = artifactFileFor(workspacePath, specialistId);
+
   const outputInstruction = [
     '',
     '## Output',
     '',
-    'Write a file named `review.md` in the working directory using the following format exactly:',
+    `Write your review to this exact absolute path using the following format exactly:`,
+    '',
+    `    ${artifactPath}`,
     '',
     REVIEW_MD_FORMAT.replace('{Kind}', kindLabel).replace('{externalId}', externalId),
     '',
-    'Do not commit or push — the orchestrator reads review.md and posts it as a PR comment.',
+    `Write the review ONLY to that absolute path — it is outside the working directory on purpose. Do NOT create a \`review.md\` inside the working directory, and do not commit or push. The orchestrator reads that file and posts it as a PR comment.`,
   ].join('\n');
 
   let kindSpecificInstructions: string;
@@ -232,7 +241,7 @@ export function buildReviewerParams(
         '- Assess input validation for externally-controlled data.',
         '- Check for insecure dependencies, unsafe permissions, and information leaks.',
         '',
-        '**Do not modify any files in the working directory.** Surface all findings in review.md only. The orchestrator does not push changes from security or test reviewers.',
+        '**Do not modify any files in the working directory.** Surface all findings in your review only (written to the artifact path shown below). The orchestrator does not push changes from security or test reviewers.',
       ].join('\n');
       break;
 
@@ -246,7 +255,7 @@ export function buildReviewerParams(
         '- Flag excessive mocking that may hide real bugs.',
         '- Identify tests that may be flaky (time-dependent, order-dependent, environment-dependent).',
         '',
-        '**Do not modify any files in the working directory.** Surface all findings in review.md only. The orchestrator does not push changes from security or test reviewers.',
+        '**Do not modify any files in the working directory.** Surface all findings in your review only (written to the artifact path shown below). The orchestrator does not push changes from security or test reviewers.',
       ].join('\n');
       break;
   }
@@ -311,15 +320,16 @@ export async function handleReviewerResult(
     };
   }
 
-  // Read review.md — fall back to a placeholder if the agent didn't write one.
+  // Read the review summary from the sibling artifacts directory (ADR-025) —
+  // fall back to a placeholder if the agent didn't write one.
   let reviewContent: string;
   try {
-    reviewContent = await readFile(join(workspacePath, 'review.md'), 'utf-8');
+    reviewContent = await readFile(artifactFileFor(workspacePath, `${kind}-reviewer`), 'utf-8');
   } catch {
     reviewContent = [
       `# ${kind.charAt(0).toUpperCase() + kind.slice(1)} Review: ${externalId}`,
       '',
-      '_No review.md was produced by the reviewer agent._',
+      '_No review summary was produced by the reviewer agent._',
       '',
       '## Status',
       '',
@@ -465,7 +475,10 @@ export async function fanoutReviewers(
   if (provisionErrors.length > 0) {
     // Clean up any workspaces that did provision successfully.
     await Promise.allSettled(
-      [...workspacePaths.values()].map((p) => rm(p, { recursive: true, force: true })),
+      [...workspacePaths.values()].flatMap((p) => [
+        rm(p, { recursive: true, force: true }),
+        rm(artifactsDirFor(p), { recursive: true, force: true }),
+      ]),
     );
     return {
       reviewerResults: [],
@@ -524,7 +537,10 @@ export async function fanoutReviewers(
   } finally {
     // Always clean up all provisioned workspaces, even on error.
     await Promise.allSettled(
-      [...workspacePaths.values()].map((p) => rm(p, { recursive: true, force: true })),
+      [...workspacePaths.values()].flatMap((p) => [
+        rm(p, { recursive: true, force: true }),
+        rm(artifactsDirFor(p), { recursive: true, force: true }),
+      ]),
     );
   }
 

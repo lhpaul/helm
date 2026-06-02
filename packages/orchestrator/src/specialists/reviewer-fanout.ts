@@ -113,6 +113,13 @@ export const REVIEW_MD_FORMAT = `# {Kind} Review: {externalId}
 
 Omit severity levels with no findings — do NOT write "None" or "No findings".
 
+Recognised finding categories include a structured **Contract drift §4** tag,
+emitted by the code reviewer when a schema-touching diff diverges from the
+canonical \`CLAUDE.md\` §4 contract. Use the literal prefix
+\`**HIGH** · Contract drift §4 · <table>.<column or convention>\` so the
+divergence is greppable downstream. The severity tag is parsed identically to
+any other finding.
+
 ## Status
 APPROVED | CHANGES_REQUESTED
 
@@ -225,6 +232,27 @@ export function buildReviewerParams(
         '- Flag naming issues, structural problems, anti-patterns, dead code, and regression risks.',
         '- Identify missing or inadequate error handling.',
         '- Assess whether the implementation matches the spec requirements (if a spec is provided above).',
+        '',
+        '### Contract validation (schema-touching diffs only)',
+        '',
+        "If the diff touches schema definitions, migrations, or entity type declarations, **validate the diff against the canonical contract** in the target repo's `CLAUDE.md`.",
+        '',
+        '1. Open `CLAUDE.md` from the working directory.',
+        '2. Look for a "Data model" / "§4" section (any heading matching `## 4.`, `### 4.`, `## Data model`, `## Schema`, or `## Domain model`). If none is present, skip this step and proceed with the rest of the review.',
+        '3. For each table, column, enum value, JSONB key, RLS clause, and convention rule referenced in the diff, compare against the canonical section. Validate: column names (snake_case in DB; canonical spelling), types (e.g. `bigint` for CLP, `numeric(15,4)` for UF; UUID v7 for internal ids), enum values, JSONB shapes, RLS enable/force, default values.',
+        '4. For every divergence, emit a finding using this exact format:',
+        '',
+        '   ```',
+        '   **HIGH** · Contract drift §4 · <table>.<column or convention>',
+        '   Canonical: <what §4 says>',
+        '   Diff: <what the implementer wrote>',
+        '   File: <path>:<line>',
+        '   Fix: <rename | retype | drop | reshape — one concrete action>',
+        '   ```',
+        '',
+        '5. If the diff is consistent with the canonical contract, do not emit any contract drift findings — silence is pass.',
+        '',
+        '**Scope gate:** Only invoke contract validation when the diff includes at least one file matching schema/migration/entity-type globs. If the diff is purely application code with no schema impact, skip contract validation entirely (no Pass/Fail line needed).',
         '',
         '**Applying mechanical fixes (code reviewer only):**',
         'If you identify mechanical, low-risk fixes (typos, formatting, dead-code removal, obvious simplifications without logic changes), apply them directly to the files in the working directory. The orchestrator will commit and push. For non-mechanical or invasive changes, surface them as findings only — do NOT modify files.',

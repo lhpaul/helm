@@ -165,6 +165,29 @@ describe('buildReviewerParams', () => {
     expect(params.prompt).toContain('do not commit or push');
   });
 
+  it('injects the Contract validation block for kind=code only (ADR-027)', () => {
+    const blockHeading = '### Contract validation (schema-touching diffs only)';
+    const tagFormat = '**HIGH** · Contract drift §4 · <table>.<column or convention>';
+
+    const code = buildReviewerParams('code', 'HLM-42', product, '/tmp/ws', PR_URL);
+    expect(code.prompt).toContain(blockHeading);
+    expect(code.prompt).toContain(tagFormat);
+    // The scope gate instruction must be present so non-schema diffs are skipped.
+    expect(code.prompt).toContain('Scope gate:');
+
+    // The directed validation block must NOT leak into the other reviewers.
+    const security = buildReviewerParams('security', 'HLM-42', product, '/tmp/ws', PR_URL);
+    const test = buildReviewerParams('test', 'HLM-42', product, '/tmp/ws', PR_URL);
+    expect(security.prompt).not.toContain(blockHeading);
+    expect(security.prompt).not.toContain('Scope gate:');
+    expect(test.prompt).not.toContain(blockHeading);
+    expect(test.prompt).not.toContain('Scope gate:');
+  });
+
+  it('REVIEW_MD_FORMAT documents the Contract drift §4 category (ADR-027)', () => {
+    expect(REVIEW_MD_FORMAT).toContain('Contract drift §4');
+  });
+
   it('instructs each reviewer to write its summary to the sibling artifacts path (ADR-025)', () => {
     for (const kind of ['code', 'security', 'test'] as const) {
       const params = buildReviewerParams(kind, 'HLM-42', product, '/tmp/ws', PR_URL);
@@ -845,6 +868,95 @@ describe('parseFindings', () => {
   it('does not count bare bold severity words without the separator', () => {
     const body = 'We rate this **CRITICAL** overall but found no specific issues.';
     expect(parseFindings(body).critical).toBe(0);
+  });
+});
+
+// ── Contract drift §4 findings (ADR-027) ───────────────────────────────────────
+
+describe('contract drift §4 findings (ADR-027)', () => {
+  /** Counts findings using the literal greppable prefix the prompt mandates. */
+  const countContractDrift = (body: string): number =>
+    (body.match(/\*\*HIGH\*\*\s*·\s*Contract drift §4\s*·/g) ?? []).length;
+
+  it('synthetic LEA-104 diff: parses 5 HIGH Contract drift §4 findings', () => {
+    // Mirrors the six LEA-104 examples in the brief; using the five-row subset
+    // the acceptance criteria call out (the two properties.* renames collapse
+    // into one finding per column, so we list five distinct divergences).
+    const reviewBody = [
+      '# Code Review: LEA-104',
+      '',
+      '## Findings',
+      '- **HIGH** · Contract drift §4 · utility_accounts.provider',
+      '  Canonical: utility_accounts.company',
+      '  Diff: provider',
+      '  File: migrations/0003_utility_accounts.sql:12',
+      '  Fix: rename column provider → company',
+      '- **HIGH** · Contract drift §4 · utility_accounts.latest_billed_amount',
+      '  Canonical: utility_accounts.last_amount_clp',
+      '  Diff: latest_billed_amount',
+      '  File: migrations/0003_utility_accounts.sql:14',
+      '  Fix: rename column latest_billed_amount → last_amount_clp',
+      '- **HIGH** · Contract drift §4 · utility_accounts.status',
+      '  Canonical: utility_accounts.last_status',
+      '  Diff: status',
+      '  File: migrations/0003_utility_accounts.sql:16',
+      '  Fix: rename column status → last_status',
+      '- **HIGH** · Contract drift §4 · properties.lease_start_date',
+      '  Canonical: properties.started_at / ended_at',
+      '  Diff: lease_start_date / lease_end_date',
+      '  File: migrations/0002_properties.sql:8',
+      '  Fix: rename lease_start_date → started_at, lease_end_date → ended_at',
+      '- **HIGH** · Contract drift §4 · payments.metadata.core_voucher_id',
+      '  Canonical: bigint/number (example 99001)',
+      '  Diff: typed as string',
+      '  File: src/entities/payment.ts:41',
+      '  Fix: retype core_voucher_id from string to number',
+      '',
+      '## Status',
+      'CHANGES_REQUESTED',
+    ].join('\n');
+
+    expect(countContractDrift(reviewBody)).toBe(5);
+    // The parser counts these toward the HIGH severity bucket, so the existing
+    // remediation gate (shouldRemediate) fires unchanged.
+    expect(parseFindings(reviewBody).high).toBe(5);
+  });
+
+  it('no §4 / data model section in CLAUDE.md: zero contract drift findings (graceful skip)', () => {
+    // When CLAUDE.md has no data-model section the reviewer skips contract
+    // validation and emits only ordinary findings — none tagged Contract drift.
+    const reviewBody = [
+      '# Code Review: HLM-99',
+      '',
+      '## Findings',
+      '- **MEDIUM** · Extract the duplicated retry helper into a shared util.',
+      '- **LOW** · Prefer const over let for the unmutated accumulator.',
+      '',
+      '## Status',
+      'CHANGES_REQUESTED',
+    ].join('\n');
+
+    expect(countContractDrift(reviewBody)).toBe(0);
+    expect(parseFindings(reviewBody).high).toBe(0);
+  });
+
+  it('non-schema diff (route handler only): zero contract drift findings', () => {
+    // A diff with no schema/migration/entity-type files never invokes contract
+    // validation, so no Contract drift §4 findings appear.
+    const reviewBody = [
+      '# Code Review: HLM-100',
+      '',
+      '## Findings',
+      '- **HIGH** · Unhandled rejection in the new /webhooks route handler.',
+      '  File: src/routes/webhooks.ts:22',
+      '',
+      '## Status',
+      'CHANGES_REQUESTED',
+    ].join('\n');
+
+    // A HIGH finding exists, but it is NOT a contract drift finding.
+    expect(parseFindings(reviewBody).high).toBe(1);
+    expect(countContractDrift(reviewBody)).toBe(0);
   });
 });
 

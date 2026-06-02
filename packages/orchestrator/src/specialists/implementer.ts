@@ -195,13 +195,21 @@ export async function handleImplementerResult(
   const { openCodePR } = await import('./code-workspace.js');
 
   if (agentResult.status !== 'done') {
+    // Surface the agent's finalOutput so operators see WHY it failed, not just
+    // that it did. finalOutput on turn.failed contains "[turn.failed] <reason>";
+    // on timeout it contains "[timeout] ..."; on stderr exit "[stderr] ...".
+    const detail = agentResult.finalOutput?.trim() ?? '';
+    const truncated = detail.length > 800 ? detail.slice(0, 800) + '… (truncated)' : detail;
     console.error('[implementer] Agent did not complete successfully', {
       externalId,
       status: agentResult.status,
+      finalOutput: truncated,
     });
     return {
       transitioned: false,
-      error: `Agent finished with status '${agentResult.status}'`,
+      error: detail
+        ? `Agent finished with status '${agentResult.status}': ${truncated}`
+        : `Agent finished with status '${agentResult.status}'`,
     };
   }
 

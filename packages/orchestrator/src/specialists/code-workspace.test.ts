@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -8,8 +8,9 @@ import {
   provisionReviewerWorkspace,
   openCodePR,
   pushReviewerPatches,
+  artifactsDirFor,
 } from './code-workspace.js';
-import type { RunGit, RunGh } from './git-helpers.js';
+import { defaultRunGit, type RunGit, type RunGh } from './git-helpers.js';
 import type { CodeRepo } from '@helm/shared';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -147,8 +148,31 @@ describe('provisionReviewerWorkspace', () => {
   afterEach(async () => {
     if (clonedPath) {
       await rm(clonedPath, { recursive: true, force: true }).catch(() => {});
+      await rm(artifactsDirFor(clonedPath), { recursive: true, force: true }).catch(() => {});
       clonedPath = undefined;
     }
+  });
+
+  it('returns and pre-creates a sibling artifacts directory ({workspacePath}-artifacts)', async () => {
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        const dest = args[args.length - 1]!;
+        await mkdir(join(dest, '.git'), { recursive: true });
+      }
+      return { stdout: '' };
+    });
+
+    const result = await provisionReviewerWorkspace(
+      { externalId: 'HLM-42', codeRepo: makeCodeRepo(), githubToken: 'test-token' },
+      runGit,
+    );
+    clonedPath = result.workspacePath;
+
+    // Sibling of the clone, outside the git working tree by construction.
+    expect(result.artifactsPath).toBe(`${result.workspacePath}-artifacts`);
+    expect(result.artifactsPath).toBe(artifactsDirFor(result.workspacePath));
+    // Pre-created so the agent's write always succeeds.
+    await expect(access(result.artifactsPath)).resolves.toBeUndefined();
   });
 
   it('clones impl branch directly (--depth 1 --branch helm/impl/{externalId})', async () => {
@@ -635,5 +659,105 @@ describe('pushReviewerPatches', () => {
     expect(thrownError).toBeDefined();
     expect(thrownError!.message).not.toContain(sensitiveToken);
     expect(thrownError!.message).toContain('[code-workspace]');
+  });
+});
+
+// ── pushReviewerPatches — source/artifact exclusion (real git) ─────────────────
+//
+// These exercise the ADR-025 short-circuit against a REAL git repo, because the
+// exclusion behaviour lives in git's pathspecs, not in our wiring. A real clone
+// would push to a remote, so runGitNoPush delegates everything to real git
+// except `push`, which it stubs.
+
+describe('pushReviewerPatches — source/artifact exclusion (real git)', () => {
+  let repo: string;
+
+  const git = (args: string[]) => defaultRunGit(args, { cwd: repo });
+
+  // Real git for everything except the network push.
+  const runGitNoPush: RunGit = async (args, opts) => {
+    if (args[0] === 'push') return { stdout: '' };
+    return defaultRunGit(args, opts);
+  };
+
+  const opts = () => ({
+    externalId: 'HLM-42',
+    codeRepo: makeCodeRepo(),
+    workspacePath: repo,
+    githubToken: 'test-token',
+  });
+
+  /** Files in the tip commit (empty when HEAD is the initial commit). */
+  const filesInHead = async (): Promise<string> => {
+    const out = await git(['diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD']);
+    return out.stdout;
+  };
+
+  beforeEach(async () => {
+    repo = join(tmpdir(), `test-push-real-${randomUUID()}`);
+    await mkdir(repo, { recursive: true });
+    await git(['init', '-q']);
+    await git(['config', 'user.email', 'helm-bot@example.com']);
+    await git(['config', 'user.name', 'helm-bot']);
+    await git(['config', 'commit.gpgsign', 'false']);
+    await writeFile(join(repo, 'README.md'), 'init\n');
+    await git(['add', 'README.md']);
+    await git(['commit', '-q', '-m', 'init']);
+    await git(['checkout', '-q', '-B', 'helm/impl/HLM-42']);
+  });
+
+  afterEach(async () => {
+    await rm(repo, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('no source changes + leaked review.md in workspace root → pushed:false, no commit', async () => {
+    // Legacy/leaked scratch artifact, no source edits.
+    await writeFile(join(repo, 'review.md'), '# Code Review: HLM-42\n\n## Status\nAPPROVED');
+
+    const result = await pushReviewerPatches(opts(), runGitNoPush);
+
+    expect(result).toEqual({ pushed: false });
+    // HEAD still the initial commit — nothing was committed.
+    const count = await git(['rev-list', '--count', 'HEAD']);
+    expect(count.stdout.trim()).toBe('1');
+    // The artifact is left untouched in the workspace (untracked).
+    const status = await git(['status', '--porcelain']);
+    expect(status.stdout).toContain('review.md');
+  });
+
+  it('source change + leaked review.md → commits source ONLY, excludes the artifact', async () => {
+    await writeFile(join(repo, 'src.ts'), 'export const x = 1;\n');
+    await writeFile(join(repo, 'review.md'), '# Code Review: HLM-42'); // leaked alongside real fix
+
+    const result = await pushReviewerPatches(opts(), runGitNoPush);
+
+    expect(result.pushed).toBe(true);
+    expect(result.commitSha).toMatch(/^[0-9a-f]{7,40}$/);
+
+    const committed = await filesInHead();
+    expect(committed).toContain('src.ts');
+    expect(committed).not.toContain('review.md');
+
+    // review.md is still present but uncommitted (untracked).
+    const status = await git(['status', '--porcelain']);
+    expect(status.stdout).toContain('review.md');
+  });
+
+  it('leaked _helm-artifacts/ directory is excluded from the commit', async () => {
+    await writeFile(join(repo, 'src.ts'), 'export const y = 2;\n');
+    await mkdir(join(repo, '_helm-artifacts'), { recursive: true });
+    await writeFile(join(repo, '_helm-artifacts', 'code-reviewer.md'), '# leaked');
+
+    const result = await pushReviewerPatches(opts(), runGitNoPush);
+
+    expect(result.pushed).toBe(true);
+    const committed = await filesInHead();
+    expect(committed).toContain('src.ts');
+    expect(committed).not.toContain('_helm-artifacts');
+  });
+
+  it('no source changes AND no artifact → pushed:false', async () => {
+    const result = await pushReviewerPatches(opts(), runGitNoPush);
+    expect(result).toEqual({ pushed: false });
   });
 });

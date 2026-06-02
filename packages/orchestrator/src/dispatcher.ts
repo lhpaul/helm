@@ -15,6 +15,7 @@ import {
 import {
   provisionCodeWorkspace,
   provisionReviewerWorkspace,
+  artifactsDirFor,
 } from './specialists/code-workspace.js';
 import {
   fetchProductContext,
@@ -471,9 +472,13 @@ export async function dispatchStageHandler(
         error: implResult.error,
       };
     } finally {
-      // Always clean up the provisioned workspace, even on error.
+      // Always clean up the provisioned workspace (and its sibling artifacts
+      // directory), even on error.
       if (provisionedWorkspace) {
         await rm(actualWorkspacePath, { recursive: true, force: true }).catch(() => {});
+        await rm(artifactsDirFor(actualWorkspacePath), { recursive: true, force: true }).catch(
+          () => {},
+        );
       }
     }
   }
@@ -619,10 +624,12 @@ export async function dispatchStageHandler(
         };
       }
 
-      // Inject the full security/test review bodies so the agent has context.
+      // Inject the full code/security/test review bodies so the agent has
+      // context. All three reviewer kinds flow to the remediator (ADR-025) — it
+      // is the unified safety net behind the code-reviewer too.
       const findingsByKind = new Map<ReviewerKind, string>();
       for (const r of fanoutResult.reviewerResults) {
-        if ((r.kind === 'security' || r.kind === 'test') && r.commentBody) {
+        if (r.commentBody) {
           findingsByKind.set(r.kind, r.commentBody);
         }
       }
@@ -691,6 +698,9 @@ export async function dispatchStageHandler(
       };
     } finally {
       await rm(remediationWorkspace, { recursive: true, force: true }).catch(() => {});
+      await rm(artifactsDirFor(remediationWorkspace), { recursive: true, force: true }).catch(
+        () => {},
+      );
     }
   }
 

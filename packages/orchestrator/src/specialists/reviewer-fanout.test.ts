@@ -1,5 +1,5 @@
 import { access, mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
@@ -13,6 +13,21 @@ import {
   shouldRemediate,
   type ReviewerResult,
 } from './reviewer-fanout.js';
+import { artifactFileFor, artifactsDirFor } from './code-workspace.js';
+
+/**
+ * Writes a reviewer's summary to the SIBLING artifacts directory (ADR-025),
+ * where handleReviewerResult now reads it from — NOT into the workspace clone.
+ */
+async function writeReviewArtifact(
+  workspacePath: string,
+  kind: 'code' | 'security' | 'test',
+  content: string,
+): Promise<void> {
+  const file = artifactFileFor(workspacePath, `${kind}-reviewer`);
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, content);
+}
 import type { IAgentRuntime, SpawnParams, AgentResult, AgentSession } from '../runtime.js';
 import type { RunGit, RunGh } from './git-helpers.js';
 import type { CodeRepo, Product } from '@helm/shared';
@@ -94,10 +109,12 @@ const makeMockRuntime = (
   overrideSpecialistId?: string,
 ): IAgentRuntime => ({
   spawn: vi.fn().mockImplementation(async (params: SpawnParams): Promise<AgentSession> => {
-    // Write review.md if the agent "succeeds"
+    // Write the review summary to the sibling artifacts dir if the agent "succeeds".
     if (agentOutcome === 'done') {
       const targetId = overrideSpecialistId ?? params.specialistId;
-      await writeFile(join(params.workdir, 'review.md'), `# ${targetId} stub`);
+      const file = artifactFileFor(params.workdir, params.specialistId);
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, `# ${targetId} stub`);
     }
 
     const result: AgentResult = {
@@ -144,7 +161,17 @@ describe('buildReviewerParams', () => {
     const params = buildReviewerParams('code', 'HLM-42', product, '/tmp/ws', PR_URL);
     expect(params.prompt).toContain('**CRITICAL**');
     expect(params.prompt).toContain('apply them directly');
-    expect(params.prompt).toContain('Do not commit or push');
+    expect(params.prompt).toContain('do not commit or push');
+  });
+
+  it('instructs each reviewer to write its summary to the sibling artifacts path (ADR-025)', () => {
+    for (const kind of ['code', 'security', 'test'] as const) {
+      const params = buildReviewerParams(kind, 'HLM-42', product, '/tmp/ws', PR_URL);
+      // Outside the clone: /tmp/ws-artifacts/<kind>-reviewer.md
+      expect(params.prompt).toContain(`/tmp/ws-artifacts/${kind}-reviewer.md`);
+      // And explicitly NOT into the working directory.
+      expect(params.prompt).toContain('Do NOT create a `review.md` inside the working directory');
+    }
   });
 
   it('security reviewer prompt contains REVIEW_MD_FORMAT and no-modify instruction', () => {
@@ -237,6 +264,7 @@ describe('handleReviewerResult', () => {
 
   afterEach(async () => {
     await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+    await rm(artifactsDirFor(workspacePath), { recursive: true, force: true }).catch(() => {});
   });
 
   const makeAgentResult = (status: AgentResult['status'] = 'done'): AgentResult => ({
@@ -247,8 +275,9 @@ describe('handleReviewerResult', () => {
   });
 
   it('code + review.md + no workspace changes: commentPosted:true, status:done, only status git call', async () => {
-    await writeFile(
-      join(workspacePath, 'review.md'),
+    await writeReviewArtifact(
+      workspacePath,
+      'code',
       '# Code Review: HLM-42\n\n## Status\nAPPROVED',
     );
 
@@ -280,8 +309,9 @@ describe('handleReviewerResult', () => {
   });
 
   it('code + review.md + has workspace changes: comment includes commit SHA', async () => {
-    await writeFile(
-      join(workspacePath, 'review.md'),
+    await writeReviewArtifact(
+      workspacePath,
+      'code',
       '# Code Review: HLM-42\n\n## Status\nAPPROVED',
     );
 
@@ -319,8 +349,9 @@ describe('handleReviewerResult', () => {
   });
 
   it('security reviewer: runGit is NOT called (no push path for security)', async () => {
-    await writeFile(
-      join(workspacePath, 'review.md'),
+    await writeReviewArtifact(
+      workspacePath,
+      'security',
       '# Security Review: HLM-42\n\n## Status\nAPPROVED',
     );
 
@@ -345,8 +376,9 @@ describe('handleReviewerResult', () => {
   });
 
   it('test reviewer: runGit is NOT called (no push path for test reviewer)', async () => {
-    await writeFile(
-      join(workspacePath, 'review.md'),
+    await writeReviewArtifact(
+      workspacePath,
+      'test',
       '# Test Review: HLM-42\n\n## Status\nAPPROVED',
     );
 
@@ -371,8 +403,9 @@ describe('handleReviewerResult', () => {
   });
 
   it('code + comment fails: status:error, commentPosted:false', async () => {
-    await writeFile(
-      join(workspacePath, 'review.md'),
+    await writeReviewArtifact(
+      workspacePath,
+      'code',
       '# Code Review: HLM-42\n\n## Status\nAPPROVED',
     );
 
@@ -400,8 +433,9 @@ describe('handleReviewerResult', () => {
   });
 
   it('code + push fails after comment: status:error, commentPosted:true, error contains push failed', async () => {
-    await writeFile(
-      join(workspacePath, 'review.md'),
+    await writeReviewArtifact(
+      workspacePath,
+      'code',
       '# Code Review: HLM-42\n\n## Status\nAPPROVED',
     );
 
@@ -509,7 +543,11 @@ describe('fanoutReviewers', () => {
         const agentStatus: AgentResult['status'] = isSecurityReviewer ? 'error' : 'done';
 
         if (agentStatus === 'done') {
-          await writeFile(join(params.workdir, 'review.md'), `# ${params.specialistId} stub`);
+          {
+            const file = artifactFileFor(params.workdir, params.specialistId);
+            await mkdir(dirname(file), { recursive: true });
+            await writeFile(file, `# ${params.specialistId} stub`);
+          }
         }
 
         const agentResult: AgentResult = {
@@ -832,8 +870,16 @@ describe('shouldRemediate', () => {
     expect(shouldRemediate([make('test', { ...zero, high: 1 })])).toBe(true);
   });
 
-  it('false when only code has a CRITICAL finding (code does not gate)', () => {
-    expect(shouldRemediate([make('code', { ...zero, critical: 3 })])).toBe(false);
+  it('true when only code has a CRITICAL finding (code gates via remediator safety net, ADR-025)', () => {
+    expect(shouldRemediate([make('code', { ...zero, critical: 3 })])).toBe(true);
+  });
+
+  it('true when only code has a HIGH finding (ADR-025)', () => {
+    expect(shouldRemediate([make('code', { ...zero, high: 1 })])).toBe(true);
+  });
+
+  it('false when code only has MEDIUM/LOW/INFO findings', () => {
+    expect(shouldRemediate([make('code', { ...zero, medium: 2, low: 1, info: 3 })])).toBe(false);
   });
 
   it('false when sec/test only have MEDIUM/LOW/INFO', () => {
@@ -873,11 +919,13 @@ describe('handleReviewerResult findings population', () => {
 
   afterEach(async () => {
     await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+    await rm(artifactsDirFor(workspacePath), { recursive: true, force: true }).catch(() => {});
   });
 
   it('populates findings and commentBody when a comment is posted', async () => {
-    await writeFile(
-      join(workspacePath, 'review.md'),
+    await writeReviewArtifact(
+      workspacePath,
+      'security',
       '# Security Review: HLM-42\n\n## Findings\n- **CRITICAL** · injection\n- **HIGH** · authz',
     );
     const runGh = makeMockRunGh();

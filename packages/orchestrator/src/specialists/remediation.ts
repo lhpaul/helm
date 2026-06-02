@@ -18,11 +18,10 @@
  * orchestrator owns git/gh, mirroring the reviewer fan-out design.
  */
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { CodeRepo, Product } from '@helm/shared';
 import type { AgentResult, SpawnParams } from '../runtime.js';
 import type { ReviewerKind } from './reviewer-fanout.js';
-import { pushReviewerPatches } from './code-workspace.js';
+import { pushReviewerPatches, artifactFileFor } from './code-workspace.js';
 import { postPRComment } from './pr-helpers.js';
 import { sanitizeToken } from './git-helpers.js';
 import type { RunGit, RunGh } from './git-helpers.js';
@@ -55,10 +54,17 @@ export type RemediationResult = {
 /**
  * Builds SpawnParams for the remediation specialist.
  *
- * The full security and test review bodies are injected (not just the
+ * The full code, security, and test review bodies are injected (not just the
  * CRITICAL/HIGH counts) so the agent has the context it needs to apply fixes.
  * The gate fired on CRITICAL/HIGH, but the agent may also address MEDIUM
  * findings at its discretion.
+ *
+ * As of ADR-025 the remediator is the unified safety net behind ALL three
+ * reviewers (code, security, test): the code-reviewer gets the first chance to
+ * self-apply its mechanical fixes, but any CRITICAL/HIGH it does not fix flows
+ * here. The fixes are idempotent — if the code-reviewer already applied a fix,
+ * the remediator sees the current branch state and reports a no-op rather than
+ * re-applying a redundant diff.
  */
 export function buildRemediationParams(
   externalId: string,
@@ -71,7 +77,7 @@ export function buildRemediationParams(
   const defaultBranch = product.code_repos[0]?.default_branch ?? 'main';
 
   const reviewSections: string[] = [];
-  for (const kind of ['security', 'test'] as const) {
+  for (const kind of ['code', 'security', 'test'] as const) {
     const body = findingsByKind.get(kind);
     if (body) {
       const label = kind.charAt(0).toUpperCase() + kind.slice(1);
@@ -80,6 +86,10 @@ export function buildRemediationParams(
   }
 
   const hintsSection = buildExtraHintsSection(specialistCfg.extra_hints);
+
+  // The remediator writes its summary to a SIBLING artifacts directory, OUTSIDE
+  // the git clone (ADR-025), so it can never be staged onto the impl branch.
+  const artifactPath = artifactFileFor(workspacePath, 'code-remediator');
 
   const prompt = [
     `You are Helm's remediation specialist. Your task is to remediate review findings on item \`${externalId}\`.`,
@@ -90,7 +100,8 @@ export function buildRemediationParams(
     '',
     `To inspect the diff: \`git fetch --depth 1 origin ${defaultBranch}\` then \`git diff origin/${defaultBranch}...HEAD\``,
     '',
-    'The security and test reviews below contain the findings to remediate.',
+    'The code, security, and test reviews below contain the findings to remediate.',
+    'A finding may already be fixed if the code-reviewer self-applied it — inspect the current state of the files before changing anything, and treat an already-satisfied finding as a no-op rather than re-applying it.',
     ...reviewSections,
     '',
     ...(hintsSection ? [hintsSection] : []),
@@ -101,11 +112,14 @@ export function buildRemediationParams(
     '',
     '## Output',
     '',
-    'Write a file named `remediation.md` in the working directory with two sections:',
-    '- **Applied:** each fix you made, referencing the original finding (severity + title) and the files touched.',
-    '- **Deferred:** each finding you did NOT fix, with a one-line reason (design decision, ambiguous, out of scope).',
+    'Write your summary to this exact absolute path with two sections:',
     '',
-    'Do not commit or push — the orchestrator reads remediation.md, commits and pushes your file changes, and posts the summary as a PR comment.',
+    `    ${artifactPath}`,
+    '',
+    '- **Applied:** each fix you made, referencing the original finding (severity + title) and the files touched.',
+    '- **Deferred:** each finding you did NOT fix, with a one-line reason (already satisfied, design decision, ambiguous, out of scope).',
+    '',
+    `Write the summary ONLY to that absolute path — it is outside the working directory on purpose. Do NOT create a \`remediation.md\` inside the working directory, and do not commit or push. The orchestrator reads that file, commits and pushes your source changes, and posts the summary as a PR comment.`,
   ].join('\n');
 
   return {
@@ -160,10 +174,11 @@ export async function handleRemediationResult(
     };
   }
 
-  // Read remediation.md — fall back to a placeholder if the agent didn't write one.
+  // Read the remediation summary from the sibling artifacts directory (ADR-025)
+  // — fall back to a placeholder if the agent didn't write one.
   let summaryBody: string;
   try {
-    summaryBody = await readFile(join(workspacePath, 'remediation.md'), 'utf-8');
+    summaryBody = await readFile(artifactFileFor(workspacePath, 'code-remediator'), 'utf-8');
   } catch {
     summaryBody = [
       `# Remediation: ${externalId}`,

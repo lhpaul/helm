@@ -251,11 +251,12 @@ export function buildReviewerParams(
         '   ```',
         '',
         '5. If the diff is consistent with the canonical contract, do not emit any contract drift findings — silence is pass.',
+        '6. **Findings-only — never auto-apply.** A `Contract drift §4` finding MUST be surfaced for review only. Do NOT edit schema, migration, or entity-type files to apply the fix yourself, no matter how mechanical the rename looks. These divergences route through the HIGH-severity remediation path on purpose; auto-fixing one short-circuits that path, and editing an already-committed migration file is itself a contract violation (migrations are immutable post-apply — the fix is a new forward migration, not an edit). Leave contract drift to the remediator.',
         '',
         '**Scope gate:** Only invoke contract validation when the diff includes at least one file matching schema/migration/entity-type globs. If the diff is purely application code with no schema impact, skip contract validation entirely (no Pass/Fail line needed).',
         '',
         '**Applying mechanical fixes (code reviewer only):**',
-        'If you identify mechanical, low-risk fixes (typos, formatting, dead-code removal, obvious simplifications without logic changes), apply them directly to the files in the working directory. The orchestrator will commit and push. For non-mechanical or invasive changes, surface them as findings only — do NOT modify files.',
+        'If you identify mechanical, low-risk fixes (typos, formatting, dead-code removal, obvious simplifications without logic changes), apply them directly to the files in the working directory. The orchestrator will commit and push. For non-mechanical or invasive changes, surface them as findings only — do NOT modify files. **This mechanical-fix permission never extends to schema, migration, or entity-type files: contract drift (see above) is findings-only regardless of how simple the change appears.**',
       ].join('\n');
       break;
 

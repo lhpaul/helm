@@ -174,6 +174,12 @@ describe('buildReviewerParams', () => {
     expect(code.prompt).toContain(tagFormat);
     // The scope gate instruction must be present so non-schema diffs are skipped.
     expect(code.prompt).toContain('Scope gate:');
+    // Findings-only guard: contract drift must never be auto-applied/pushed, so it
+    // cannot short-circuit the HIGH → shouldRemediate → code-remediator path.
+    expect(code.prompt).toContain('Findings-only — never auto-apply.');
+    expect(code.prompt).toContain(
+      'mechanical-fix permission never extends to schema, migration, or entity-type files',
+    );
 
     // The directed validation block must NOT leak into the other reviewers.
     const security = buildReviewerParams('security', 'HLM-42', product, '/tmp/ws', PR_URL);

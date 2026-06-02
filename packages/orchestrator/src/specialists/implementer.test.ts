@@ -296,6 +296,76 @@ describe('handleImplementerResult', () => {
     }
   });
 
+  it('appends the agent finalOutput to the failure error so operators see why it failed', async () => {
+    const failed: AgentResult = {
+      ...makeDoneResult(),
+      status: 'error',
+      finalOutput: '[turn.failed] model refused: unsafe request',
+    };
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const result = await handleImplementerResult(
+        'HLM-42',
+        failed,
+        workspacePath,
+        makeCodeRepo(),
+        transition,
+      );
+
+      expect(result.transitioned).toBe(false);
+      expect(result.error).toBe(
+        "Agent finished with status 'error': [turn.failed] model refused: unsafe request",
+      );
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('falls back to the status-only message when finalOutput is empty', async () => {
+    const failed: AgentResult = { ...makeDoneResult(), status: 'cancelled', finalOutput: '   ' };
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const result = await handleImplementerResult(
+        'HLM-42',
+        failed,
+        workspacePath,
+        makeCodeRepo(),
+        transition,
+      );
+
+      expect(result.error).toBe("Agent finished with status 'cancelled'");
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('truncates a very long finalOutput to 800 chars in the error', async () => {
+    const failed: AgentResult = {
+      ...makeDoneResult(),
+      status: 'error',
+      finalOutput: 'x'.repeat(1_000),
+    };
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const result = await handleImplementerResult(
+        'HLM-42',
+        failed,
+        workspacePath,
+        makeCodeRepo(),
+        transition,
+      );
+
+      expect(result.error).toContain('… (truncated)');
+      expect(result.error).toContain('x'.repeat(800));
+      expect(result.error).not.toContain('x'.repeat(801));
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
   it('returns error without transitioning when agent status is cancelled', async () => {
     const cancelledResult: AgentResult = { ...makeDoneResult(), status: 'cancelled' };
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

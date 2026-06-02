@@ -1516,6 +1516,9 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     expect(transition).toHaveBeenCalledTimes(1);
     expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'remediation' }));
     expect(result.newStage).toBeUndefined();
+    // Teardown still runs on the error path: workspace + sibling artifacts dir
+    // (both match the helm-review-issue_1- prefix) are removed.
+    expect(await listReviewWorkspaces()).toHaveLength(0);
   });
 
   it('gate active + provision fails: status error, NO transition, no agent, no workspace leftover', async () => {

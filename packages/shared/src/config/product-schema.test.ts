@@ -260,3 +260,29 @@ describe('ProductSchema — extra_hints (ADR-023)', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('ProductSchema — readiness_gate (ADR-026)', () => {
+  const withReadinessGate = (gate: unknown) => ({
+    ...makeRawProduct(KEBAB_SPECIALISTS),
+    workflow: { stages_enabled: ['discovery', 'released'], readiness_gate: gate },
+  });
+
+  it('defaults readiness_gate to skip when omitted', () => {
+    const result = ProductSchema.safeParse(makeRawProduct(KEBAB_SPECIALISTS));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.workflow.readiness_gate).toBe('skip');
+  });
+
+  it('accepts explicit warn and required', () => {
+    for (const gate of ['warn', 'required'] as const) {
+      const result = ProductSchema.safeParse(withReadinessGate(gate));
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.workflow.readiness_gate).toBe(gate);
+    }
+  });
+
+  it('rejects an unknown readiness_gate value', () => {
+    const result = ProductSchema.safeParse(withReadinessGate('block'));
+    expect(result.success).toBe(false);
+  });
+});

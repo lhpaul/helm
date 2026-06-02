@@ -1432,6 +1432,59 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     expect(await listReviewWorkspaces()).toHaveLength(0);
   });
 
+  it('gate active + remediation done BUT fan-out errored: status error (coverage gap surfaced), still transitions back', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    // A reviewer gated remediation, but another reviewer failed — the fan-out
+    // reports an error even though the gating findings were remediated.
+    vi.mocked(fanoutReviewers).mockResolvedValue({
+      reviewerResults: [
+        {
+          kind: 'code',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 100,
+          commentPosted: true,
+          findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+          commentBody: '# Code Review: issue_1\n- **HIGH** · x',
+        },
+        {
+          kind: 'security',
+          status: 'error',
+          costUsd: 0,
+          durationMs: 0,
+          commentPosted: false,
+          error: "Agent finished with status 'error'",
+        },
+      ],
+      prUrl: 'https://github.com/test-org/test-repo/pull/42',
+      status: 'error',
+      costUsd: 0.01,
+      durationMs: 100,
+      error: "[security]: Agent finished with status 'error'",
+    });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', runGit: makeProvisionRunGit() },
+    );
+
+    // Remediation succeeded, but the masked reviewer failure is now surfaced.
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('reviewer coverage may be incomplete');
+    expect(result.error).toContain('security');
+    // The transition still stands — the item is genuinely back in code-review.
+    expect(result.newStage).toBe('code-review');
+    expect(transition).toHaveBeenCalledTimes(2);
+    expect(transition).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ toStage: 'code-review' }),
+    );
+  });
+
   it('gate active via code-reviewer HIGH: remediator receives findings from all three reviewer kinds (ADR-025)', async () => {
     const runtime = new MockAgentRuntime({ messages: [] });
     vi.mocked(shouldRemediate).mockReturnValue(true);

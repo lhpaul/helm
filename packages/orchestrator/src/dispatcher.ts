@@ -689,6 +689,25 @@ export async function dispatchStageHandler(
         };
       }
 
+      // The item is back in code-review. But if the fan-out itself reported an
+      // error (a reviewer crashed or a comment failed to post), surface it: the
+      // remediator only addressed the findings that DID surface, so reviewer
+      // coverage is incomplete and a successful remediation must not paint over
+      // it with a green status (ADR-025). The transition still stands — the item
+      // is genuinely in code-review — but the job is reported as an error so the
+      // operator knows part of the review pipeline broke and can re-dispatch.
+      if (fanoutResult.status === 'error') {
+        return {
+          specialistId,
+          status: 'error',
+          newStage: 'code-review',
+          costUsd: aggregatedCost,
+          durationMs: aggregatedDuration,
+          prUrl: fanoutResult.prUrl,
+          error: `Remediation succeeded, but the reviewer fan-out reported an error (reviewer coverage may be incomplete): ${fanoutResult.error}`,
+        };
+      }
+
       return {
         specialistId,
         status: 'done',

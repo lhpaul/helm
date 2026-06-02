@@ -239,7 +239,7 @@ export function buildReviewerParams(
         '',
         '1. Open `CLAUDE.md` from the working directory.',
         '2. Look for a "Data model" / "§4" section (any heading matching `## 4.`, `### 4.`, `## Data model`, `## Schema`, or `## Domain model`). If none is present, skip this step and proceed with the rest of the review.',
-        '3. For each table, column, enum value, JSONB key, RLS clause, and convention rule referenced in the diff, compare against the canonical section. Validate: column names (snake_case in DB; canonical spelling), types (e.g. `bigint` for CLP, `numeric(15,4)` for UF; UUID v7 for internal ids), enum values, JSONB shapes, RLS enable/force, default values.',
+        "3. For each table, column, enum value, JSONB key, RLS clause, and convention rule referenced in the diff, compare against the canonical section. **That product's own §4 is the only baseline — the items below are the categories to check, not values to expect.** Validate: column names (canonical spelling and case — e.g. snake_case if the contract uses it), types (match the canonical SQL type exactly — integer width, numeric precision/scale, UUID version, timestamp timezone, monetary representation), enum values, JSONB shapes, RLS enable/force, default values.",
         '4. For every divergence, emit a finding using this exact format:',
         '',
         '   ```',

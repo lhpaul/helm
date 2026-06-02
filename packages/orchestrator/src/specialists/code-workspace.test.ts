@@ -255,6 +255,31 @@ describe('provisionReviewerWorkspace', () => {
     expect(result.workspacePath).not.toContain('helm-impl-');
   });
 
+  it('cleans up the clone when the artifacts directory cannot be created', async () => {
+    let clonedDest = '';
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone') {
+        clonedDest = args[args.length - 1]!;
+        await mkdir(join(clonedDest, '.git'), { recursive: true });
+        // Sabotage: a FILE where the sibling artifacts dir should go, so the
+        // provisioner's mkdir(artifactsPath) fails.
+        await writeFile(artifactsDirFor(clonedDest), 'blocker');
+      }
+      return { stdout: '' };
+    });
+
+    await expect(
+      provisionReviewerWorkspace(
+        { externalId: 'HLM-42', codeRepo: makeCodeRepo(), githubToken: 'test-token' },
+        runGit,
+      ),
+    ).rejects.toThrow('Failed to create artifacts directory');
+
+    // The already-cloned workspace must not leak on disk.
+    await expect(access(clonedDest)).rejects.toThrow();
+    await rm(artifactsDirFor(clonedDest), { force: true }).catch(() => {});
+  });
+
   it('rejects SSH code repo URLs', async () => {
     const runGit: RunGit = vi.fn();
     const sshRepo = makeCodeRepo('git@github.com:test-org/test-repo');

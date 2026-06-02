@@ -270,7 +270,16 @@ export async function provisionCodeWorkspace(
 
   // ── Step 4: Pre-create the sibling artifacts directory (ADR-025) ──────────
   const artifactsPath = artifactsDirFor(workspacePath);
-  await mkdir(artifactsPath, { recursive: true });
+  try {
+    await mkdir(artifactsPath, { recursive: true });
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+    await rm(artifactsPath, { recursive: true, force: true }).catch(() => {});
+    throw new Error(
+      `[code-workspace] Failed to create artifacts directory: ${sanitizeToken(raw, githubToken)}`,
+    );
+  }
 
   return { workspacePath, branchName: branch, artifactsPath };
 }
@@ -371,7 +380,16 @@ export async function provisionReviewerWorkspace(
   // Reviewers and the remediator write their summaries here, OUTSIDE the clone,
   // so pushReviewerPatches can never stage them onto the impl branch.
   const artifactsPath = artifactsDirFor(workspacePath);
-  await mkdir(artifactsPath, { recursive: true });
+  try {
+    await mkdir(artifactsPath, { recursive: true });
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+    await rm(artifactsPath, { recursive: true, force: true }).catch(() => {});
+    throw new Error(
+      `[code-workspace] Failed to create artifacts directory: ${sanitizeToken(raw, githubToken)}`,
+    );
+  }
 
   return { workspacePath, branchName: branch, artifactsPath };
 }

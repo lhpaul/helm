@@ -1426,6 +1426,10 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
       2,
       expect.objectContaining({ toStage: 'code-review' }),
     );
+
+    // Teardown: the remediation workspace AND its sibling artifacts dir
+    // (both match the helm-review-issue_1- prefix) are removed (ADR-025 cleanup).
+    expect(await listReviewWorkspaces()).toHaveLength(0);
   });
 
   it('gate active via code-reviewer HIGH: remediator receives findings from all three reviewer kinds (ADR-025)', async () => {

@@ -128,7 +128,13 @@ function porcelainPath(line: string): string {
 function isLeakedArtifactLine(line: string): boolean {
   if (!line.startsWith('??')) return false;
   const path = porcelainPath(line);
-  return ARTIFACT_BASENAMES.includes(path) || path.startsWith(`${ARTIFACT_DIR_NAME}/`);
+  // Match the artifacts dir whether git reports it collapsed with a trailing
+  // slash (`_helm-artifacts/`), without one, or as an individual file under it.
+  return (
+    ARTIFACT_BASENAMES.includes(path) ||
+    path === ARTIFACT_DIR_NAME ||
+    path.startsWith(`${ARTIFACT_DIR_NAME}/`)
+  );
 }
 
 /**

@@ -780,4 +780,20 @@ describe('pushReviewerPatches — source/artifact exclusion (real git)', () => {
     const result = await pushReviewerPatches(opts(), runGitNoPush);
     expect(result).toEqual({ pushed: false });
   });
+
+  it('a TRACKED review.md edit is real source and IS committed (only untracked leaks excluded)', async () => {
+    // The repo legitimately tracks a file named review.md.
+    await writeFile(join(repo, 'review.md'), '# project review doc\n');
+    await git(['add', 'review.md']);
+    await git(['commit', '-q', '-m', 'add tracked review.md']);
+
+    // The agent edits that tracked file — a genuine source change, not a leak.
+    await writeFile(join(repo, 'review.md'), '# project review doc\n\nupdated\n');
+
+    const result = await pushReviewerPatches(opts(), runGitNoPush);
+
+    expect(result.pushed).toBe(true);
+    const committed = await filesInHead();
+    expect(committed).toContain('review.md');
+  });
 });

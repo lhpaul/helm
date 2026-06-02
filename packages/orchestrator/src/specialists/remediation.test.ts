@@ -364,6 +364,6 @@ describe('handleRemediationResult', () => {
 
     expect(result.status).toBe('done');
     expect(result.commentPosted).toBe(true);
-    expect(capturedBodies[0]).toContain('No remediation.md was produced');
+    expect(capturedBodies[0]).toContain('No remediation summary was produced');
   });
 });

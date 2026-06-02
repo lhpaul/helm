@@ -241,7 +241,7 @@ export function buildReviewerParams(
         '- Assess input validation for externally-controlled data.',
         '- Check for insecure dependencies, unsafe permissions, and information leaks.',
         '',
-        '**Do not modify any files in the working directory.** Surface all findings in review.md only. The orchestrator does not push changes from security or test reviewers.',
+        '**Do not modify any files in the working directory.** Surface all findings in your review only (written to the artifact path shown below). The orchestrator does not push changes from security or test reviewers.',
       ].join('\n');
       break;
 
@@ -255,7 +255,7 @@ export function buildReviewerParams(
         '- Flag excessive mocking that may hide real bugs.',
         '- Identify tests that may be flaky (time-dependent, order-dependent, environment-dependent).',
         '',
-        '**Do not modify any files in the working directory.** Surface all findings in review.md only. The orchestrator does not push changes from security or test reviewers.',
+        '**Do not modify any files in the working directory.** Surface all findings in your review only (written to the artifact path shown below). The orchestrator does not push changes from security or test reviewers.',
       ].join('\n');
       break;
   }
@@ -329,7 +329,7 @@ export async function handleReviewerResult(
     reviewContent = [
       `# ${kind.charAt(0).toUpperCase() + kind.slice(1)} Review: ${externalId}`,
       '',
-      '_No review.md was produced by the reviewer agent._',
+      '_No review summary was produced by the reviewer agent._',
       '',
       '## Status',
       '',

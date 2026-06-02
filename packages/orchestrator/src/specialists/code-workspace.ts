@@ -105,17 +105,31 @@ const EXTERNAL_ID_SAFE = /^(?!\.)[A-Za-z0-9._-]+$/;
  * Filenames / directories that are reviewer-or-remediator scratch artifacts and
  * must NEVER be committed onto the impl branch. They normally live in the
  * sibling artifacts directory (outside the workspace), but a misbehaving agent
- * could write one into the workspace root; `pushReviewerPatches` excludes these
- * pathspecs as defense in depth.
+ * could write one into the workspace root; `pushReviewerPatches` excludes them
+ * as defense in depth — but only when they are UNTRACKED (a freshly-leaked
+ * scratch file). A repo that legitimately TRACKS a file named `review.md`
+ * keeps its real source edits.
  */
-const ARTIFACT_BASENAMES = ['review.md', 'remediation.md'] as const;
+const ARTIFACT_BASENAMES: readonly string[] = ['review.md', 'remediation.md'];
 const ARTIFACT_DIR_NAME = '_helm-artifacts';
 
-/** Git pathspecs that exclude scratch artifacts from a `status` / `add`. */
-const ARTIFACT_EXCLUDE_PATHSPECS = [
-  ...ARTIFACT_BASENAMES.map((name) => `:(exclude)${name}`),
-  `:(exclude)${ARTIFACT_DIR_NAME}/`,
-];
+/** Extracts the path from a `git status --porcelain` v1 line (`XY PATH`). */
+function porcelainPath(line: string): string {
+  const path = line.slice(3).trim();
+  // Paths with special chars are double-quoted by git; strip the quotes.
+  return path.startsWith('"') && path.endsWith('"') ? path.slice(1, -1) : path;
+}
+
+/**
+ * True when a porcelain status line is an UNTRACKED scratch artifact leaked into
+ * the workspace root (`?? review.md`, `?? remediation.md`, `?? _helm-artifacts/`).
+ * Tracked changes to a same-named file are NOT leaks — they are real source.
+ */
+function isLeakedArtifactLine(line: string): boolean {
+  if (!line.startsWith('??')) return false;
+  const path = porcelainPath(line);
+  return ARTIFACT_BASENAMES.includes(path) || path.startsWith(`${ARTIFACT_DIR_NAME}/`);
+}
 
 /**
  * The scratch-artifacts directory co-located with a workspace clone: a SIBLING
@@ -525,10 +539,12 @@ export async function openCodePR(
  * Only the code-reviewer calls this; security and test reviewers are
  * comment-only by design (single-pusher invariant — see ADR-017, ADR-018).
  *
- * Returns `{ pushed: false }` when there are no source changes (no-op). Scratch
- * artifacts (`review.md` / `remediation.md` / `_helm-artifacts/`) are excluded
- * from both the change check and the commit, so a reviewer that only wrote a
- * summary — or one whose summary leaked into the workspace — produces no commit.
+ * Returns `{ pushed: false }` when there are no source changes (no-op).
+ * UNTRACKED scratch artifacts leaked into the workspace root (`review.md` /
+ * `remediation.md` / `_helm-artifacts/`) are excluded from both the change check
+ * and the commit, so a reviewer that only wrote a summary — or one whose summary
+ * leaked into the workspace — produces no commit; a repo that legitimately tracks
+ * a same-named source file keeps its real edits.
  * Returns `{ pushed: true, commitSha }` when source patches were committed and pushed.
  *
  * The push is NOT `--force` — it is a fast-forward push to an existing remote
@@ -557,19 +573,17 @@ export async function pushReviewerPatches(
     GIT_COMMITTER_EMAIL: 'helm-bot@users.noreply.github.com',
   };
 
-  // ── Step 1: Check for SOURCE changes (artifacts excluded) ─────────────────
+  // ── Step 1: Detect SOURCE changes; isolate leaked scratch artifacts ───────
   // Defense in depth (ADR-025): scratch artifacts now live in a sibling
   // directory outside the clone, but a misbehaving agent could still drop a
-  // `review.md` / `remediation.md` into the workspace root. Exclude those
-  // pathspecs so a "patch" consisting only of a leaked artifact reads as no
-  // source changes → no commit, no push.
-  let statusOut: string;
+  // `review.md` / `remediation.md` / `_helm-artifacts/` into the workspace root
+  // as an UNTRACKED file. We exclude only those leaked-untracked artifacts, so a
+  // "patch" consisting only of a leaked artifact reads as no source changes — and
+  // a repo that legitimately tracks a same-named file keeps its real edits.
+  let statusLines: string[];
   try {
-    const result = await runGit(
-      ['status', '--porcelain', '--', '.', ...ARTIFACT_EXCLUDE_PATHSPECS],
-      { cwd: workspacePath },
-    );
-    statusOut = result.stdout.trim();
+    const result = await runGit(['status', '--porcelain'], { cwd: workspacePath });
+    statusLines = result.stdout.split('\n').filter((line) => line.length > 0);
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
     throw new Error(
@@ -577,15 +591,20 @@ export async function pushReviewerPatches(
     );
   }
 
-  if (!statusOut) {
+  const leakedArtifactPaths = statusLines.filter(isLeakedArtifactLine).map(porcelainPath);
+  const sourceChangeCount = statusLines.length - leakedArtifactPaths.length;
+
+  if (sourceChangeCount === 0) {
     return { pushed: false };
   }
 
-  // ── Step 2: Stage source changes (artifacts excluded) ─────────────────────
-  // Same exclusion as the status check so a leaked artifact never lands in the
-  // commit even when there ARE genuine source changes alongside it.
+  // ── Step 2: Stage source changes, excluding any leaked artifacts ──────────
+  // Exclude only the specific leaked-untracked paths detected above, so a
+  // leaked artifact never lands in the commit even alongside genuine source
+  // changes — while tracked, same-named source files are still staged.
+  const excludeSpecs = leakedArtifactPaths.map((path) => `:(exclude)${path}`);
   try {
-    await runGit(['add', '-A', '--', '.', ...ARTIFACT_EXCLUDE_PATHSPECS], { cwd: workspacePath });
+    await runGit(['add', '-A', '--', '.', ...excludeSpecs], { cwd: workspacePath });
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
     throw new Error(`[code-workspace] Failed to stage changes: ${sanitizeToken(raw, githubToken)}`);

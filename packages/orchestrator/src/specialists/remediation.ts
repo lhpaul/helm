@@ -183,7 +183,7 @@ export async function handleRemediationResult(
     summaryBody = [
       `# Remediation: ${externalId}`,
       '',
-      '_No remediation.md was produced by the remediation agent._',
+      '_No remediation summary was produced by the remediation agent._',
     ].join('\n');
   }
 

@@ -1,6 +1,8 @@
 # Bug: code-reviewer findings have no remediation safety net
 
-**Status:** open
+**Status:** fixed forward by ADR-025 (helm#37). The fix is forward-looking;
+LEA-104's existing branch is cleaned up separately by the operator (see the
+"State of LEA-104" section below).
 **Severity:** HIGH — code-reviewer findings silently survive when the
 code-reviewer does not self-apply fixes; the PR looks remediated but the
 code-review HIGHs remain.

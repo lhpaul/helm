@@ -10,6 +10,9 @@ import {
 } from './remediation.js';
 import { artifactFileFor, artifactsDirFor } from './code-workspace.js';
 import type { ReviewerKind } from './reviewer-fanout.js';
+import type { AgentResult } from '../runtime.js';
+import type { RunGit, RunGh } from './git-helpers.js';
+import type { CodeRepo, Product } from '@helm/shared';
 
 /**
  * Writes the remediator's summary to the SIBLING artifacts directory (ADR-025),
@@ -20,9 +23,6 @@ async function writeRemediationArtifact(workspacePath: string, content: string):
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, content);
 }
-import type { AgentResult } from '../runtime.js';
-import type { RunGit, RunGh } from './git-helpers.js';
-import type { CodeRepo, Product } from '@helm/shared';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

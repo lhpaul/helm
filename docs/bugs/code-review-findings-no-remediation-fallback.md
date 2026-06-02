@@ -39,7 +39,7 @@ The two code-review HIGHs are still present at branch HEAD (`55f4c00`):
 
 Branch `helm/impl/LEA-104` is **linear** (no divergence, no lost commit):
 
-```
+```text
 55f4c00 chore(remediation): apply fixes for LEA-104     ← tip; real test fixes
 382675e chore(review): apply code-reviewer patches      ← review.md only (leak)
 77287ff feat: implement LEA-104

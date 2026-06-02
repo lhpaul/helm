@@ -14,6 +14,9 @@ import {
   type ReviewerResult,
 } from './reviewer-fanout.js';
 import { artifactFileFor, artifactsDirFor } from './code-workspace.js';
+import type { IAgentRuntime, SpawnParams, AgentResult, AgentSession } from '../runtime.js';
+import type { RunGit, RunGh } from './git-helpers.js';
+import type { CodeRepo, Product } from '@helm/shared';
 
 /**
  * Writes a reviewer's summary to the SIBLING artifacts directory (ADR-025),
@@ -28,9 +31,6 @@ async function writeReviewArtifact(
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, content);
 }
-import type { IAgentRuntime, SpawnParams, AgentResult, AgentSession } from '../runtime.js';
-import type { RunGit, RunGh } from './git-helpers.js';
-import type { CodeRepo, Product } from '@helm/shared';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

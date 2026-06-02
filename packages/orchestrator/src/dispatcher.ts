@@ -561,7 +561,8 @@ export async function dispatchStageHandler(
     }
 
     // ── Remediation gate ──────────────────────────────────────────────────────
-    // Only security/test CRITICAL/HIGH findings trigger remediation (ADR-019).
+    // Any reviewer's CRITICAL/HIGH finding triggers remediation — code, security,
+    // or test (ADR-019, extended by ADR-025 to cover the code-reviewer too).
     // No high findings → no-op; the item stays in code-review awaiting human merge.
     if (!shouldRemediate(fanoutResult.reviewerResults)) {
       return {

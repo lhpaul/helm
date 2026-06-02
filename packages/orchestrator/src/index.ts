@@ -15,8 +15,12 @@ export type { SubprocessLike, SpawnFn } from './runtimes/claude-code.js';
 
 export { CodexRuntime } from './runtimes/codex.js';
 
-export { dispatchStageHandler } from './dispatcher.js';
+export { dispatchStageHandler, resolveSpecialistId } from './dispatcher.js';
 export type { DispatchInput, DispatchResult, DispatchOptions } from './dispatcher.js';
+
+// Product-readiness gate (ADR-026)
+export { checkProductReadiness } from './readiness.js';
+export type { ReadinessResult, MissingContextEntry } from './readiness.js';
 
 export type {
   ItemTransitionFn,
@@ -29,7 +33,11 @@ export {
   handleSpecWriterResult,
 } from './specialists/spec-writer.js';
 
-export { fetchProductContext, parseGitHubRepoUrl } from './specialists/fetch-product-context.js';
+export {
+  fetchProductContext,
+  parseGitHubRepoUrl,
+  AGENT_INSTRUCTION_FILES,
+} from './specialists/fetch-product-context.js';
 export type { ProductContext, FetchFn } from './specialists/fetch-product-context.js';
 
 export { publishSpecToPR } from './specialists/spec-publisher.js';

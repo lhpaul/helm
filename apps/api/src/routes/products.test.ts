@@ -7,13 +7,23 @@ import { _resetForTests } from '../services/index.js';
 const HELM_PRODUCT = {
   helm_version: '0',
   product: { slug: 'helm', name: 'Helm' },
-  workflow: { stages_enabled: ['discovery', 'released'], designer_gate: 'skip', qa_gate: 'skip' },
+  workflow: {
+    stages_enabled: ['discovery', 'released'],
+    designer_gate: 'skip',
+    qa_gate: 'skip',
+    readiness_gate: 'skip',
+  },
 };
 
 const PLAYGROUND_PRODUCT = {
   helm_version: '0',
   product: { slug: 'helm-playground', name: 'Helm Playground' },
-  workflow: { stages_enabled: ['discovery', 'released'], designer_gate: 'skip', qa_gate: 'skip' },
+  workflow: {
+    stages_enabled: ['discovery', 'released'],
+    designer_gate: 'skip',
+    qa_gate: 'skip',
+    readiness_gate: 'skip',
+  },
 };
 
 const HELM_ITEMS = [

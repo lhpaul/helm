@@ -17,6 +17,15 @@ export type FetchFn = typeof fetch;
 const MAX_CHARS = 2000;
 const TRUNCATION_SUFFIX = '\n\n[...truncated]';
 
+/**
+ * Accepted "agent instructions" filenames, in preference order. `AGENTS.md`
+ * (plural) is the cross-tool open standard (agentsmd.com); `AGENT.md` /
+ * `CLAUDE.md` are accepted for compatibility. Single source of truth shared by
+ * the product-context reader and the readiness gate (ADR-026) so they cannot
+ * drift apart.
+ */
+export const AGENT_INSTRUCTION_FILES = ['AGENTS.md', 'AGENT.md', 'CLAUDE.md'] as const;
+
 /** Cap for spec/plan content fetched as specialist input. Generous — the artifact IS the input. */
 const SPEC_MAX_CHARS = 32_000;
 const SPEC_TRUNCATION_SUFFIX = '\n\n[...truncated — spec exceeds 32000 chars]';
@@ -86,6 +95,25 @@ function truncate(content: string): string {
   return content.slice(0, MAX_CHARS) + TRUNCATION_SUFFIX;
 }
 
+/**
+ * Returns the content of the first file in `paths` that exists (non-null),
+ * or null if none do. Sequential to short-circuit on the first hit.
+ */
+async function fetchFirstFile(
+  owner: string,
+  repo: string,
+  branch: string,
+  paths: readonly string[],
+  token: string,
+  fetchFn: FetchFn,
+): Promise<string | null> {
+  for (const path of paths) {
+    const content = await fetchRawFile(owner, repo, branch, path, token, fetchFn);
+    if (content !== null) return content;
+  }
+  return null;
+}
+
 // ── Product context (README + agent instructions from code repo) ──────────────
 
 /**
@@ -118,10 +146,8 @@ export async function fetchProductContext(
   // Fetch README and agent instructions concurrently.
   const [readmeRaw, agentMdRaw] = await Promise.all([
     fetchRawFile(owner, repo, branch, 'README.md', token, fetchFn),
-    // Try AGENT.md first; fall back to CLAUDE.md.
-    fetchRawFile(owner, repo, branch, 'AGENT.md', token, fetchFn).then((content) =>
-      content !== null ? content : fetchRawFile(owner, repo, branch, 'CLAUDE.md', token, fetchFn),
-    ),
+    // Agent instructions: AGENTS.md (open standard) → AGENT.md → CLAUDE.md.
+    fetchFirstFile(owner, repo, branch, AGENT_INSTRUCTION_FILES, token, fetchFn),
   ]);
 
   return {

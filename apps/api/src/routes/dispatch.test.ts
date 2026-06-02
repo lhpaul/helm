@@ -25,6 +25,7 @@ const makeProduct = (slug = 'test-product'): Product => ({
     stages_enabled: ['discovery', 'spec-draft', 'released'],
     designer_gate: 'skip',
     qa_gate: 'skip',
+    readiness_gate: 'skip',
   },
   specialists: {
     'spec-writer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
@@ -87,6 +88,20 @@ vi.mock('../services/runtime-factory.js', () => ({
   createRuntimeForProduct: mockCreateRuntime,
 }));
 
+// Mock only checkProductReadiness from @helm/orchestrator; everything else
+// (MockAgentRuntime, dispatchStageHandler, resolveSpecialistId, …) stays real.
+const { mockCheckReadiness } = vi.hoisted(() => ({ mockCheckReadiness: vi.fn() }));
+vi.mock('@helm/orchestrator', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@helm/orchestrator')>();
+  return { ...real, checkProductReadiness: mockCheckReadiness };
+});
+
+/** Clones the default product with a specific readiness_gate mode. */
+const productWithGate = (gate: 'skip' | 'warn' | 'required', slug = 'test-product'): Product => {
+  const base = makeProduct(slug);
+  return { ...base, workflow: { ...base.workflow, readiness_gate: gate } };
+};
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
 let dataDir: string;
@@ -110,6 +125,9 @@ beforeEach(async () => {
   // Default: no tracker task available — fetchTask degrades to null (spec written
   // without a ## Task section), matching the behaviour exercised by most tests.
   mockGetIssueTrackerAdapter.mockRejectedValue(new Error('no tracker configured'));
+  // Default readiness: ready. The default product uses readiness_gate:'skip', so
+  // the gate never invokes this — it only matters for the gate-specific tests.
+  mockCheckReadiness.mockResolvedValue({ ready: true, missingContext: [] });
 
   // Replace ClaudeCodeRuntime with a scriptable mock that writes the expected
   // spec file. The externalId is derived from the workdir path (last segment).
@@ -577,5 +595,119 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     expect(mockTransition).toHaveBeenCalled();
     expect(prompt.current).toBeDefined();
     expect(prompt.current).not.toContain('## Task');
+  });
+
+  // ── Product-readiness gate (ADR-026) ───────────────────────────────────────
+
+  it('does not run the readiness gate when readiness_gate is skip', async () => {
+    // Default product is skip — even an unready product would not be checked.
+    mockCheckReadiness.mockResolvedValue({
+      ready: false,
+      missingContext: [{ repo: 'test-org/test', role: 'app', missing: ['README.md'] }],
+    });
+
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(202);
+    expect(mockCheckReadiness).not.toHaveBeenCalled();
+
+    await vi.waitFor(() => expect(mockTransition).toHaveBeenCalled(), { timeout: 5000 });
+  });
+
+  it('returns 422 with missing_context when readiness_gate is required and the product is not ready', async () => {
+    mockGetProductRegistry.mockResolvedValue([productWithGate('required')]);
+    const missingContext = [
+      { repo: 'test-org/test', role: 'app', missing: ['README.md', 'agent instructions (…)'] },
+    ];
+    mockCheckReadiness.mockResolvedValue({ ready: false, missingContext });
+
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string; missing_context: unknown };
+    expect(body.error).toContain('not ready');
+    expect(body.missing_context).toEqual(missingContext);
+    // 422 returns before job creation — no background work.
+    expect(mockTransition).not.toHaveBeenCalled();
+    expect(mockCreateRuntime).not.toHaveBeenCalled();
+  });
+
+  it('proceeds (202) when readiness_gate is required and the product is ready', async () => {
+    mockGetProductRegistry.mockResolvedValue([productWithGate('required')]);
+    mockCheckReadiness.mockResolvedValue({ ready: true, missingContext: [] });
+
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(202);
+    expect(mockCheckReadiness).toHaveBeenCalledOnce();
+
+    await vi.waitFor(() => expect(mockTransition).toHaveBeenCalled(), { timeout: 5000 });
+  });
+
+  it('returns 502 when readiness_gate is required and the check throws (infra failure)', async () => {
+    mockGetProductRegistry.mockResolvedValue([productWithGate('required')]);
+    mockCheckReadiness.mockRejectedValue(new Error('GitHub 500'));
+
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('Readiness check failed');
+    expect(mockTransition).not.toHaveBeenCalled();
+  });
+
+  it('proceeds (202) when readiness_gate is warn even if the product is not ready', async () => {
+    mockGetProductRegistry.mockResolvedValue([productWithGate('warn')]);
+    mockCheckReadiness.mockResolvedValue({
+      ready: false,
+      missingContext: [{ repo: 'test-org/test', role: 'app', missing: ['README.md'] }],
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(202);
+    expect(mockCheckReadiness).toHaveBeenCalledOnce();
+
+    await vi.waitFor(() => expect(mockTransition).toHaveBeenCalled(), { timeout: 5000 });
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('proceeds (202) when readiness_gate is warn and the check throws', async () => {
+    mockGetProductRegistry.mockResolvedValue([productWithGate('warn')]);
+    mockCheckReadiness.mockRejectedValue(new Error('GitHub 500'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await dispatch('test-product', 'issue_1');
+    expect(res.status).toBe(202);
+
+    await vi.waitFor(() => expect(mockTransition).toHaveBeenCalled(), { timeout: 5000 });
+    warnSpy.mockRestore();
+  });
+
+  it('bypasses the gate for non-spec-writer dispatches even when required (remediator)', async () => {
+    // spec-remediator at spec-draft is operator-triggered; it is the fix for
+    // missing context, so gating it would be self-defeating (ADR-026).
+    mockGetProductRegistry.mockResolvedValue([productWithGate('required')]);
+    mockGet.mockResolvedValue(makeItem('issue_1', 'spec-draft'));
+    mockCheckReadiness.mockResolvedValue({
+      ready: false,
+      missingContext: [{ repo: 'test-org/test', role: 'app', missing: ['README.md'] }],
+    });
+
+    const res = await dispatch('test-product', 'issue_1', {
+      specialistId: 'spec-remediator',
+      feedback: 'Tighten the acceptance criteria.',
+    });
+    expect(res.status).toBe(202);
+    expect(mockCheckReadiness).not.toHaveBeenCalled();
+
+    // Drain the background job (it will error — no real PR — but the route accepted it).
+    const { getJobStore } = await import('../services/index.js');
+    const jobStore = await getJobStore();
+    const { jobId } = (await res.json()) as { jobId: string };
+    await vi.waitFor(
+      async () => {
+        const job = await jobStore.getJob(jobId);
+        expect(job?.status).not.toBe('running');
+      },
+      { timeout: 5000 },
+    );
   });
 });

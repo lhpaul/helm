@@ -140,6 +140,7 @@ describe('parseProductConfig', () => {
       expect(config.code_repos[0]?.role).toBe('app');
       expect(config.workflow.designer_gate).toBe('skip');
       expect(config.workflow.qa_gate).toBe('skip');
+      expect(config.workflow.readiness_gate).toBe('skip');
     });
 
     it('parses Linear provider with multi-repo and validates discriminated union', () => {

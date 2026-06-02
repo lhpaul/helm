@@ -126,6 +126,16 @@ export const ProductSchema = z
         stages_enabled: z.array(WorkflowStageSchema).min(1),
         designer_gate: z.enum(['skip', 'optional', 'required']).default('skip'),
         qa_gate: z.enum(['skip', 'smoke', 'regression']).default('skip'),
+        /**
+         * Pre-dispatch product-readiness gate (ADR-026). Before running the
+         * spec-writer, Helm checks that every app-role code repo carries a
+         * README and agent instructions (AGENTS.md / AGENT.md / CLAUDE.md) so
+         * the spec-writer fails loudly instead of inventing context.
+         *   - `skip`     — no check (default; backward compatible).
+         *   - `warn`     — check and log warnings, but proceed with dispatch.
+         *   - `required` — block dispatch with 422 + missing_context when not ready.
+         */
+        readiness_gate: z.enum(['skip', 'warn', 'required']).default('skip'),
       })
       .strict(),
     specialists: SpecialistsSchema,

@@ -42,6 +42,19 @@ const STAGE_TO_SPECIALIST: Partial<Record<WorkflowStage, string>> = {
   'code-review': 'reviewer-fanout',
 };
 
+/**
+ * Resolves the specialist a dispatch would run: an explicit override wins,
+ * otherwise the stage-driven default. Returns undefined when no specialist maps
+ * to the stage. Exported so the API readiness gate can decide whether a dispatch
+ * would run the spec-writer without duplicating STAGE_TO_SPECIALIST.
+ */
+export function resolveSpecialistId(
+  currentStage: WorkflowStage,
+  explicitSpecialistId?: string,
+): string | undefined {
+  return explicitSpecialistId ?? STAGE_TO_SPECIALIST[currentStage];
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type DispatchInput = {
@@ -164,7 +177,7 @@ export async function dispatchStageHandler(
     };
   }
 
-  const specialistId = options?.specialistId ?? STAGE_TO_SPECIALIST[item.currentStage];
+  const specialistId = resolveSpecialistId(item.currentStage, options?.specialistId);
 
   if (!specialistId) {
     return {

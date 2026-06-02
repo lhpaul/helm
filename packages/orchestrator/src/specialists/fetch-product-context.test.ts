@@ -26,6 +26,7 @@ const makeProduct = (): Product => ({
     stages_enabled: ['discovery', 'spec-draft', 'released'],
     designer_gate: 'skip',
     qa_gate: 'skip',
+    readiness_gate: 'skip',
   },
   specialists: {
     'spec-writer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
@@ -131,7 +132,34 @@ describe('fetchProductContext', () => {
     expect(ctx.agentMd).toBe('# Agent instructions');
   });
 
-  it('falls back to CLAUDE.md when AGENT.md is absent', async () => {
+  it('prefers AGENTS.md over AGENT.md and CLAUDE.md', async () => {
+    const mockFetch: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if ((url as string).includes('README.md')) return Promise.resolve(okResponse('readme'));
+      if ((url as string).includes('AGENTS.md')) return Promise.resolve(okResponse('agents md'));
+      if ((url as string).includes('AGENT.md')) return Promise.resolve(okResponse('agent md'));
+      if ((url as string).includes('CLAUDE.md')) return Promise.resolve(okResponse('claude md'));
+      return Promise.resolve(notFound());
+    });
+
+    const ctx = await fetchProductContext(makeProduct(), 'tok', mockFetch);
+
+    expect(ctx.agentMd).toBe('agents md');
+  });
+
+  it('falls back to AGENT.md when AGENTS.md is absent', async () => {
+    const mockFetch: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if ((url as string).includes('README.md')) return Promise.resolve(okResponse('readme'));
+      if ((url as string).includes('AGENTS.md')) return Promise.resolve(notFound());
+      if ((url as string).includes('AGENT.md')) return Promise.resolve(okResponse('agent md'));
+      return Promise.resolve(notFound());
+    });
+
+    const ctx = await fetchProductContext(makeProduct(), 'tok', mockFetch);
+
+    expect(ctx.agentMd).toBe('agent md');
+  });
+
+  it('falls back to CLAUDE.md when AGENTS.md and AGENT.md are absent', async () => {
     const mockFetch: FetchFn = vi.fn().mockImplementation((url: string) => {
       if ((url as string).includes('README.md')) return Promise.resolve(okResponse('readme'));
       if ((url as string).includes('AGENT.md')) return Promise.resolve(notFound());

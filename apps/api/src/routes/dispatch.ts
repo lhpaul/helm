@@ -1,7 +1,11 @@
 import { Hono } from 'hono';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { dispatchStageHandler } from '@helm/orchestrator';
+import {
+  dispatchStageHandler,
+  checkProductReadiness,
+  resolveSpecialistId,
+} from '@helm/orchestrator';
 import {
   getProductRegistry,
   getItemStore,
@@ -167,6 +171,42 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   // Also reject when the item belongs to a different product than the URL slug.
   if (!item || item.productSlug !== slug) {
     return c.json({ error: `Item not found: ${externalId}` }, 404);
+  }
+
+  // ── Product-readiness gate (ADR-026) ────────────────────────────────────────
+  // Gate ONLY the spec-writer entry: it reads raw repo docs (README + agent
+  // instructions) and would otherwise invent context. Later stages and the
+  // operator-triggered remediators operate on structured artifacts, not repo
+  // docs, so they bypass the check. Runs before job creation so a non-ready
+  // product returns 422 instead of a 202 that fails downstream.
+  const gateMode = product.workflow.readiness_gate;
+  const resolvedSpecialist = resolveSpecialistId(item.currentStage, bodyResult.data.specialistId);
+  if (gateMode !== 'skip' && resolvedSpecialist === 'spec-writer') {
+    const githubToken = process.env.GITHUB_TOKEN?.trim();
+    try {
+      const readiness = await checkProductReadiness(product, githubToken);
+      if (!readiness.ready) {
+        if (gateMode === 'required') {
+          return c.json(
+            { error: 'Product not ready for dispatch', missing_context: readiness.missingContext },
+            422,
+          );
+        }
+        // warn mode: surface the gaps but proceed with the dispatch.
+        console.warn(
+          `[dispatch] readiness warnings for ${slug}/${externalId}:`,
+          JSON.stringify(readiness.missingContext),
+        );
+      }
+    } catch (err) {
+      // A non-404 fetch/network error is an infrastructure failure, not a client
+      // precondition failure — map it to 502, never a misleading 422.
+      if (gateMode === 'required') {
+        console.error('[dispatch] readiness check failed:', err);
+        return c.json({ error: 'Readiness check failed' }, 502);
+      }
+      console.warn('[dispatch] readiness check failed (warn mode, proceeding):', err);
+    }
   }
 
   // Determine workdir — sibling of the data/items directory

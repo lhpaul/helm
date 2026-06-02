@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { dispatchStageHandler } from './dispatcher.js';
+import { dispatchStageHandler, resolveSpecialistId } from './dispatcher.js';
 
 vi.mock('./specialists/pr-helpers.js', () => ({
   findCodePRUrl: vi.fn().mockResolvedValue('https://github.com/test-org/test-repo/pull/42'),
@@ -81,6 +81,7 @@ const makeProduct = (): Product => ({
     stages_enabled: ['discovery', 'spec-draft', 'released'],
     designer_gate: 'skip',
     qa_gate: 'skip',
+    readiness_gate: 'skip',
   },
   specialists: {
     'spec-writer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
@@ -1633,5 +1634,28 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     // The provisioned workspace was removed by the finally block.
     const after = await listReviewWorkspaces();
     expect(after).toEqual(before);
+  });
+});
+
+// ── resolveSpecialistId ─────────────────────────────────────────────────────────
+
+describe('resolveSpecialistId', () => {
+  it('maps stage-driven defaults from STAGE_TO_SPECIALIST', () => {
+    expect(resolveSpecialistId('discovery')).toBe('spec-writer');
+    expect(resolveSpecialistId('spec-ready')).toBe('plan-writer');
+    expect(resolveSpecialistId('plan-ready')).toBe('implementer');
+    expect(resolveSpecialistId('code-review')).toBe('reviewer-fanout');
+  });
+
+  it('returns undefined for a stage with no mapped specialist', () => {
+    expect(resolveSpecialistId('spec-draft')).toBeUndefined();
+    expect(resolveSpecialistId('released')).toBeUndefined();
+  });
+
+  it('lets an explicit specialistId override the stage default', () => {
+    // discovery would map to spec-writer, but the override wins.
+    expect(resolveSpecialistId('discovery', 'spec-remediator')).toBe('spec-remediator');
+    // explicit override wins even on a stage with no default mapping.
+    expect(resolveSpecialistId('spec-draft', 'spec-remediator')).toBe('spec-remediator');
   });
 });

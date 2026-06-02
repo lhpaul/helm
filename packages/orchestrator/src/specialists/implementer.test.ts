@@ -317,6 +317,14 @@ describe('handleImplementerResult', () => {
       expect(result.error).toBe(
         "Agent finished with status 'error': [turn.failed] model refused: unsafe request",
       );
+      // finalOutput is also surfaced in the error log so it shows up in operator tooling.
+      expect(consoleSpy).toHaveBeenCalledWith(
+        '[implementer] Agent did not complete successfully',
+        expect.objectContaining({
+          status: 'error',
+          finalOutput: '[turn.failed] model refused: unsafe request',
+        }),
+      );
     } finally {
       consoleSpy.mockRestore();
     }

@@ -142,7 +142,9 @@ describe('POST /api/items/:externalId/rollback', () => {
     // The store reflects the new state (not just the response).
     const list = await app.request('/api/items');
     const items = (await list.json()) as { externalId: string; currentStage: string }[];
-    expect(items.find((i) => i.externalId === 'HLM-1')?.currentStage).toBe('plan-ready');
+    const persisted = items.find((i) => i.externalId === 'HLM-1');
+    expect(persisted).toBeDefined();
+    expect(persisted?.currentStage).toBe('plan-ready');
   });
 
   it('returns 400 when the item is not at fromStage (e.g. it is at code-review)', async () => {

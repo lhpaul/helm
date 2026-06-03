@@ -95,7 +95,14 @@ rollbackRouter.post('/items/:externalId/rollback', async (c) => {
     );
   }
 
-  const store = await getItemStore();
+  let store;
+  try {
+    store = await getItemStore();
+  } catch (err) {
+    console.error('[rollback] Failed to load item store:', err);
+    return c.json({ error: 'Failed to load item store' }, 500);
+  }
+
   try {
     const item = await store.forceTransition({
       externalId,

@@ -44,7 +44,11 @@ const RollbackBodySchema = z
 
 rollbackRouter.post('/items/:externalId/rollback', async (c) => {
   const externalId = c.req.param('externalId');
-  if (!EXTERNAL_ID_REGEX.test(externalId)) {
+  // Defense-in-depth: EXTERNAL_ID_REGEX already blocks leading dots (via the
+  // (?!\.) lookahead) and slashes (outside its charset), so '.' and '..' fail
+  // the regex too. The explicit check mirrors dispatchRouter and guards against
+  // future regex relaxations before the externalId reaches any path operation.
+  if (!EXTERNAL_ID_REGEX.test(externalId) || externalId === '.' || externalId === '..') {
     return c.json({ error: `Invalid externalId: "${externalId}"` }, 400);
   }
 

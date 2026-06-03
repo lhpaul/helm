@@ -225,4 +225,25 @@ describe('POST /api/items/:externalId/rollback', () => {
     const res = await post('/api/items/HLM-999/rollback', validBody);
     expect(res.status).toBe(404);
   });
+
+  it('returns 400 on a malformed JSON body', async () => {
+    const res = await app.request('/api/items/HLM-1/rollback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{ not valid json',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 500 with a generic message when product config cannot be loaded', async () => {
+    // Config is resolved before item access; the singleton was reset in
+    // beforeEach, so deleting the path makes the fresh load fail. No seed needed
+    // (and seeding would cache the config, masking the failure).
+    delete process.env.HELM_KNOWLEDGE_REPO_PATH;
+    const res = await post('/api/items/HLM-1/rollback', validBody);
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    // Generic message — internal details (env var names, paths) stay server-side.
+    expect(body.error).toBe('Failed to load product config');
+  });
 });

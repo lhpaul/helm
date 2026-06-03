@@ -17,7 +17,19 @@ export interface SubprocessLike {
   readonly exited: Promise<number>;
 }
 
-export type SpawnFn = (args: string[], cwd: string, env: Record<string, string>) => SubprocessLike;
+export type SpawnFn = (
+  args: string[],
+  cwd: string,
+  env: Record<string, string>,
+  /**
+   * Optional bytes to feed the subprocess over stdin. When provided, the spawn
+   * writes them and closes the pipe (EOF), so a CLI that reads its prompt from
+   * stdin proceeds without blocking. When omitted, stdin is `/dev/null`. Codex
+   * uses this to pass large prompts off the argv (ARG_MAX); ClaudeCodeRuntime
+   * leaves it unset and keeps the prompt on the command line. See ADR-028.
+   */
+  stdin?: Uint8Array,
+) => SubprocessLike;
 
 /**
  * Git credentials scrubbed from every spawn-based runtime's subprocess env.
@@ -66,17 +78,22 @@ export function buildSubprocessEnv(
  * Default spawn: delegates to Bun.spawn with stdout and stderr piped.
  * Using globalThis cast to avoid a bun-types dev-dependency in this package.
  *
- * `stdin: 'ignore'` is explicit and load-bearing: neither runtime feeds the
- * agent over stdin (the prompt is passed as a CLI argument), and `codex exec`
- * actively reads stdin to EOF ("Reading additional input from stdin…"). With an
- * inherited/piped stdin that never closes, the subprocess would block until the
- * timeout; Bun's `'ignore'` maps stdin to /dev/null, giving an immediate EOF so
- * the run proceeds.
+ * stdin handling — two modes, both giving the subprocess a definite EOF:
+ *  - No `stdin` arg (ClaudeCodeRuntime): `'ignore'` maps stdin to /dev/null.
+ *    The prompt rides on the command line; `codex exec`-style CLIs that read
+ *    stdin to EOF ("Reading prompt from stdin…") get an immediate EOF and run.
+ *  - With a `stdin` byte buffer (CodexRuntime, ADR-028): Bun writes the buffer
+ *    and closes the pipe, so the CLI reads the whole prompt then sees EOF. This
+ *    keeps large prompts off the argv (ARG_MAX) without hanging.
+ *
+ * Either way the pipe is closed — an inherited/never-closing stdin would block
+ * the subprocess until the timeout.
  */
 export function defaultSpawn(
   args: string[],
   cwd: string,
   env: Record<string, string>,
+  stdin?: Uint8Array,
 ): SubprocessLike {
   const bun = (globalThis as Record<string, unknown>)['Bun'] as
     | {
@@ -84,7 +101,7 @@ export function defaultSpawn(
           args: string[],
           options: {
             cwd: string;
-            stdin: 'ignore';
+            stdin: 'ignore' | Uint8Array;
             stdout: 'pipe';
             stderr: 'pipe';
             env: Record<string, string>;
@@ -93,5 +110,5 @@ export function defaultSpawn(
       }
     | undefined;
   if (!bun) throw new Error('Spawn-based runtimes require the Bun runtime');
-  return bun.spawn(args, { cwd, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', env });
+  return bun.spawn(args, { cwd, stdin: stdin ?? 'ignore', stdout: 'pipe', stderr: 'pipe', env });
 }

@@ -15,13 +15,21 @@ import type { SpawnFn, SubprocessLike } from './_env.js';
  * `claude -p` off the subscription onto metered API billing; Codex headless runs
  * against the ChatGPT subscription, leaving the marginal cost ~$0 (see ADR-021).
  *
- * ── Discovery findings (Codex CLI v0.133.0, captured 2026-05-29) ─────────────
+ * ── Discovery findings (Codex CLI v0.133.0, captured 2026-05-29;
+ *    re-verified against v0.136.0 on 2026-06-02 — see ADR-028) ────────────────
  *
- * Headless command: `codex exec [PROMPT]` (alias `codex e`). Non-interactive —
- *   there are NO interactive approval prompts in exec mode, so the implementer
- *   can run bash autonomously. This was verified end-to-end: under
- *   `--sandbox workspace-write` the agent ran `printf … > file`, `ls`, and
- *   `git status` without any prompt. → No specialist needs to be excluded.
+ * Headless command: `codex exec` reading the prompt from stdin, with the working
+ *   root pinned via `-C <workdir>`. Non-interactive — there are NO interactive
+ *   approval prompts in exec mode, so the implementer can run bash autonomously.
+ *   This was verified end-to-end: under `--sandbox workspace-write` the agent ran
+ *   `printf … > file`, `ls`, and `git status` without any prompt. → No specialist
+ *   needs to be excluded.
+ *   Prompt delivery (ADR-028): stdin, not a positional arg, so large specialist
+ *   prompts don't hit ARG_MAX. With no positional prompt, `codex exec` reads
+ *   instructions from stdin until EOF.
+ *   Working root (ADR-028): `-C <workdir>` is authoritative over the spawn cwd —
+ *   without it the CLI resolves the root from the enclosing Git repo and can run
+ *   outside the intended workdir.
  *
  * Streaming: `--json` emits one JSON object per line (JSONL) on stdout. Observed
  *   event types:
@@ -35,8 +43,13 @@ import type { SpawnFn, SubprocessLike } from './_env.js';
  *   Item types we act on:
  *     {id,type:"agent_message",text}                  → role:'agent'
  *     {id,type:"command_execution",command,exit_code} → role:'tool'
- *   stderr carries non-JSON noise ("Reading additional input from stdin…", MCP
- *   transport warnings, "Shell cwd was reset …"); stdout is pure JSONL.
+ *   v0.136.0 adds fields/types we tolerate but don't act on: command_execution
+ *   gained `aggregated_output`/`status`, and a new `file_change` item type
+ *   ({type:"file_change",changes:[{path,kind}]}) is emitted for edits. The inner
+ *   item.type switch ignores anything that isn't agent_message/command_execution,
+ *   so new item types pass through harmlessly.
+ *   stderr carries non-JSON noise ("Reading prompt from stdin…", MCP transport
+ *   warnings, "Shell cwd was reset …"); stdout is pure JSONL.
  *
  * Exit code: codex exec exits 0 even on a failed turn, so the verdict MUST come
  *   from the terminal event (turn.completed vs turn.failed), never the exit code.
@@ -352,7 +365,13 @@ export class CodexRuntime implements IAgentRuntime {
     const permissionMode = params.permissionMode ?? 'acceptEdits';
     const timeoutMs = params.timeoutMs ?? this.timeoutMs;
 
-    const args = ['codex', 'exec', '--json', '--skip-git-repo-check'];
+    // `-C <workdir>` sets the agent's working root explicitly. This is
+    // authoritative over the spawn cwd: `codex exec` otherwise resolves its
+    // root from the enclosing Git repo and can land outside the intended
+    // workdir (observed: "Shell cwd was reset to …" with the process cwd
+    // ignored). We pass BOTH `-C` and the spawn cwd — `-C` wins, cwd is the
+    // fallback if a future CLI drops the flag. See ADR-028.
+    const args = ['codex', 'exec', '--json', '--skip-git-repo-check', '-C', params.workdir];
     if (permissionMode === 'bypassPermissions') {
       // Full access — no sandbox, no approvals. Needed for the implementer which
       // runs builds/tests/git in its workspace.
@@ -365,12 +384,17 @@ export class CodexRuntime implements IAgentRuntime {
     if (params.model) {
       args.push('--model', params.model);
     }
-    // Prompt as the trailing positional argument (stdin is left at EOF).
-    args.push(params.prompt);
 
     const env = buildSubprocessEnv(params.env, CODEX_SCRUB_KEYS);
 
-    const proc = this.spawnFn(args, params.workdir, env);
+    // Prompt fed over stdin rather than as a positional argument: specialist
+    // prompts (spec-writer pulls README + AGENTS.md/CLAUDE.md) can exceed the
+    // OS argv limit (ARG_MAX). `codex exec` with no positional prompt reads its
+    // instructions from stdin; defaultSpawn writes these bytes and closes the
+    // pipe (EOF) so the run proceeds. See ADR-028.
+    const stdin = new TextEncoder().encode(params.prompt);
+
+    const proc = this.spawnFn(args, params.workdir, env, stdin);
     const session = new CodexSession(proc, params, timeoutMs);
     void session.run();
     return session;

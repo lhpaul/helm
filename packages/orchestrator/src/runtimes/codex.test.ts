@@ -405,8 +405,44 @@ describe('CodexRuntime', () => {
     expect(args[1]).toBe('exec');
     expect(args).toContain('--json');
     expect(args).toContain('--skip-git-repo-check');
-    // Prompt is the trailing positional argument.
-    expect(args[args.length - 1]).toBe('Create hello.txt.');
+    // Prompt is fed over stdin, NOT as a positional argument (ADR-028).
+    expect(args).not.toContain('Create hello.txt.');
+  });
+
+  it('pins the working root with -C <workdir> (authoritative over spawn cwd)', async () => {
+    const capturedArgs: string[][] = [];
+    const fakeSpawn: SpawnFn = (args) => {
+      capturedArgs.push([...args]);
+      return makeFakeProcess(loadFixture('exec-success.jsonl'));
+    };
+
+    const runtime = new CodexRuntime(fakeSpawn);
+    await runtime.spawn(makeParams('/tmp/the-workdir'));
+
+    const args = capturedArgs[0] ?? [];
+    const idx = args.indexOf('-C');
+    expect(idx).toBeGreaterThan(-1);
+    expect(args[idx + 1]).toBe('/tmp/the-workdir');
+  });
+
+  it('feeds the prompt over stdin (off the argv) and keeps cwd as the workdir', async () => {
+    let capturedStdin: Uint8Array | undefined;
+    let capturedCwd: string | undefined;
+    const fakeSpawn: SpawnFn = (args, cwd, env, stdin) => {
+      void args;
+      void env;
+      capturedCwd = cwd;
+      capturedStdin = stdin;
+      return makeFakeProcess(loadFixture('exec-success.jsonl'));
+    };
+
+    const runtime = new CodexRuntime(fakeSpawn);
+    await runtime.spawn(makeParams('/tmp/the-workdir'));
+
+    expect(capturedStdin).toBeInstanceOf(Uint8Array);
+    expect(new TextDecoder().decode(capturedStdin)).toBe('Create hello.txt.');
+    // spawn cwd retained as the fallback root if a future CLI drops -C.
+    expect(capturedCwd).toBe('/tmp/the-workdir');
   });
 
   it('maps acceptEdits (default) to --sandbox workspace-write', async () => {
@@ -540,5 +576,55 @@ describe('CodexRuntime', () => {
       if (original === undefined) delete process.env['OPENAI_API_KEY'];
       else process.env['OPENAI_API_KEY'] = original;
     }
+  });
+});
+
+// ── Real Codex CLI 0.136.0 capture (ADR-028) ──────────────────────────────────
+// These fixtures are verbatim stdout from `codex exec --json` on v0.136.0. They
+// lock the runtime against the actual 0.136 event schema, which added the
+// `aggregated_output`/`status` fields on command_execution, a new `file_change`
+// item type, and a JSON-stringified nested payload inside turn.failed.error.message.
+
+describe('CodexRuntime — real 0.136.0 JSONL schema', () => {
+  it('parses a real success run: status done, last agent_message as finalOutput', async () => {
+    const lines = loadFixture('exec-success-0.136.jsonl');
+    const runtime = new CodexRuntime(() => makeFakeProcess(lines));
+
+    const session = await runtime.spawn(makeParams());
+    const result = await session.wait();
+
+    expect(result.status).toBe('done');
+    expect(result.finalOutput).toBe('Created `greeting.txt` containing `hello`.');
+  });
+
+  it('tolerates the new file_change item type — only command_execution surfaces as tool', async () => {
+    const lines = loadFixture('exec-success-0.136.jsonl');
+    const runtime = new CodexRuntime(() => makeFakeProcess(lines));
+
+    const session = await runtime.spawn(makeParams());
+    const received: AgentMessage[] = [];
+    session.onMessage((m) => received.push(m));
+    await session.wait();
+
+    // Fixture has two command_execution completions (git remote -v, cat) and one
+    // file_change completion; the file_change must NOT produce a message.
+    const toolMsgs = received.filter((m) => m.role === 'tool');
+    expect(toolMsgs).toHaveLength(2);
+    expect(toolMsgs[0]?.content).toContain('[exec]');
+    expect(toolMsgs[1]?.content).toContain('cat greeting.txt');
+    expect(toolMsgs[1]?.content).toContain('(exit 0)');
+    expect(received.some((m) => m.content.includes('file_change'))).toBe(false);
+  });
+
+  it('propagates a real turn.failed message into finalOutput (#47 patch survives)', async () => {
+    const lines = loadFixture('turn-failed-0.136.jsonl');
+    const runtime = new CodexRuntime(() => makeFakeProcess(lines));
+
+    const session = await runtime.spawn(makeParams());
+    const result = await session.wait();
+
+    expect(result.status).toBe('error');
+    expect(result.finalOutput).toContain('[turn.failed]');
+    expect(result.finalOutput).toContain('not supported');
   });
 });

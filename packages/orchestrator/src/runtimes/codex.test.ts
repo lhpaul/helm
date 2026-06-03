@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { CodexRuntime } from './codex.js';
-import { buildSubprocessEnv } from './_env.js';
+import { buildSubprocessEnv, defaultSpawn } from './_env.js';
 import type { SubprocessLike, SpawnFn } from './_env.js';
 import type { AgentMessage, SpawnParams } from '../runtime.js';
 
@@ -626,5 +626,58 @@ describe('CodexRuntime — real 0.136.0 JSONL schema', () => {
     expect(result.status).toBe('error');
     expect(result.finalOutput).toContain('[turn.failed]');
     expect(result.finalOutput).toContain('not supported');
+  });
+});
+
+// ── defaultSpawn stdin branching (ADR-028) ────────────────────────────────────
+// The stdin conditional is load-bearing: a regression to always `'ignore'` would
+// strip the Codex prompt (delivered over stdin), so child processes would receive
+// no instructions. defaultSpawn calls Bun.spawn directly, so we stub globalThis.Bun
+// to capture the options object instead of spawning a real process.
+
+describe('defaultSpawn — stdin handling', () => {
+  function withStubbedBun<T>(fn: (calls: Array<{ stdin: unknown }>) => T): T {
+    const calls: Array<{ stdin: unknown }> = [];
+    const g = globalThis as Record<string, unknown>;
+    const original = g['Bun'];
+    g['Bun'] = {
+      spawn(_args: string[], opts: { stdin: unknown }) {
+        calls.push({ stdin: opts.stdin });
+        return makeFakeProcess([]) as unknown as SubprocessLike;
+      },
+    };
+    try {
+      return fn(calls);
+    } finally {
+      if (original === undefined) delete g['Bun'];
+      else g['Bun'] = original;
+    }
+  }
+
+  it('passes a stdin buffer through to Bun.spawn when provided', () => {
+    withStubbedBun((calls) => {
+      const buf = new TextEncoder().encode('the prompt');
+      defaultSpawn(['codex', 'exec'], '/tmp/wd', {}, buf);
+      expect(calls[0]?.stdin).toBeInstanceOf(Uint8Array);
+      expect(new TextDecoder().decode(calls[0]?.stdin as Uint8Array)).toBe('the prompt');
+    });
+  });
+
+  it("falls back to stdin:'ignore' when no buffer is provided (ClaudeCodeRuntime path)", () => {
+    withStubbedBun((calls) => {
+      defaultSpawn(['claude', '-p', 'prompt'], '/tmp/wd', {});
+      expect(calls[0]?.stdin).toBe('ignore');
+    });
+  });
+
+  it('throws a clear error when the Bun runtime is unavailable', () => {
+    const g = globalThis as Record<string, unknown>;
+    const original = g['Bun'];
+    delete g['Bun'];
+    try {
+      expect(() => defaultSpawn(['codex'], '/tmp/wd', {})).toThrow(/require the Bun runtime/);
+    } finally {
+      if (original !== undefined) g['Bun'] = original;
+    }
   });
 });

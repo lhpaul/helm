@@ -66,6 +66,17 @@ rollbackRouter.post('/items/:externalId/rollback', async (c) => {
 
   // Concurrency guard: refuse to move the item while a dispatch is in flight.
   // A rollback during an active job would race the job's own transition writes.
+  //
+  // Residual race (acceptable for the v0 single-process / single-user scope, in
+  // line with the "last write wins" note on ItemStore.transition): this is a
+  // read-only check against jobs already persisted to disk. It does NOT consult
+  // JobStore's in-memory inflight set, so a dispatch that is mid-creation (lock
+  // held in createJobIfNoRunning, job file not yet written) is invisible here;
+  // and no lock spans the gap between this check and forceTransition, so a
+  // dispatch starting immediately after is unguarded. This is a best-effort
+  // guard, not a hard mutex. Promote to a shared lock alongside the item-store
+  // concurrency work (ItemStore.transition's noted v0 limitation) if parallel
+  // dispatch + rollback becomes real.
   let jobStore;
   try {
     jobStore = await getJobStore();

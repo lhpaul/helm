@@ -190,6 +190,12 @@ describe('POST /api/items/:externalId/rollback', () => {
     expect(res.status).toBe(400);
   });
 
+  it('returns 400 when reason is an empty string', async () => {
+    await seedItemAt('HLM-1', 'in-development');
+    const res = await post('/api/items/HLM-1/rollback', { ...validBody, reason: '' });
+    expect(res.status).toBe(400);
+  });
+
   it('returns 400 when reason exceeds 500 characters', async () => {
     await seedItemAt('HLM-1', 'in-development');
     const res = await post('/api/items/HLM-1/rollback', {

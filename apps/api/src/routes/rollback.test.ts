@@ -99,6 +99,7 @@ async function seedItemAt(externalId: string, targetStage: (typeof CHAIN)[number
     expect(res.status).toBe(200);
     if (toStage === targetStage) return;
   }
+  throw new Error(`seedItemAt: targetStage "${targetStage}" not reached in CHAIN`);
 }
 
 // Writes a job record directly to the jobs dir to simulate an in-flight dispatch.

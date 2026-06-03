@@ -280,7 +280,9 @@ export async function materializeProductContext(
     missingFiles.push(...AGENT_INSTRUCTION_FILES);
   }
 
-  return { readme, agentInstructions, missingFiles };
+  // Spread-copy missingFiles so callers can't mutate our local array (matches the
+  // defensive posture of allMissing() above and the repo's return-copy convention).
+  return { readme, agentInstructions, missingFiles: [...missingFiles] };
 }
 
 // ── Spec fetch (for plan-writer) ──────────────────────────────────────────────

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { readJson, writeJsonAtomic } from '@helm/storage';
 import { INITIAL_STAGE, validateTransition } from '@helm/workflow';
 import type { WorkflowStage } from '@helm/workflow';
-import { ItemAlreadyExistsError, ItemNotFoundError } from './errors.js';
+import { ItemAlreadyExistsError, ItemNotFoundError, StageMismatchError } from './errors.js';
 import { EXTERNAL_ID_REGEX } from './types.js';
 import type { ItemState, WorkflowEvent } from './types.js';
 
@@ -111,6 +111,55 @@ export class ItemStore {
     // The file is NOT written until after this check — invalid transitions are a no-op.
     validateTransition(current.currentStage, input.toStage);
 
+    return this.applyTransition(current, input);
+  }
+
+  /**
+   * Applies a workflow transition WITHOUT the validateTransition guard.
+   *
+   * This deliberately bypasses the state machine's VALID_TRANSITIONS map and is
+   * reserved for explicit operator escape valves — specifically rolling a failed
+   * implementer dispatch back from 'in-development' to 'plan-ready' (see ADR-029).
+   * It is NOT part of the happy-path workflow: normal/forward edges MUST use
+   * transition(), which keeps the state-machine guard intact. Callers of this
+   * method are security-sensitive and should be enforced by their own allow-list
+   * (the rollback route pins the pair via strict Zod literals).
+   *
+   * Asserts the item's current stage matches `fromStage` to guard against races
+   * (the item moved since the operator read its state). The file is NOT written
+   * unless the guard passes.
+   *
+   * Throws ItemNotFoundError if the item does not exist.
+   * Throws StageMismatchError if the current stage does not match `fromStage`.
+   */
+  async forceTransition(input: {
+    externalId: string;
+    fromStage: WorkflowStage;
+    toStage: WorkflowStage;
+    triggeredBy: string;
+    note?: string;
+  }): Promise<ItemState> {
+    const current = await readJson<ItemState>(this.itemPath(input.externalId));
+    if (current === null) {
+      throw new ItemNotFoundError(input.externalId);
+    }
+
+    if (current.currentStage !== input.fromStage) {
+      throw new StageMismatchError(input.externalId, input.fromStage, current.currentStage);
+    }
+
+    return this.applyTransition(current, input);
+  }
+
+  /**
+   * Shared internals for transition() and forceTransition(): appends the
+   * history event and persists atomically. Does NOT validate the edge — the
+   * public methods are responsible for whatever guard (or bypass) applies.
+   */
+  private async applyTransition(
+    current: ItemState,
+    input: { toStage: WorkflowStage; triggeredBy: string; note?: string },
+  ): Promise<ItemState> {
     const now = new Date().toISOString();
     const event: WorkflowEvent = {
       fromStage: current.currentStage,
@@ -127,7 +176,7 @@ export class ItemStore {
       updatedAt: now,
     };
 
-    await writeJsonAtomic(this.itemPath(input.externalId), updated);
+    await writeJsonAtomic(this.itemPath(current.externalId), updated);
     return updated;
   }
 

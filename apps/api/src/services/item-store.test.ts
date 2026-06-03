@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WorkflowTransitionError } from '@helm/workflow';
-import { ItemAlreadyExistsError, ItemNotFoundError } from './errors.js';
+import { ItemAlreadyExistsError, ItemNotFoundError, StageMismatchError } from './errors.js';
 import { ItemStore } from './item-store.js';
 
 let itemsDir: string;
@@ -127,6 +127,76 @@ describe('transition', () => {
     });
     const state = await store.get('HLM-1');
     expect(state?.history[1]?.note).toBe('starting spec after grooming session');
+  });
+});
+
+describe('forceTransition', () => {
+  // Advances an item along the valid forward chain to 'in-development', the
+  // only stage from which a rollback to 'plan-ready' is permitted (ADR-029).
+  async function advanceToInDevelopment(): Promise<void> {
+    await store.create(BASE_INPUT);
+    for (const toStage of [
+      'spec-draft',
+      'spec-ready',
+      'plan-draft',
+      'plan-ready',
+      'in-development',
+    ] as const) {
+      await store.transition({ externalId: 'HLM-1', toStage, triggeredBy: 'agent:test' });
+    }
+  }
+
+  it('applies the in-development → plan-ready edge that transition() rejects', async () => {
+    await advanceToInDevelopment();
+    const updated = await store.forceTransition({
+      externalId: 'HLM-1',
+      fromStage: 'in-development',
+      toStage: 'plan-ready',
+      triggeredBy: 'manual:rollback',
+      note: 'codex image-tool crash, $0 cost',
+    });
+    expect(updated.currentStage).toBe('plan-ready');
+    const last = updated.history[updated.history.length - 1];
+    expect(last?.fromStage).toBe('in-development');
+    expect(last?.toStage).toBe('plan-ready');
+    expect(last?.triggeredBy).toBe('manual:rollback');
+    expect(last?.note).toBe('codex image-tool crash, $0 cost');
+  });
+
+  it('regression: transition() still rejects the same edge (bypass is not accidental)', async () => {
+    await advanceToInDevelopment();
+    await expect(
+      store.transition({ externalId: 'HLM-1', toStage: 'plan-ready', triggeredBy: 't' }),
+    ).rejects.toThrow(WorkflowTransitionError);
+  });
+
+  it('throws StageMismatchError when current stage does not match fromStage, leaving the file unchanged', async () => {
+    await store.create(BASE_INPUT); // still at 'discovery'
+    await expect(
+      store.forceTransition({
+        externalId: 'HLM-1',
+        fromStage: 'in-development',
+        toStage: 'plan-ready',
+        triggeredBy: 'manual:rollback',
+        note: 'reason',
+      }),
+    ).rejects.toThrow(StageMismatchError);
+
+    const state = await store.get('HLM-1');
+    expect(state?.currentStage).toBe('discovery');
+    expect(state?.history).toHaveLength(1);
+  });
+
+  it('throws ItemNotFoundError when item does not exist', async () => {
+    await expect(
+      store.forceTransition({
+        externalId: 'missing',
+        fromStage: 'in-development',
+        toStage: 'plan-ready',
+        triggeredBy: 'manual:rollback',
+        note: 'reason',
+      }),
+    ).rejects.toThrow(ItemNotFoundError);
   });
 });
 

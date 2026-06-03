@@ -149,6 +149,42 @@ describe('listJobsForItem', () => {
   });
 });
 
+describe('getRunningJobForItem', () => {
+  it('returns null when the item has no jobs at all', async () => {
+    const running = await store.getRunningJobForItem('test-product', 'issue_1');
+    expect(running).toBeNull();
+  });
+
+  it('returns null when the item has jobs but none are running', async () => {
+    const job = await store.createJob(BASE_INPUT);
+    await store.updateJob(job.jobId, { status: 'done', finishedAt: new Date().toISOString() });
+    const running = await store.getRunningJobForItem('test-product', 'issue_1');
+    expect(running).toBeNull();
+  });
+
+  it('returns the running job, ignoring finished jobs for the same item', async () => {
+    const done = await store.createJob(BASE_INPUT);
+    await store.updateJob(done.jobId, { status: 'done', finishedAt: new Date().toISOString() });
+    const errored = await store.createJob(BASE_INPUT);
+    await store.updateJob(errored.jobId, { status: 'error', finishedAt: new Date().toISOString() });
+    const live = await store.createJob(BASE_INPUT);
+
+    const running = await store.getRunningJobForItem('test-product', 'issue_1');
+    expect(running?.jobId).toBe(live.jobId);
+    expect(running?.status).toBe('running');
+  });
+
+  it('does not match a running job belonging to a different item', async () => {
+    await store.createJob({
+      productSlug: 'other-product',
+      externalId: 'issue_2',
+      specialistId: 'spec-writer',
+    });
+    const running = await store.getRunningJobForItem('test-product', 'issue_1');
+    expect(running).toBeNull();
+  });
+});
+
 describe('reconcileOrphanedJobs', () => {
   it('marks running jobs as error with orphan message', async () => {
     const job = await store.createJob(BASE_INPUT);

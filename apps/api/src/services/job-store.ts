@@ -168,6 +168,19 @@ export class JobStore {
   }
 
   /**
+   * Returns the running job for an item, or null if none is running.
+   *
+   * Thin read-only wrapper over listJobsForItem for callers that need a
+   * concurrency guard WITHOUT creating a job (e.g. the rollback endpoint, which
+   * must refuse to move an item while a dispatch is in flight). Job creation
+   * with the atomic in-memory lock stays in createJobIfNoRunning.
+   */
+  async getRunningJobForItem(productSlug: string, externalId: string): Promise<Job | null> {
+    const jobs = await this.listJobsForItem(productSlug, externalId);
+    return jobs.find((j) => j.status === 'running') ?? null;
+  }
+
+  /**
    * Marks all running jobs as error with an orphan message.
    * Called on server startup to clean up jobs that were interrupted.
    * Returns the count of reconciled jobs.

@@ -705,6 +705,53 @@ describe('dispatchStageHandler', () => {
     expect(await readFile(join(workdir, 'CLAUDE.md'), 'utf8')).toBe('# CLAUDE full');
   });
 
+  it('spec-writer continues the dispatch when materialization fails (best-effort .catch)', async () => {
+    // A non-404 HTTP error makes materializeProductContext reject. The dispatcher
+    // must swallow it (log + continue), not abort the spec-writer dispatch.
+    const fetchFn: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('README.md'))
+        return Promise.resolve({
+          ok: false,
+          status: 403,
+          text: () => Promise.resolve('Forbidden'),
+        } as Response);
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      } as Response);
+    });
+    const { runGit, runGh } = makePublishRunners(
+      'https://github.com/test-org/test-knowledge/pull/3',
+    );
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const result = await dispatchStageHandler(
+        { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+        makeProduct(),
+        makeSpecWriterRuntime('issue_1'),
+        transition as ItemTransitionFn,
+        { workdir, githubToken: 'test-token', fetchFn, runGit, runGh },
+      );
+
+      // Dispatch still completes despite the materialization failure.
+      expect(result.status).toBe('done');
+      expect(result.newStage).toBe('spec-draft');
+      // The materialize-specific best-effort log fired (distinct from the Part A
+      // context-fetch log, so we know it was the materialize catch).
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to materialize product context into worktree'),
+        expect.any(Error),
+      );
+      // Nothing materialized — the worktree lacks the README/agent files.
+      const entries = await readdir(workdir);
+      expect(entries).not.toContain('README.md');
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
   it('spec-writer skips materialization when no githubToken is provided', async () => {
     const result = await dispatchStageHandler(
       { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },

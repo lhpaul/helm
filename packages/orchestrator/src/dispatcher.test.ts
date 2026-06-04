@@ -1,4 +1,4 @@
-import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -645,6 +645,210 @@ describe('dispatchStageHandler', () => {
     );
     expect(result.newStage).toBe('code-review');
     expect(result.prUrl).toBe(expectedPrUrl);
+  });
+
+  // ── Product-context materialization (ADR-030) ──────────────────────────────
+  // The spec-writer / plan-writer scratch worktree gets the full README + winning
+  // agent instruction file written to disk before the agent spawns; the
+  // implementer does not (it has CLAUDE.md via its shallow clone). The unique,
+  // observable signature of a materialize call is a README.md / agent file landing
+  // in `workdir`, so these tests assert on the worktree contents.
+
+  /** A clone-faking runGit + pr-list/create runGh, for paths that also publish. */
+  const makePublishRunners = (prUrl: string): { runGit: RunGit; runGh: RunGh } => ({
+    runGit: vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone')
+        await mkdir(join(args[args.length - 1]!, '.git'), { recursive: true });
+      if (args[0] === 'status') return { stdout: 'M  file\n' };
+      return { stdout: '' };
+    }),
+    runGh: vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create') return { stdout: `${prUrl}\n` };
+      return { stdout: '' };
+    }),
+  });
+
+  it('spec-writer materializes the full README + agent instructions into the worktree (ADR-030)', async () => {
+    const longReadme = '# Full README\n' + 'x'.repeat(3000); // exceeds the 2000-char prompt cap
+    const fetchFn: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('README.md'))
+        return Promise.resolve({ ok: true, text: () => Promise.resolve(longReadme) } as Response);
+      if (url.includes('CLAUDE.md'))
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve('# CLAUDE full'),
+        } as Response);
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      } as Response);
+    });
+    const { runGit, runGh } = makePublishRunners(
+      'https://github.com/test-org/test-knowledge/pull/1',
+    );
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn, runGit, runGh },
+    );
+
+    expect(result.status).toBe('done');
+    // Full files on disk — verbatim, no truncation suffix.
+    const readmeOnDisk = await readFile(join(workdir, 'README.md'), 'utf8');
+    expect(readmeOnDisk).toBe(longReadme);
+    expect(readmeOnDisk.length).toBeGreaterThan(2000);
+    expect(await readFile(join(workdir, 'CLAUDE.md'), 'utf8')).toBe('# CLAUDE full');
+  });
+
+  it('spec-writer continues the dispatch when materialization fails (best-effort .catch)', async () => {
+    // A non-404 HTTP error makes materializeProductContext reject. The dispatcher
+    // must swallow it (log + continue), not abort the spec-writer dispatch.
+    const fetchFn: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('README.md'))
+        return Promise.resolve({
+          ok: false,
+          status: 403,
+          text: () => Promise.resolve('Forbidden'),
+        } as Response);
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      } as Response);
+    });
+    const { runGit, runGh } = makePublishRunners(
+      'https://github.com/test-org/test-knowledge/pull/3',
+    );
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const result = await dispatchStageHandler(
+        { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+        makeProduct(),
+        makeSpecWriterRuntime('issue_1'),
+        transition as ItemTransitionFn,
+        { workdir, githubToken: 'test-token', fetchFn, runGit, runGh },
+      );
+
+      // Dispatch still completes despite the materialization failure.
+      expect(result.status).toBe('done');
+      expect(result.newStage).toBe('spec-draft');
+      // The materialize-specific best-effort log fired (distinct from the Part A
+      // context-fetch log, so we know it was the materialize catch).
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to materialize product context into worktree'),
+        expect.any(Error),
+      );
+      // Nothing materialized — the worktree lacks the README/agent files.
+      const entries = await readdir(workdir);
+      expect(entries).not.toContain('README.md');
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('spec-writer skips materialization when no githubToken is provided', async () => {
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'discovery' },
+      makeProduct(),
+      makeSpecWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir }, // no token → Part A and materialization both skipped
+    );
+
+    expect(result.status).toBe('done');
+    const entries = await readdir(workdir);
+    expect(entries).not.toContain('README.md');
+    expect(entries).not.toContain('CLAUDE.md');
+  });
+
+  it('plan-writer materializes the README + winning agent instruction file into the worktree', async () => {
+    const fetchFn: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/specs/'))
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve('# Spec content'),
+        } as Response);
+      if (url.includes('README.md'))
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve('# README for plan'),
+        } as Response);
+      if (url.includes('AGENTS.md'))
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve('# AGENTS for plan'),
+        } as Response);
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      } as Response);
+    });
+    const { runGit, runGh } = makePublishRunners(
+      'https://github.com/test-org/test-knowledge/pull/2',
+    );
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-ready' },
+      makeProduct(),
+      makePlanWriterRuntime('issue_1'),
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn, runGit, runGh },
+    );
+
+    expect(result.specialistId).toBe('plan-writer');
+    expect(result.status).toBe('done');
+    expect(await readFile(join(workdir, 'README.md'), 'utf8')).toBe('# README for plan');
+    // AGENTS.md wins the preference order and is written under its real variant name.
+    expect(await readFile(join(workdir, 'AGENTS.md'), 'utf8')).toBe('# AGENTS for plan');
+    expect(await readdir(workdir)).not.toContain('CLAUDE.md');
+  });
+
+  it('implementer does NOT materialize product context into the scratch worktree', async () => {
+    transition
+      .mockResolvedValueOnce({ currentStage: 'in-development' })
+      .mockResolvedValueOnce({ currentStage: 'code-review' });
+
+    // README/CLAUDE are served (the implementer's fetchProductContext still pulls
+    // them for prompt injection) — but no materialize call means they must not
+    // appear in `workdir`. The implementer reads CLAUDE.md from its shallow clone.
+    const fetchFn: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/plans/'))
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve('# Plan content'),
+        } as Response);
+      if (url.includes('README.md'))
+        return Promise.resolve({ ok: true, text: () => Promise.resolve('# README') } as Response);
+      if (url.includes('CLAUDE.md'))
+        return Promise.resolve({ ok: true, text: () => Promise.resolve('# CLAUDE') } as Response);
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      } as Response);
+    });
+    const { runGit, runGh } = makePublishRunners('https://github.com/test-org/test/pull/9');
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+      makeProduct(),
+      new MockAgentRuntime({ messages: [] }),
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', fetchFn, runGit, runGh },
+    );
+
+    expect(result.specialistId).toBe('implementer');
+    // The scratch workdir is left clean — materialization is spec/plan-writer only.
+    const entries = await readdir(workdir);
+    expect(entries).not.toContain('README.md');
+    expect(entries).not.toContain('CLAUDE.md');
   });
 
   it('implementer returns error without spawning when product has no code_repos', async () => {

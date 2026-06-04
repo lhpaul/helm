@@ -35,10 +35,15 @@ export {
 
 export {
   fetchProductContext,
+  materializeProductContext,
   parseGitHubRepoUrl,
   AGENT_INSTRUCTION_FILES,
 } from './specialists/fetch-product-context.js';
-export type { ProductContext, FetchFn } from './specialists/fetch-product-context.js';
+export type {
+  ProductContext,
+  MaterializedProductContext,
+  FetchFn,
+} from './specialists/fetch-product-context.js';
 
 export { publishSpecToPR } from './specialists/spec-publisher.js';
 export type {

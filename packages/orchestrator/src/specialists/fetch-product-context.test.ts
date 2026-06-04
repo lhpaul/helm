@@ -1,7 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchProductContext,
   fetchSpecForPlan,
+  materializeProductContext,
   parseGitHubRepoUrl,
 } from './fetch-product-context.js';
 import type { FetchFn } from './fetch-product-context.js';
@@ -231,6 +235,151 @@ describe('fetchProductContext', () => {
     expect(
       urls.some((u) => u.startsWith('https://raw.githubusercontent.com/test-org/test-repo/main/')),
     ).toBe(true);
+  });
+});
+
+// ── materializeProductContext ─────────────────────────────────────────────────
+
+describe('materializeProductContext', () => {
+  let workdir: string;
+
+  beforeEach(async () => {
+    workdir = await mkdtemp(join(tmpdir(), 'helm-materialize-'));
+  });
+
+  afterEach(async () => {
+    await rm(workdir, { recursive: true, force: true });
+  });
+
+  it('writes README + CLAUDE.md verbatim (no truncation) and returns their paths', async () => {
+    // README deliberately exceeds the 2000-char prompt cap to prove the on-disk
+    // copy is the full file, not the truncated prompt snippet.
+    const longReadme = '# README\n' + 'x'.repeat(3000);
+    const claude = '# CLAUDE.md\n\n## Section 4\nrepo-specific notes';
+    const mockFetch: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('README.md')) return Promise.resolve(okResponse(longReadme));
+      if (url.includes('AGENTS.md')) return Promise.resolve(notFound());
+      if (url.includes('AGENT.md')) return Promise.resolve(notFound());
+      if (url.includes('CLAUDE.md')) return Promise.resolve(okResponse(claude));
+      return Promise.resolve(notFound());
+    });
+
+    const result = await materializeProductContext(workdir, makeProduct(), 'tok', mockFetch);
+
+    // Both files on disk, contents verbatim.
+    expect(await readFile(join(workdir, 'README.md'), 'utf8')).toBe(longReadme);
+    expect(await readFile(join(workdir, 'CLAUDE.md'), 'utf8')).toBe(claude);
+
+    // Return shape points at the written files; no truncation suffix.
+    expect(result.readme).toEqual({
+      path: join(workdir, 'README.md'),
+      bytes: Buffer.byteLength(longReadme, 'utf8'),
+    });
+    expect(result.readme!.bytes).toBeGreaterThan(2000);
+    expect(result.agentInstructions).toEqual({
+      path: join(workdir, 'CLAUDE.md'),
+      filename: 'CLAUDE.md',
+      bytes: Buffer.byteLength(claude, 'utf8'),
+    });
+    expect(result.missingFiles).toEqual([]);
+  });
+
+  it('preserves the AGENT.md variant name when only AGENT.md exists (no rename)', async () => {
+    const mockFetch: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('README.md')) return Promise.resolve(okResponse('readme'));
+      if (url.includes('AGENTS.md')) return Promise.resolve(notFound());
+      if (url.includes('AGENT.md')) return Promise.resolve(okResponse('# Agent instructions'));
+      return Promise.resolve(notFound());
+    });
+
+    const result = await materializeProductContext(workdir, makeProduct(), 'tok', mockFetch);
+
+    expect(await readFile(join(workdir, 'AGENT.md'), 'utf8')).toBe('# Agent instructions');
+    expect(result.agentInstructions!.filename).toBe('AGENT.md');
+    // No CLAUDE.md / AGENTS.md written.
+    const entries = await readdir(workdir);
+    expect(entries.sort()).toEqual(['AGENT.md', 'README.md']);
+  });
+
+  it('materializes only AGENTS.md when both AGENTS.md and CLAUDE.md exist', async () => {
+    const mockFetch: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('README.md')) return Promise.resolve(okResponse('readme'));
+      if (url.includes('AGENTS.md')) return Promise.resolve(okResponse('# AGENTS open standard'));
+      if (url.includes('CLAUDE.md')) return Promise.resolve(okResponse('# CLAUDE'));
+      return Promise.resolve(notFound());
+    });
+
+    const result = await materializeProductContext(workdir, makeProduct(), 'tok', mockFetch);
+
+    expect(result.agentInstructions!.filename).toBe('AGENTS.md');
+    const entries = await readdir(workdir);
+    expect(entries).toContain('AGENTS.md');
+    expect(entries).not.toContain('CLAUDE.md');
+  });
+
+  it('still writes the agent instruction file when README is absent', async () => {
+    const mockFetch: FetchFn = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('README.md')) return Promise.resolve(notFound());
+      if (url.includes('AGENTS.md')) return Promise.resolve(okResponse('# AGENTS'));
+      return Promise.resolve(notFound());
+    });
+
+    const result = await materializeProductContext(workdir, makeProduct(), 'tok', mockFetch);
+
+    expect(result.readme).toBeNull();
+    expect(result.missingFiles).toContain('README.md');
+    expect(result.agentInstructions!.filename).toBe('AGENTS.md');
+    const entries = await readdir(workdir);
+    expect(entries).toEqual(['AGENTS.md']);
+  });
+
+  it('returns gracefully and writes nothing when both files are absent', async () => {
+    const mockFetch: FetchFn = vi.fn().mockResolvedValue(notFound());
+
+    const result = await materializeProductContext(workdir, makeProduct(), 'tok', mockFetch);
+
+    expect(result.readme).toBeNull();
+    expect(result.agentInstructions).toBeNull();
+    expect(result.missingFiles).toEqual(['README.md', 'AGENTS.md', 'AGENT.md', 'CLAUDE.md']);
+    expect(await readdir(workdir)).toEqual([]);
+  });
+
+  it('propagates a non-404 HTTP error (does not swallow it)', async () => {
+    const mockFetch: FetchFn = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      text: () => Promise.resolve('Forbidden'),
+    } as Response);
+
+    await expect(
+      materializeProductContext(workdir, makeProduct(), 'tok', mockFetch),
+    ).rejects.toThrow(/403/);
+  });
+
+  it('returns all-missing without fetching when the product has no code repos', async () => {
+    const mockFetch: FetchFn = vi.fn();
+    const product = { ...makeProduct(), code_repos: [] } as unknown as Product;
+
+    const result = await materializeProductContext(workdir, product, 'tok', mockFetch);
+
+    expect(result.readme).toBeNull();
+    expect(result.agentInstructions).toBeNull();
+    expect(result.missingFiles).toEqual(['README.md', 'AGENTS.md', 'AGENT.md', 'CLAUDE.md']);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(await readdir(workdir)).toEqual([]);
+  });
+
+  it('passes the Authorization header with the token', async () => {
+    const mockFetch: FetchFn = vi.fn().mockResolvedValue(notFound());
+
+    await materializeProductContext(workdir, makeProduct(), 'my-token', mockFetch);
+
+    const calls = (mockFetch as ReturnType<typeof vi.fn>).mock.calls as [
+      string,
+      { headers: Record<string, string> },
+    ][];
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls[0]![1].headers.Authorization).toBe('Bearer my-token');
   });
 });
 

@@ -1,3 +1,5 @@
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { Product } from '@helm/shared';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -8,6 +10,25 @@ export type ProductContext = {
   /** Truncated AGENT.md or CLAUDE.md from the primary code repo, or undefined. */
   agentMd?: string;
 };
+
+/**
+ * Result of {@link materializeProductContext} — describes what was written to the
+ * spec-writer / plan-writer worktree. `null` entries mean the file was absent in
+ * the repo (best-effort posture — never a throw for a missing file).
+ */
+export interface MaterializedProductContext {
+  /** The materialized README, or null if absent. `bytes` is the on-disk UTF-8 size. */
+  readme: { path: string; bytes: number } | null;
+  /**
+   * The materialized agent instruction file, or null if none of the accepted
+   * variants exist. `filename` preserves the variant that won the
+   * {@link AGENT_INSTRUCTION_FILES} preference order (`AGENTS.md` / `AGENT.md` /
+   * `CLAUDE.md`) — written to disk under its real name, no rename.
+   */
+  agentInstructions: { path: string; filename: string; bytes: number } | null;
+  /** Names of accepted files that weren't found in the repo (informational; dispatcher logs). */
+  missingFiles: string[];
+}
 
 /** Injectable HTTP fetcher for testing — defaults to the global fetch. */
 export type FetchFn = typeof fetch;
@@ -114,6 +135,26 @@ async function fetchFirstFile(
   return null;
 }
 
+/**
+ * Like {@link fetchFirstFile}, but also reports *which* path matched. Needed when
+ * the caller must preserve the winning filename (e.g. materializing the agent
+ * instruction file under its real `AGENTS.md` / `AGENT.md` / `CLAUDE.md` variant).
+ */
+async function fetchFirstNamedFile(
+  owner: string,
+  repo: string,
+  branch: string,
+  paths: readonly string[],
+  token: string,
+  fetchFn: FetchFn,
+): Promise<{ filename: string; content: string } | null> {
+  for (const path of paths) {
+    const content = await fetchRawFile(owner, repo, branch, path, token, fetchFn);
+    if (content !== null) return { filename: path, content };
+  }
+  return null;
+}
+
 // ── Product context (README + agent instructions from code repo) ──────────────
 
 /**
@@ -154,6 +195,94 @@ export async function fetchProductContext(
     readme: readmeRaw !== null ? truncate(readmeRaw) : undefined,
     agentMd: agentMdRaw !== null ? truncate(agentMdRaw) : undefined,
   };
+}
+
+// ── Materialize product context (write files into the worktree) ───────────────
+
+/**
+ * Writes the product's README and winning agent instruction file into `workdir`,
+ * so the spec-writer / plan-writer agent can `cat`/`grep`/reference specific
+ * sections from disk — not just the truncated `## Product Context` prompt
+ * snippet (ADR-030). The spec-writer / plan-writer worktree is otherwise an empty
+ * scratch directory (no git clone), unlike the implementer's shallow clone.
+ *
+ * Sibling of {@link fetchProductContext}, deliberately NOT a flag on it: the two
+ * share the fetch helpers but expose distinct entry points so prompt-injection
+ * callers are unaffected. Key differences from `fetchProductContext`:
+ *
+ *  - **No truncation on disk.** The full file is written (the prompt-injected
+ *    version keeps its 2000-char cap for context-window economy).
+ *  - **Filename preserved.** The agent instruction file is written under the real
+ *    variant that won the {@link AGENT_INSTRUCTION_FILES} order — no rename.
+ *  - **Best-effort, not throw-on-missing.** A 404 yields a `null` entry plus an
+ *    entry in `missingFiles`; the worktree simply lacks that file. A non-404 HTTP
+ *    error still propagates (via `fetchRawFile`) so the dispatcher can log it.
+ *
+ * @param workdir  Absolute path to the agent's worktree (already created).
+ * @param product  The parsed product config.
+ * @param token    GitHub personal access token (repo scope).
+ * @param fetchFn  HTTP fetch function — injectable for testing.
+ */
+export async function materializeProductContext(
+  workdir: string,
+  product: Product,
+  token: string,
+  fetchFn: FetchFn = fetch,
+): Promise<MaterializedProductContext> {
+  // No reachable repo → nothing to materialize. Report every accepted file as
+  // missing so the dispatcher log reflects an empty worktree, never silently "ok".
+  const allMissing = (): MaterializedProductContext => ({
+    readme: null,
+    agentInstructions: null,
+    missingFiles: ['README.md', ...AGENT_INSTRUCTION_FILES],
+  });
+
+  const primaryRepo = product.code_repos[0];
+  if (!primaryRepo) return allMissing();
+
+  const parsed = parseGitHubRepoUrl(primaryRepo.url);
+  if (!parsed) return allMissing();
+
+  const { owner, repo } = parsed;
+  const branch = primaryRepo.default_branch;
+
+  // Fetch README and the winning agent instruction file concurrently. A non-404
+  // HTTP error rejects here and propagates to the caller (matches fetchRawFile).
+  const [readmeRaw, agentFile] = await Promise.all([
+    fetchRawFile(owner, repo, branch, 'README.md', token, fetchFn),
+    fetchFirstNamedFile(owner, repo, branch, AGENT_INSTRUCTION_FILES, token, fetchFn),
+  ]);
+
+  const missingFiles: string[] = [];
+  let readme: MaterializedProductContext['readme'] = null;
+  let agentInstructions: MaterializedProductContext['agentInstructions'] = null;
+
+  // README — full content, no truncation on disk.
+  if (readmeRaw !== null) {
+    const path = join(workdir, 'README.md');
+    await writeFile(path, readmeRaw, 'utf8');
+    readme = { path, bytes: Buffer.byteLength(readmeRaw, 'utf8') };
+  } else {
+    missingFiles.push('README.md');
+  }
+
+  // Agent instructions — written under the real winning variant name (no rename).
+  if (agentFile !== null) {
+    const path = join(workdir, agentFile.filename);
+    await writeFile(path, agentFile.content, 'utf8');
+    agentInstructions = {
+      path,
+      filename: agentFile.filename,
+      bytes: Buffer.byteLength(agentFile.content, 'utf8'),
+    };
+  } else {
+    // None of the accepted variants exist — report all of them as missing.
+    missingFiles.push(...AGENT_INSTRUCTION_FILES);
+  }
+
+  // Spread-copy missingFiles so callers can't mutate our local array (matches the
+  // defensive posture of allMissing() above and the repo's return-copy convention).
+  return { readme, agentInstructions, missingFiles: [...missingFiles] };
 }
 
 // ── Spec fetch (for plan-writer) ──────────────────────────────────────────────

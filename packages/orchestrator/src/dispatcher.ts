@@ -19,6 +19,7 @@ import {
 } from './specialists/code-workspace.js';
 import {
   fetchProductContext,
+  materializeProductContext,
   fetchSpecForPlan,
   fetchPlanForImplementer,
 } from './specialists/fetch-product-context.js';
@@ -219,6 +220,22 @@ export async function dispatchStageHandler(
       : null;
     const task = taskRaw ?? undefined;
 
+    // ── Part A3: Materialize product context into the worktree (ADR-030) ──────
+    // Writes the full README + winning agent instruction file to `workdir` so the
+    // agent can cat/grep them on disk (the prompt section stays truncated).
+    // Best-effort and token-gated, mirroring Part A: a failure leaves the
+    // worktree empty but never fails the dispatch.
+    if (options?.githubToken) {
+      await materializeProductContext(workdir, product, options.githubToken, options.fetchFn).catch(
+        (err) => {
+          console.error(
+            '[dispatcher] Failed to materialize product context into worktree (continuing):',
+            err,
+          );
+        },
+      );
+    }
+
     const params = buildSpecWriterParams(item.externalId, product, workdir, context, task);
     const session = await runtime.spawn(params);
     const agentResult = await session.wait();
@@ -303,6 +320,19 @@ export async function dispatchStageHandler(
       (err) => {
         console.error('[dispatcher] Failed to fetch product context (continuing without it):', err);
         return undefined;
+      },
+    );
+
+    // ── Materialize product context into the worktree (ADR-030) ──────────────
+    // Token is guaranteed here (asserted above), so this runs unconditionally —
+    // still best-effort: a failure leaves the worktree empty but never fails the
+    // dispatch, matching the prompt-injection context fetch above.
+    await materializeProductContext(workdir, product, options.githubToken, options.fetchFn).catch(
+      (err) => {
+        console.error(
+          '[dispatcher] Failed to materialize product context into worktree (continuing):',
+          err,
+        );
       },
     );
 

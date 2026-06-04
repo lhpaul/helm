@@ -182,41 +182,50 @@ webhooksRouter.post('/webhooks/github', async (c) => {
     // ADR-032: a published GitHub release ships the instance product. Bulk-
     // promote every item currently in `merged` to `released`. Single-product
     // instance, so no repo→product resolution is needed.
-    const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
+    //
+    // The whole branch is wrapped: getItemStore()/getProductConfig()/list() run
+    // before the per-item guard, so a throw there must still produce controlled
+    // logging + a clean 500 rather than escaping to the default handler.
+    try {
+      const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
 
-    // Opt-out: a product whose terminal stage is `merged` has no user-facing
-    // release step — the release event is a no-op for it.
-    if (config.workflow.final_stage === 'merged') {
-      console.info(
-        `[webhooks/github] release '${event.tag}' ignored — product '${config.product.slug}' has final_stage=merged (no released stage)`,
-      );
-      return c.json({ processed: true });
-    }
+      // Opt-out: a product whose terminal stage is `merged` has no user-facing
+      // release step — the release event is a no-op for it.
+      if (config.workflow.final_stage === 'merged') {
+        console.info(
+          `[webhooks/github] release '${event.tag}' ignored — product '${config.product.slug}' has final_stage=merged (no released stage)`,
+        );
+        return c.json({ processed: true });
+      }
 
-    const merged = (await itemStore.list()).filter((item) => item.currentStage === 'merged');
-    let promoted = 0;
-    for (const item of merged) {
-      try {
-        await itemStore.transition({
-          externalId: item.externalId,
-          toStage: 'released',
-          triggeredBy: 'webhook:release',
-        });
-        promoted++;
-      } catch (err) {
-        if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
-          // Idempotent: the item moved or vanished between list() and transition().
-          // Not a delivery problem — log and keep promoting the rest.
-          console.error('[webhooks/github] Release promotion not applied:', err.message);
-        } else {
-          console.error('[webhooks/github] Unexpected error during release promotion:', err);
-          return c.json({ error: 'Internal server error' }, 500);
+      const merged = (await itemStore.list()).filter((item) => item.currentStage === 'merged');
+      let promoted = 0;
+      for (const item of merged) {
+        try {
+          await itemStore.transition({
+            externalId: item.externalId,
+            toStage: 'released',
+            triggeredBy: 'webhook:release',
+          });
+          promoted++;
+        } catch (err) {
+          if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
+            // Idempotent: the item moved or vanished between list() and transition().
+            // Not a delivery problem — log and keep promoting the rest.
+            console.error('[webhooks/github] Release promotion not applied:', err.message);
+          } else {
+            console.error('[webhooks/github] Unexpected error during release promotion:', err);
+            return c.json({ error: 'Internal server error' }, 500);
+          }
         }
       }
+      console.info(
+        `[webhooks/github] release '${event.tag}' promoted ${promoted}/${merged.length} merged item(s) → released`,
+      );
+    } catch (err) {
+      console.error('[webhooks/github] Failed to process release_published event:', err);
+      return c.json({ error: 'Internal server error' }, 500);
     }
-    console.info(
-      `[webhooks/github] release '${event.tag}' promoted ${promoted}/${merged.length} merged item(s) → released`,
-    );
   }
 
   return c.json({ processed: true });

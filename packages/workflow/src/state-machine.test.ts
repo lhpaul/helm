@@ -56,6 +56,14 @@ describe('canTransition', () => {
       expect(canTransition('merged', 'discovery')).toBe(false);
     });
 
+    it('blocks merged → in-development (merged only advances to released)', () => {
+      expect(canTransition('merged', 'in-development')).toBe(false);
+    });
+
+    it('blocks merged → code-review (merged only advances to released)', () => {
+      expect(canTransition('merged', 'code-review')).toBe(false);
+    });
+
     it('blocks in-development → remediation (must go through code-review first)', () => {
       expect(canTransition('in-development', 'remediation')).toBe(false);
     });

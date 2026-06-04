@@ -523,6 +523,16 @@ describe('POST /api/webhooks/github', () => {
       const res = await post(releasePayload(), 'release');
       expect(res.status).toBe(500);
     });
+
+    it('returns 500 with controlled logging when a pre-loop call throws (itemStore.list)', async () => {
+      // list() runs before the per-item guard; the branch-level try-catch must
+      // turn the throw into a clean 500, not let it escape to the default handler.
+      mockList.mockRejectedValue(new Error('store unavailable'));
+
+      const res = await post(releasePayload(), 'release');
+      expect(res.status).toBe(500);
+      expect(mockTransition).not.toHaveBeenCalled();
+    });
   });
 
   // ── Fix 1: Linear products (knowledge/code repos are still GitHub) ──────────

@@ -93,8 +93,9 @@ releaseRouter.post('/items/:externalId/release', async (c) => {
       triggeredBy: 'manual:release',
       note: bodyResult.data.reason,
     });
-    // The appended event is always the last history entry on success.
-    const historyEntry = updated.history[updated.history.length - 1];
+    // The appended event is always the last history entry on success. Spread-copy
+    // so the response never hands out a reference into store-owned state.
+    const historyEntry = { ...updated.history[updated.history.length - 1] };
     return c.json({
       externalId: updated.externalId,
       currentStage: updated.currentStage,

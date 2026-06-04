@@ -419,7 +419,8 @@ describe('LinearAdapter.comment', () => {
 
 describe('LinearAdapter.ensureSubStages', () => {
   it('creates missing helm:* labels and skips existing ones', async () => {
-    // labelsRes() has discovery + spec-draft. The adapter will create 7 more.
+    // labelsRes() has discovery + spec-draft. The adapter will create 8 more
+    // (10 canonical stages − 2 existing). ADR-032 added `merged`.
     const createRes: CreateLabelResponse = {
       issueLabelCreate: { issueLabel: { id: 'new-label', name: 'helm:spec-ready' }, success: true },
     };
@@ -431,13 +432,13 @@ describe('LinearAdapter.ensureSubStages', () => {
         data = teamRes(); // ensureTeamId → GET_TEAM_BY_KEY
       else if (call === 2)
         data = labelsRes(); // loadLabels → LIST_TEAM_LABELS
-      else data = createRes; // CREATE_LABEL for each missing stage (7 calls)
+      else data = createRes; // CREATE_LABEL for each missing stage (8 calls)
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data }) });
     });
     const adapter = makeAdapter(fetch);
     await adapter.ensureSubStages(CONFIG);
-    // 1 team + 1 labels + 7 creates = 9 total
-    expect(fetch).toHaveBeenCalledTimes(9);
+    // 1 team + 1 labels + 8 creates = 10 total
+    expect(fetch).toHaveBeenCalledTimes(10);
   });
 
   it('is idempotent when all labels exist', async () => {
@@ -450,6 +451,7 @@ describe('LinearAdapter.ensureSubStages', () => {
       'in-development',
       'code-review',
       'remediation',
+      'merged',
       'released',
     ].map((s, i) => ({ id: `label-${i}`, name: `helm:${s}` }));
 

@@ -5,10 +5,11 @@ import { _resetForTests, getGitHubAdapter, getProductConfig } from '../services/
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-const { mockParseWebhook, mockCreate, mockTransition } = vi.hoisted(() => ({
+const { mockParseWebhook, mockCreate, mockTransition, mockList } = vi.hoisted(() => ({
   mockParseWebhook: vi.fn(),
   mockCreate: vi.fn(),
   mockTransition: vi.fn(),
+  mockList: vi.fn(),
 }));
 
 vi.mock('../services/index.js', async (importOriginal) => {
@@ -16,7 +17,9 @@ vi.mock('../services/index.js', async (importOriginal) => {
   return {
     ...real,
     getGitHubAdapter: vi.fn().mockResolvedValue({ parseWebhook: mockParseWebhook }),
-    getItemStore: vi.fn().mockResolvedValue({ create: mockCreate, transition: mockTransition }),
+    getItemStore: vi
+      .fn()
+      .mockResolvedValue({ create: mockCreate, transition: mockTransition, list: mockList }),
     getProductConfig: vi.fn().mockResolvedValue({
       product: { slug: 'test-app', name: 'Test' },
       issue_tracker: {
@@ -25,6 +28,7 @@ vi.mock('../services/index.js', async (importOriginal) => {
         project_number: 1,
         custom_field_name: 'Helm Stage',
       },
+      workflow: { final_stage: 'released' },
     }),
   };
 });
@@ -81,6 +85,7 @@ describe('POST /api/webhooks/github', () => {
         project_number: 1,
         custom_field_name: 'Helm Stage',
       },
+      workflow: { final_stage: 'released' },
     } as never);
     vi.mocked(getGitHubAdapter).mockResolvedValue({ parseWebhook: mockParseWebhook } as never);
   });
@@ -339,9 +344,11 @@ describe('POST /api/webhooks/github', () => {
       expect(res.status).toBe(500);
     });
 
-    // ── Impl merge (helm/impl/ → released) ──────────────────────────────────
+    // ── Impl merge (helm/impl/ → merged) ────────────────────────────────────
+    // ADR-032: the impl PR merge now lands the item in `merged`, NOT `released`.
+    // `released` is reached only via the release trigger (endpoint / webhook).
 
-    it('transitions code-review → released when helm/impl/ branch is merged', async () => {
+    it('transitions code-review → merged when helm/impl/ branch is merged', async () => {
       const body = mergedPrPayload('helm/impl/issue_42');
       mockTransition.mockResolvedValue({});
 
@@ -349,7 +356,7 @@ describe('POST /api/webhooks/github', () => {
       expect(res.status).toBe(200);
       expect(mockTransition).toHaveBeenCalledWith({
         externalId: 'issue_42',
-        toStage: 'released',
+        toStage: 'merged',
         triggeredBy: 'webhook:code-repo',
       });
     });
@@ -358,7 +365,7 @@ describe('POST /api/webhooks/github', () => {
       const body = mergedPrPayload('helm/impl/issue_42');
       const { WorkflowTransitionError } = await import('@helm/workflow');
       mockTransition.mockRejectedValue(
-        new WorkflowTransitionError('Cannot transition', 'code-review', 'released'),
+        new WorkflowTransitionError('Cannot transition', 'merged', 'merged'),
       );
 
       const res = await post(body, 'pull_request');
@@ -428,6 +435,96 @@ describe('POST /api/webhooks/github', () => {
     });
   });
 
+  // ── ADR-032: release.published bulk-promotes merged → released ─────────────
+
+  describe('dispatch: release_published', () => {
+    /** Builds a real GitHub release webhook payload (parsed by parseGitHubWebhook). */
+    function releasePayload(opts: { action?: string; tag?: string } = {}): string {
+      return JSON.stringify({
+        action: opts.action ?? 'published',
+        release: { tag_name: opts.tag ?? 'v1.2.0' },
+      });
+    }
+
+    it('promotes every merged item to released and returns 200', async () => {
+      mockList.mockResolvedValue([
+        { externalId: 'issue_1', currentStage: 'merged' },
+        { externalId: 'issue_2', currentStage: 'code-review' }, // not merged — skipped
+        { externalId: 'issue_3', currentStage: 'merged' },
+        { externalId: 'issue_4', currentStage: 'released' }, // already released — skipped
+      ]);
+      mockTransition.mockResolvedValue({});
+
+      const res = await post(releasePayload(), 'release');
+
+      expect(res.status).toBe(200);
+      expect(mockTransition).toHaveBeenCalledTimes(2);
+      expect(mockTransition).toHaveBeenCalledWith({
+        externalId: 'issue_1',
+        toStage: 'released',
+        triggeredBy: 'webhook:release',
+      });
+      expect(mockTransition).toHaveBeenCalledWith({
+        externalId: 'issue_3',
+        toStage: 'released',
+        triggeredBy: 'webhook:release',
+      });
+      // Not consulted for repo-level events (parsed by the pure parser).
+      expect(getGitHubAdapter).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op for a product with final_stage=merged', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'playground', name: 'Playground' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        workflow: { final_stage: 'merged' },
+      } as never);
+
+      const res = await post(releasePayload(), 'release');
+
+      expect(res.status).toBe(200);
+      expect(mockList).not.toHaveBeenCalled();
+      expect(mockTransition).not.toHaveBeenCalled();
+    });
+
+    it('ignores a non-published release action (e.g. created)', async () => {
+      const res = await post(releasePayload({ action: 'created' }), 'release');
+
+      expect(res.status).toBe(200);
+      expect(mockList).not.toHaveBeenCalled();
+      expect(mockTransition).not.toHaveBeenCalled();
+    });
+
+    it('continues promoting after a per-item error and still returns 200', async () => {
+      mockList.mockResolvedValue([
+        { externalId: 'issue_1', currentStage: 'merged' },
+        { externalId: 'issue_2', currentStage: 'merged' },
+      ]);
+      const { ItemNotFoundError } = await import('../services/errors.js');
+      mockTransition
+        .mockRejectedValueOnce(new ItemNotFoundError('issue_1')) // vanished between list and transition
+        .mockResolvedValueOnce({});
+
+      const res = await post(releasePayload(), 'release');
+
+      expect(res.status).toBe(200);
+      expect(mockTransition).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns 500 on an unexpected (non-workflow) error during promotion', async () => {
+      mockList.mockResolvedValue([{ externalId: 'issue_1', currentStage: 'merged' }]);
+      mockTransition.mockRejectedValue(new Error('storage failure'));
+
+      const res = await post(releasePayload(), 'release');
+      expect(res.status).toBe(500);
+    });
+  });
+
   // ── Fix 1: Linear products (knowledge/code repos are still GitHub) ──────────
 
   describe('Linear product: tracker-agnostic pull_request routing', () => {
@@ -456,7 +553,7 @@ describe('POST /api/webhooks/github', () => {
       expect(getGitHubAdapter).not.toHaveBeenCalled();
       expect(mockTransition).toHaveBeenCalledWith({
         externalId: 'issue_42',
-        toStage: 'released',
+        toStage: 'merged',
         triggeredBy: 'webhook:code-repo',
       });
     });

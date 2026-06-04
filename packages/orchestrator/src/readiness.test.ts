@@ -23,6 +23,7 @@ const makeProduct = (): Product => ({
     designer_gate: 'skip',
     qa_gate: 'skip',
     readiness_gate: 'required',
+    final_stage: 'released',
   },
   specialists: {
     'spec-writer': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },

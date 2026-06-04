@@ -26,6 +26,7 @@ const makeProduct = (runtime: 'claude_code' | 'codex' = 'claude_code'): Product 
     designer_gate: 'skip',
     qa_gate: 'skip',
     readiness_gate: 'skip',
+    final_stage: 'released',
   },
   // Uniform runtime across all specialists — mirrors the H1 constraint enforced
   // by ProductSchema (and the factory's defense-in-depth check). Tests that need

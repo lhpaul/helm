@@ -34,6 +34,12 @@ const PullRequestWebhookSchema = z.object({
   }),
 });
 
+// No .strict() — GitHub adds fields to release objects without notice.
+const ReleaseWebhookSchema = z.object({
+  action: z.string(),
+  release: z.object({ tag_name: z.string() }),
+});
+
 // ── Pure parser (handles issues.* and issue_comment.*) ───────────────────────
 
 /**
@@ -90,6 +96,17 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
       // Only a closed+merged PR is actionable; any other action is noise.
       if (action === 'closed' && pr.merged === true) {
         return { type: 'pull_request_merged', headRef: pr.head.ref, timestamp };
+      }
+      return { type: 'unknown', raw: rawEvent };
+    }
+
+    if (eventType === 'release') {
+      const parsed = ReleaseWebhookSchema.safeParse(payload);
+      if (!parsed.success) return { type: 'unknown', raw: rawEvent };
+      const { action, release } = parsed.data;
+      // Only a published release ships items; drafted/edited/deleted/etc. are noise.
+      if (action === 'published') {
+        return { type: 'release_published', tag: release.tag_name, timestamp };
       }
       return { type: 'unknown', raw: rawEvent };
     }

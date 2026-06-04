@@ -5,6 +5,7 @@ import { itemsRouter } from './routes/items.js';
 import { jobsRouter } from './routes/jobs.js';
 import { productRouter } from './routes/product.js';
 import { productsRouter } from './routes/products.js';
+import { releaseRouter } from './routes/release.js';
 import { rollbackRouter } from './routes/rollback.js';
 import { webhooksRouter } from './routes/webhooks.js';
 
@@ -23,6 +24,7 @@ app.route('/api', productRouter);
 app.route('/api', productsRouter);
 app.route('/api', itemsRouter);
 app.route('/api', rollbackRouter);
+app.route('/api', releaseRouter);
 app.route('/api', webhooksRouter);
 app.route('/api', dispatchRouter);
 app.route('/api', jobsRouter);

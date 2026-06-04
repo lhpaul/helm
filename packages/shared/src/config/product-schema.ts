@@ -136,6 +136,17 @@ export const ProductSchema = z
          *   - `required` — block dispatch with 422 + missing_context when not ready.
          */
         readiness_gate: z.enum(['skip', 'warn', 'required']).default('skip'),
+        /**
+         * Terminal stage for this product (ADR-032). The workflow always has
+         * the `merged → released` edge; this field gates whether the product
+         * ever fires the release trigger:
+         *   - `released` (default) — items advance to `released` once shipped,
+         *     via the operator endpoint or the GitHub release.published webhook.
+         *   - `merged` — the product has no user-facing release step (e.g. the
+         *     playground). Items terminate at `merged`; the release endpoint
+         *     returns 409 and the release webhook is a no-op for this product.
+         */
+        final_stage: z.enum(['merged', 'released']).default('released'),
       })
       .strict(),
     specialists: SpecialistsSchema,

@@ -286,3 +286,29 @@ describe('ProductSchema — readiness_gate (ADR-026)', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('ProductSchema — final_stage (ADR-032)', () => {
+  const withFinalStage = (finalStage: unknown) => ({
+    ...makeRawProduct(KEBAB_SPECIALISTS),
+    workflow: { stages_enabled: ['discovery', 'released'], final_stage: finalStage },
+  });
+
+  it('defaults final_stage to released when omitted', () => {
+    const result = ProductSchema.safeParse(makeRawProduct(KEBAB_SPECIALISTS));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.workflow.final_stage).toBe('released');
+  });
+
+  it('accepts explicit merged and released', () => {
+    for (const stage of ['merged', 'released'] as const) {
+      const result = ProductSchema.safeParse(withFinalStage(stage));
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.workflow.final_stage).toBe(stage);
+    }
+  });
+
+  it('rejects a final_stage value outside the enum (e.g. a mid-workflow stage)', () => {
+    const result = ProductSchema.safeParse(withFinalStage('code-review'));
+    expect(result.success).toBe(false);
+  });
+});

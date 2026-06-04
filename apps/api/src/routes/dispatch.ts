@@ -13,7 +13,7 @@ import {
   getIssueTrackerAdapter,
 } from '../services/index.js';
 import { createRuntimeForProduct } from '../services/runtime-factory.js';
-import { EXTERNAL_ID_REGEX } from '../services/types.js';
+import { validateExternalId } from '../lib/http-errors.js';
 import type { Job } from '../services/job-store.js';
 import type { ItemState } from '../services/types.js';
 import type { Product } from '@helm/shared';
@@ -118,17 +118,15 @@ async function runDispatchJob(
 
 dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   const slug = c.req.param('slug');
-  const externalId = c.req.param('externalId');
 
   if (!SlugSchema.safeParse(slug).success) {
     return c.json({ error: 'Invalid product slug' }, 400);
   }
-  // Defense-in-depth: EXTERNAL_ID_REGEX already blocks leading dots (via the
-  // (?!\.) lookahead), so '.' and '..' fail the regex too. The explicit check
-  // below makes the intent clear and guards against future regex relaxations.
-  if (!EXTERNAL_ID_REGEX.test(externalId) || externalId === '.' || externalId === '..') {
-    return c.json({ error: `Invalid externalId: "${externalId}"` }, 400);
+  const idResult = validateExternalId(c.req.param('externalId'));
+  if (!idResult.ok) {
+    return c.json(idResult.response.body, idResult.response.status);
   }
+  const externalId = idResult.value;
 
   // Parse JSON body explicitly so malformed JSON returns 400 instead of
   // being silently swallowed as an empty object.

@@ -1,8 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { getJobStore } from '../services/index.js';
-import { JOB_ID_REGEX } from '../services/job-store.js';
-import { EXTERNAL_ID_REGEX } from '../services/types.js';
+import { validateExternalId, validateJobId } from '../lib/http-errors.js';
 
 export const jobsRouter = new Hono();
 
@@ -16,11 +15,11 @@ const SlugSchema = z
  * Returns the job record for the given jobId.
  */
 jobsRouter.get('/jobs/:jobId', async (c) => {
-  const jobId = c.req.param('jobId');
-
-  if (!JOB_ID_REGEX.test(jobId)) {
-    return c.json({ error: `Invalid jobId: "${jobId}"` }, 400);
+  const idResult = validateJobId(c.req.param('jobId'));
+  if (!idResult.ok) {
+    return c.json(idResult.response.body, idResult.response.status);
   }
+  const jobId = idResult.value;
 
   let jobStore;
   try {
@@ -51,15 +50,16 @@ jobsRouter.get('/jobs/:jobId', async (c) => {
  */
 jobsRouter.get('/products/:slug/items/:externalId/jobs', async (c) => {
   const slug = c.req.param('slug');
-  const externalId = c.req.param('externalId');
 
   if (!SlugSchema.safeParse(slug).success) {
     return c.json({ error: 'Invalid product slug' }, 400);
   }
 
-  if (!EXTERNAL_ID_REGEX.test(externalId) || externalId === '.' || externalId === '..') {
-    return c.json({ error: `Invalid externalId: "${externalId}"` }, 400);
+  const idResult = validateExternalId(c.req.param('externalId'));
+  if (!idResult.ok) {
+    return c.json(idResult.response.body, idResult.response.status);
   }
+  const externalId = idResult.value;
 
   let jobStore;
   try {

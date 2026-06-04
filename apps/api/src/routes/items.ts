@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { WORKFLOW_STAGES, WorkflowTransitionError } from '@helm/workflow';
-import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
+import { WORKFLOW_STAGES } from '@helm/workflow';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
+import { mapErrorToResponse, validateExternalId } from '../lib/http-errors.js';
 import { getItemStore, getProductConfig } from '../services/index.js';
 
 // NOTE: No authentication in v0. This server is self-hosted single-user.
@@ -65,10 +65,11 @@ itemsRouter.post('/items', async (c) => {
     });
     return c.json(item, 201);
   } catch (err) {
-    if (err instanceof ItemAlreadyExistsError) {
-      return c.json({ error: `Item already exists: ${err.externalId}` }, 409);
-    }
-    throw err;
+    const mapped = mapErrorToResponse(err);
+    // Unrecognised errors keep flowing to Hono's default handler (preserves the
+    // existing generic 500). Only the canonical error classes map to JSON here.
+    if (mapped.status === 500) throw err;
+    return c.json(mapped.body, mapped.status);
   }
 });
 
@@ -83,10 +84,11 @@ itemsRouter.get('/items', async (c) => {
 // ── POST /api/items/:externalId/transitions ───────────────────────────────────
 
 itemsRouter.post('/items/:externalId/transitions', async (c) => {
-  const externalId = c.req.param('externalId');
-  if (!EXTERNAL_ID_REGEX.test(externalId)) {
-    return c.json({ error: `Invalid externalId: "${externalId}"` }, 400);
+  const idResult = validateExternalId(c.req.param('externalId'));
+  if (!idResult.ok) {
+    return c.json(idResult.response.body, idResult.response.status);
   }
+  const externalId = idResult.value;
 
   const bodyResult = TransitionBodySchema.safeParse(await c.req.json().catch(() => null));
   if (!bodyResult.success) {
@@ -103,12 +105,8 @@ itemsRouter.post('/items/:externalId/transitions', async (c) => {
     });
     return c.json(item);
   } catch (err) {
-    if (err instanceof ItemNotFoundError) {
-      return c.json({ error: `Item not found: ${err.externalId}` }, 404);
-    }
-    if (err instanceof WorkflowTransitionError) {
-      return c.json({ error: err.message }, 422);
-    }
-    throw err;
+    const mapped = mapErrorToResponse(err);
+    if (mapped.status === 500) throw err;
+    return c.json(mapped.body, mapped.status);
   }
 });

@@ -158,6 +158,11 @@ describe('parseGitHubWebhook', () => {
       const result = parseGitHubWebhook(ctx('release', { action: 'published' }));
       expect(result.type).toBe('unknown');
     });
+
+    it('release with missing tag_name → unknown (no throw)', () => {
+      const result = parseGitHubWebhook(ctx('release', { action: 'published', release: {} }));
+      expect(result.type).toBe('unknown');
+    });
   });
 
   describe('unknown / malformed inputs', () => {

@@ -64,9 +64,9 @@ export function validateJobId(value: string): ValidationResult<string> {
 }
 
 /**
- * Maps a thrown error to a stable HTTP response. Recognises the five canonical
- * error classes and returns each error's own `.message` (byte-identical to the
- * strings the routes built by hand):
+ * Maps a thrown error to a stable HTTP response. Recognises the four canonical
+ * error classes (returning each error's own `.message`, byte-identical to the
+ * strings the routes built by hand) plus the unknown → 500 catch-all:
  *
  *   - ItemNotFoundError      → 404
  *   - ItemAlreadyExistsError → 409
@@ -74,10 +74,11 @@ export function validateJobId(value: string): ValidationResult<string> {
  *   - WorkflowTransitionError→ 422
  *   - Unknown                → 500 with a generic message (no error.message leak)
  *
- * Callers may pass an `extras` record merged into the body after `error`
- * (forward-compatible hook for fields like `details` / `missing_context` /
- * `runningJobId`; today those bodies are emitted inline, not via this mapper —
- * see ADR-031).
+ * Callers may pass an `extras` record merged into the body (forward-compatible
+ * hook for fields like `details` / `missing_context` / `runningJobId`; today
+ * those bodies are emitted inline, not via this mapper — see ADR-031). The
+ * canonical `error` field always wins: `extras` is spread first so it can never
+ * clobber the mapped message.
  *
  * NOTE on the 500 branch: route handlers re-throw when `status === 500` so that
  * unrecognised errors keep flowing to Hono's default handler (preserving the
@@ -89,16 +90,16 @@ export function mapErrorToResponse(
   extras: Record<string, unknown> = {},
 ): { body: ErrorResponseBody; status: 400 | 404 | 409 | 422 | 500 } {
   if (error instanceof ItemNotFoundError) {
-    return { body: { error: error.message, ...extras }, status: 404 };
+    return { body: { ...extras, error: error.message }, status: 404 };
   }
   if (error instanceof ItemAlreadyExistsError) {
-    return { body: { error: error.message, ...extras }, status: 409 };
+    return { body: { ...extras, error: error.message }, status: 409 };
   }
   if (error instanceof StageMismatchError) {
-    return { body: { error: error.message, ...extras }, status: 400 };
+    return { body: { ...extras, error: error.message }, status: 400 };
   }
   if (error instanceof WorkflowTransitionError) {
-    return { body: { error: error.message, ...extras }, status: 422 };
+    return { body: { ...extras, error: error.message }, status: 422 };
   }
-  return { body: { error: 'Internal server error', ...extras }, status: 500 };
+  return { body: { ...extras, error: 'Internal server error' }, status: 500 };
 }

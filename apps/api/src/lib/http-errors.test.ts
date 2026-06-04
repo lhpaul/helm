@@ -122,4 +122,13 @@ describe('mapErrorToResponse', () => {
       status: 500,
     });
   });
+
+  it('never lets extras overwrite the canonical error field', () => {
+    const err = new ItemNotFoundError('MOM-1');
+    const result = mapErrorToResponse(err, { error: 'malicious override', extra: 1 });
+    expect(result).toEqual({
+      body: { error: 'Item not found: MOM-1', extra: 1 },
+      status: 404,
+    });
+  });
 });

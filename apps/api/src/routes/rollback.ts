@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { ItemNotFoundError, StageMismatchError } from '../services/errors.js';
-import { EXTERNAL_ID_REGEX } from '../services/types.js';
+import { mapErrorToResponse, validateExternalId } from '../lib/http-errors.js';
 import { getItemStore, getJobStore, getProductConfig } from '../services/index.js';
 
 // NOTE: No authentication in v0. This server is self-hosted single-user.
@@ -43,14 +42,11 @@ const RollbackBodySchema = z
 // the AF driver gotchas table) is now obsolete.
 
 rollbackRouter.post('/items/:externalId/rollback', async (c) => {
-  const externalId = c.req.param('externalId');
-  // Defense-in-depth: EXTERNAL_ID_REGEX already blocks leading dots (via the
-  // (?!\.) lookahead) and slashes (outside its charset), so '.' and '..' fail
-  // the regex too. The explicit check mirrors dispatchRouter and guards against
-  // future regex relaxations before the externalId reaches any path operation.
-  if (!EXTERNAL_ID_REGEX.test(externalId) || externalId === '.' || externalId === '..') {
-    return c.json({ error: `Invalid externalId: "${externalId}"` }, 400);
+  const idResult = validateExternalId(c.req.param('externalId'));
+  if (!idResult.ok) {
+    return c.json(idResult.response.body, idResult.response.status);
   }
+  const externalId = idResult.value;
 
   const bodyResult = RollbackBodySchema.safeParse(await c.req.json().catch(() => null));
   if (!bodyResult.success) {
@@ -119,16 +115,12 @@ rollbackRouter.post('/items/:externalId/rollback', async (c) => {
     const historyEntry = item.history[item.history.length - 1];
     return c.json({ externalId: item.externalId, currentStage: item.currentStage, historyEntry });
   } catch (err) {
-    if (err instanceof ItemNotFoundError) {
-      return c.json({ error: `Item not found: ${err.externalId}` }, 404);
-    }
-    if (err instanceof StageMismatchError) {
-      // Current stage doesn't match fromStage — e.g. item is at 'code-review',
-      // not 'in-development'. A client precondition failure, not a server error.
-      return c.json({ error: err.message }, 400);
-    }
-    // Unexpected — let Hono's default handler log + return a generic 500,
+    // ItemNotFoundError → 404; StageMismatchError → 400 (current stage doesn't
+    // match fromStage — a client precondition failure, not a server error).
+    // Unexpected errors re-throw to Hono's default handler for a generic 500,
     // consistent with itemsRouter / dispatchRouter.
-    throw err;
+    const mapped = mapErrorToResponse(err);
+    if (mapped.status === 500) throw err;
+    return c.json(mapped.body, mapped.status);
   }
 });

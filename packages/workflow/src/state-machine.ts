@@ -13,8 +13,14 @@ export const INITIAL_STAGE: WorkflowStage = 'discovery';
 //   discovery → spec-draft → spec-ready → plan-draft → plan-ready
 //            ← (discovery)  ← (spec-draft)  ← (spec-ready)  ← (plan-draft)
 //
-//   plan-ready → in-development → code-review → released (terminal)
+//   plan-ready → in-development → code-review → merged → released (terminal)
 //                ← (plan-draft)              ↗ ↘ remediation ↗
+//
+// The code-review → released edge was removed in ADR-032: approved review now
+// lands in `merged` (impl PR merged), and `released` (shipped to users) is
+// reached only via the release trigger (manual endpoint or release.published
+// webhook). The merged → released edge always exists; whether a product fires
+// the trigger is gated by workflow.final_stage, not by the state machine.
 
 const VALID_TRANSITIONS: Record<WorkflowStage, readonly WorkflowStage[]> = {
   discovery: ['spec-draft'],
@@ -23,8 +29,9 @@ const VALID_TRANSITIONS: Record<WorkflowStage, readonly WorkflowStage[]> = {
   'plan-draft': ['plan-ready', 'spec-ready'], // fwd | back if spec is incomplete
   'plan-ready': ['in-development', 'plan-draft'], // fwd | back to revise plan before dev
   'in-development': ['code-review'],
-  'code-review': ['in-development', 'remediation', 'released'], // minor changes | CRITICAL/HIGH | approved
+  'code-review': ['in-development', 'remediation', 'merged'], // minor changes | CRITICAL/HIGH | approved → merged
   remediation: ['code-review'], // after fix, return to review
+  merged: ['released'], // PR merged → shipped (gated by trigger + workflow.final_stage)
   released: [], // terminal — no outgoing transitions
 };
 

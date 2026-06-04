@@ -131,6 +131,40 @@ describe('parseGitHubWebhook', () => {
     });
   });
 
+  describe('release events', () => {
+    it('release.published → release_published with tag', () => {
+      const result = parseGitHubWebhook(
+        ctx('release', { action: 'published', release: { tag_name: 'v1.2.0' } }),
+      );
+      expect(result).toMatchObject({ type: 'release_published', tag: 'v1.2.0' });
+      expect('timestamp' in result).toBe(true);
+    });
+
+    it('release.created → unknown (only published ships)', () => {
+      const result = parseGitHubWebhook(
+        ctx('release', { action: 'created', release: { tag_name: 'v1.2.0' } }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('release.edited → unknown', () => {
+      const result = parseGitHubWebhook(
+        ctx('release', { action: 'edited', release: { tag_name: 'v1.2.0' } }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('release with missing release field → unknown (no throw)', () => {
+      const result = parseGitHubWebhook(ctx('release', { action: 'published' }));
+      expect(result.type).toBe('unknown');
+    });
+
+    it('release with missing tag_name → unknown (no throw)', () => {
+      const result = parseGitHubWebhook(ctx('release', { action: 'published', release: {} }));
+      expect(result.type).toBe('unknown');
+    });
+  });
+
   describe('unknown / malformed inputs', () => {
     it('unknown event type → unknown', () => {
       expect(parseGitHubWebhook(ctx('push', {}))).toMatchObject({ type: 'unknown' });

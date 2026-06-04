@@ -22,8 +22,12 @@ describe('canTransition', () => {
       expect(canTransition('code-review', 'in-development')).toBe(true);
     });
 
-    it('allows code-review → released (PR approved — item ships)', () => {
-      expect(canTransition('code-review', 'released')).toBe(true);
+    it('allows code-review → merged (PR approved — item merged)', () => {
+      expect(canTransition('code-review', 'merged')).toBe(true);
+    });
+
+    it('allows merged → released (shipped to users)', () => {
+      expect(canTransition('merged', 'released')).toBe(true);
     });
 
     it('allows remediation → code-review (after fix, back to review)', () => {
@@ -40,8 +44,24 @@ describe('canTransition', () => {
       expect(canTransition('discovery', 'released')).toBe(false);
     });
 
+    it('blocks code-review → released (ADR-032 — review now lands in merged, not released)', () => {
+      expect(canTransition('code-review', 'released')).toBe(false);
+    });
+
     it('blocks released → discovery (released is terminal)', () => {
       expect(canTransition('released', 'discovery')).toBe(false);
+    });
+
+    it('blocks merged → discovery (merged only advances to released)', () => {
+      expect(canTransition('merged', 'discovery')).toBe(false);
+    });
+
+    it('blocks merged → in-development (merged only advances to released)', () => {
+      expect(canTransition('merged', 'in-development')).toBe(false);
+    });
+
+    it('blocks merged → code-review (merged only advances to released)', () => {
+      expect(canTransition('merged', 'code-review')).toBe(false);
     });
 
     it('blocks in-development → remediation (must go through code-review first)', () => {
@@ -82,12 +102,12 @@ describe('validateTransition', () => {
 });
 
 describe('getValidNextStages', () => {
-  it('returns all three branches from code-review', () => {
-    expect(getValidNextStages('code-review')).toEqual([
-      'in-development',
-      'remediation',
-      'released',
-    ]);
+  it('returns all three branches from code-review (approved path now → merged)', () => {
+    expect(getValidNextStages('code-review')).toEqual(['in-development', 'remediation', 'merged']);
+  });
+
+  it('returns [released] from merged (not terminal — gated forward edge)', () => {
+    expect(getValidNextStages('merged')).toEqual(['released']);
   });
 
   it('returns empty array for the terminal released stage', () => {
@@ -102,6 +122,7 @@ describe('constants and type guard', () => {
 
   it('isWorkflowStage correctly identifies valid and invalid stages', () => {
     expect(isWorkflowStage('in-development')).toBe(true);
+    expect(isWorkflowStage('merged')).toBe(true);
     expect(isWorkflowStage('released')).toBe(true);
     expect(isWorkflowStage('bogus-stage')).toBe(false);
     expect(isWorkflowStage('')).toBe(false);

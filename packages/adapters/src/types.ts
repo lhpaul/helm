@@ -58,4 +58,12 @@ export type NormalizedEvent =
    * without applying any Helm-specific semantics.
    */
   | { type: 'pull_request_merged'; headRef: string; timestamp: string }
+  /**
+   * A GitHub release was published (release event, action: 'published').
+   * Repo-level and tracker-agnostic — like pull_request_merged, the webhook
+   * route interprets it (bulk-promoting the instance product's `merged` items
+   * to `released`). `tag` is the release tag name, carried for logging/audit;
+   * the route does not key any per-item mapping off it (ADR-032).
+   */
+  | { type: 'release_published'; tag: string; timestamp: string }
   | { type: 'unknown'; raw: unknown };

@@ -37,6 +37,7 @@ const GITHUB_CONFIG = {
     designer_gate: 'skip' as const,
     qa_gate: 'skip' as const,
     readiness_gate: 'skip' as const,
+    final_stage: 'released' as const,
   },
   specialists: {
     'spec-writer': { runtime: 'claude_code' as const, model: 'm' },

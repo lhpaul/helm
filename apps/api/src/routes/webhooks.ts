@@ -22,7 +22,10 @@ import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js
 const ARTIFACT_STAGE_MAP: Record<ArtifactBranchKind, WorkflowStage> = {
   spec: 'spec-ready',
   plan: 'plan-ready',
-  impl: 'released',
+  // ADR-032: a merged helm/impl/<id> PR lands the item in `merged` (PR merged),
+  // NOT `released` (shipped to users). `released` is reached only via the
+  // release trigger — the operator endpoint or the release.published webhook.
+  impl: 'merged',
 };
 
 /** Maps artifact branch kind to the triggeredBy source identifier.
@@ -66,10 +69,11 @@ webhooksRouter.post('/webhooks/github', async (c) => {
   const eventType = c.req.header('x-github-event') ?? '';
   let event: NormalizedEvent;
   try {
-    if (eventType === 'pull_request') {
+    if (eventType === 'pull_request' || eventType === 'release') {
       // Tracker-agnostic — pure parser. The knowledge/code repos are always on
       // GitHub regardless of the issue tracker, so PR merge events (helm/spec/*,
-      // helm/plan/*, helm/impl/*) must process for Linear products too.
+      // helm/plan/*, helm/impl/*) AND release.published events must process for
+      // Linear products too (a Linear product still ships via GitHub releases).
       event = parseGitHubWebhook({ eventType, payload: body });
     } else {
       // issues / issue_comment / projects_v2_item — require the GitHub Projects
@@ -173,6 +177,54 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           return c.json({ error: 'Internal server error' }, 500);
         }
       }
+    }
+  } else if (event.type === 'release_published') {
+    // ADR-032: a published GitHub release ships the instance product. Bulk-
+    // promote every item currently in `merged` to `released`. Single-product
+    // instance, so no repo→product resolution is needed.
+    //
+    // The whole branch is wrapped: getItemStore()/getProductConfig()/list() run
+    // before the per-item guard, so a throw there must still produce controlled
+    // logging + a clean 500 rather than escaping to the default handler.
+    try {
+      const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
+
+      // Opt-out: a product whose terminal stage is `merged` has no user-facing
+      // release step — the release event is a no-op for it.
+      if (config.workflow.final_stage === 'merged') {
+        console.info(
+          `[webhooks/github] release '${event.tag}' ignored — product '${config.product.slug}' has final_stage=merged (no released stage)`,
+        );
+        return c.json({ processed: true });
+      }
+
+      const merged = (await itemStore.list()).filter((item) => item.currentStage === 'merged');
+      let promoted = 0;
+      for (const item of merged) {
+        try {
+          await itemStore.transition({
+            externalId: item.externalId,
+            toStage: 'released',
+            triggeredBy: 'webhook:release',
+          });
+          promoted++;
+        } catch (err) {
+          if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
+            // Idempotent: the item moved or vanished between list() and transition().
+            // Not a delivery problem — log and keep promoting the rest.
+            console.error('[webhooks/github] Release promotion not applied:', err.message);
+          } else {
+            console.error('[webhooks/github] Unexpected error during release promotion:', err);
+            return c.json({ error: 'Internal server error' }, 500);
+          }
+        }
+      }
+      console.info(
+        `[webhooks/github] release '${event.tag}' promoted ${promoted}/${merged.length} merged item(s) → released`,
+      );
+    } catch (err) {
+      console.error('[webhooks/github] Failed to process release_published event:', err);
+      return c.json({ error: 'Internal server error' }, 500);
     }
   }
 

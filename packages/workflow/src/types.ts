@@ -1,6 +1,12 @@
 /**
- * The 9 canonical workflow sub-stages for Helm v0.
+ * The 10 canonical workflow sub-stages for Helm v0.
  * This is the single source of truth — @helm/shared imports from here.
+ *
+ * `merged` and `released` are distinct terminal-area stages (ADR-032):
+ *   - `merged`   — the helm/impl/<id> PR is merged into the code repo.
+ *   - `released` — the change is shipped to users (manual operator promote or
+ *                  a GitHub release.published webhook). Products with no
+ *                  user-facing release step opt out via workflow.final_stage.
  */
 export const WORKFLOW_STAGES = [
   'discovery',
@@ -11,6 +17,7 @@ export const WORKFLOW_STAGES = [
   'in-development',
   'code-review',
   'remediation',
+  'merged',
   'released',
 ] as const;
 

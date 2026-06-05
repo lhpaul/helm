@@ -122,7 +122,7 @@ beforeEach(async () => {
   // Default happy-path mocks
   mockGetProductRegistry.mockResolvedValue([makeProduct()]);
   mockGet.mockResolvedValue(makeItem());
-  mockTransition.mockResolvedValue({ currentStage: 'spec-draft' });
+  mockTransition.mockResolvedValue({ currentStage: 'spec-draft', history: [] });
   // Default: no tracker task available — fetchTask degrades to null (spec written
   // without a ## Task section), matching the behaviour exercised by most tests.
   mockGetIssueTrackerAdapter.mockRejectedValue(new Error('no tracker configured'));

@@ -117,7 +117,7 @@ describe('POST /api/webhooks/linear', () => {
         externalId: 'MOM-42',
         timestamp: 't',
       });
-      mockCreate.mockResolvedValue({});
+      mockCreate.mockResolvedValue({ history: [] });
 
       const res = await post(body);
 
@@ -155,7 +155,7 @@ describe('POST /api/webhooks/linear', () => {
         subStage: 'spec-ready',
         timestamp: 't',
       });
-      mockTransition.mockResolvedValue({});
+      mockTransition.mockResolvedValue({ history: [] });
 
       const res = await post(body);
       expect(res.status).toBe(200);

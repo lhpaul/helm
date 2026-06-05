@@ -131,7 +131,8 @@ export async function transitionItem(input: {
   const store = await getItemStore();
   const updated = await store.transition(input);
   await writebackStage(updated.externalId, updated.currentStage, input.triggeredBy);
-  return updated;
+  // Defensive copy: callers own the result, not the store-built object.
+  return { ...updated, history: [...updated.history] };
 }
 
 /**
@@ -149,7 +150,8 @@ export async function forceTransitionItem(input: {
   const store = await getItemStore();
   const updated = await store.forceTransition(input);
   await writebackStage(updated.externalId, updated.currentStage, input.triggeredBy);
-  return updated;
+  // Defensive copy: callers own the result, not the store-built object.
+  return { ...updated, history: [...updated.history] };
 }
 
 /**
@@ -169,5 +171,6 @@ export async function createItem(input: {
   const store = await getItemStore();
   const created = await store.create(input);
   await writebackStage(created.externalId, created.currentStage, input.triggeredBy);
-  return created;
+  // Defensive copy: callers own the result, not the store-built object.
+  return { ...created, history: [...created.history] };
 }

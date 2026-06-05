@@ -156,7 +156,7 @@ describe('POST /api/webhooks/github', () => {
         externalId: 'issue_42',
         timestamp: 't',
       });
-      mockCreate.mockResolvedValue({});
+      mockCreate.mockResolvedValue({ history: [] });
 
       const res = await post(body);
 
@@ -194,7 +194,7 @@ describe('POST /api/webhooks/github', () => {
         subStage: 'spec-ready',
         timestamp: 't',
       });
-      mockTransition.mockResolvedValue({});
+      mockTransition.mockResolvedValue({ history: [] });
 
       const res = await post(body, 'projects_v2_item');
       expect(res.status).toBe(200);
@@ -289,7 +289,11 @@ describe('POST /api/webhooks/github', () => {
     it('transitions spec-draft → spec-ready when helm/spec/ branch is merged', async () => {
       const body = mergedPrPayload('helm/spec/issue_42');
       // Writeback reads the resulting ItemState, so the mock returns a realistic one.
-      mockTransition.mockResolvedValue({ externalId: 'issue_42', currentStage: 'spec-ready' });
+      mockTransition.mockResolvedValue({
+        externalId: 'issue_42',
+        currentStage: 'spec-ready',
+        history: [],
+      });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
@@ -338,7 +342,7 @@ describe('POST /api/webhooks/github', () => {
 
     it('transitions plan-draft → plan-ready when helm/plan/ branch is merged', async () => {
       const body = mergedPrPayload('helm/plan/issue_42');
-      mockTransition.mockResolvedValue({});
+      mockTransition.mockResolvedValue({ history: [] });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
@@ -384,7 +388,7 @@ describe('POST /api/webhooks/github', () => {
 
     it('transitions code-review → merged when helm/impl/ branch is merged', async () => {
       const body = mergedPrPayload('helm/impl/issue_42');
-      mockTransition.mockResolvedValue({});
+      mockTransition.mockResolvedValue({ history: [] });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
@@ -487,7 +491,7 @@ describe('POST /api/webhooks/github', () => {
         { externalId: 'issue_3', currentStage: 'merged' },
         { externalId: 'issue_4', currentStage: 'released' }, // already released — skipped
       ]);
-      mockTransition.mockResolvedValue({});
+      mockTransition.mockResolvedValue({ history: [] });
 
       const res = await post(releasePayload(), 'release');
 
@@ -542,7 +546,7 @@ describe('POST /api/webhooks/github', () => {
       const { ItemNotFoundError } = await import('../services/errors.js');
       mockTransition
         .mockRejectedValueOnce(new ItemNotFoundError('issue_1')) // vanished between list and transition
-        .mockResolvedValueOnce({});
+        .mockResolvedValueOnce({ history: [] });
 
       const res = await post(releasePayload(), 'release');
 
@@ -589,7 +593,7 @@ describe('POST /api/webhooks/github', () => {
 
     it('processes a pull_request_merged for a Linear product without the GitHub adapter', async () => {
       const body = mergedPrPayload('helm/impl/issue_42');
-      mockTransition.mockResolvedValue({});
+      mockTransition.mockResolvedValue({ history: [] });
 
       const res = await post(body, 'pull_request');
 

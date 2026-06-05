@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { mapErrorToResponse, validateExternalId } from '../lib/http-errors.js';
-import { getItemStore, getJobStore, getProductConfig } from '../services/index.js';
+import { getJobStore, getProductConfig } from '../services/index.js';
+import { forceTransitionItem } from '../services/item-service.js';
 
 // NOTE: No authentication in v0. This server is self-hosted single-user.
 // Authentication and authorization enter in v1+ with multi-tenant support.
@@ -95,16 +96,11 @@ rollbackRouter.post('/items/:externalId/rollback', async (c) => {
     );
   }
 
-  let store;
   try {
-    store = await getItemStore();
-  } catch (err) {
-    console.error('[rollback] Failed to load item store:', err);
-    return c.json({ error: 'Failed to load item store' }, 500);
-  }
-
-  try {
-    const item = await store.forceTransition({
+    // forceTransitionItem wraps store.forceTransition with best-effort tracker
+    // writeback (ADR-033). manual:rollback is not tracker-originated → the
+    // rolled-back stage (plan-ready) is mirrored to the tracker.
+    const item = await forceTransitionItem({
       externalId,
       fromStage: bodyResult.data.fromStage,
       toStage: bodyResult.data.toStage,

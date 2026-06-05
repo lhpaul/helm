@@ -246,6 +246,14 @@ export async function getProductRegistry(): Promise<Product[]> {
   }
 }
 
+// Transition + tracker-writeback wrappers (ADR-033) live in ./item-service.ts.
+// They are imported DIRECTLY from there by call sites (not re-exported here) on
+// purpose: item-service.ts imports the factory accessors above, so re-exporting
+// it would create an index↔item-service cycle. The cycle is benign at runtime
+// but breaks `vi.mock('./index.js', importOriginal)` — the spread would bind the
+// real wrappers to the real getItemStore instead of the test's mock. Keeping the
+// dependency one-directional (item-service → index) avoids that entirely.
+
 // ── Test utilities ────────────────────────────────────────────────────────────
 
 /**

@@ -61,6 +61,10 @@ let savedEnv: { dataDir: string | undefined; knowledgePath: string | undefined }
 
 beforeEach(async () => {
   _resetForTests();
+  // Isolate the writeback spies between tests (this suite uses _resetForTests,
+  // not clearAllMocks, so the hoisted mocks would otherwise accumulate calls).
+  mockSetSubStage.mockClear();
+  mockEnsureSubStages.mockClear();
   testDir = join(tmpdir(), `helm-rollback-api-${randomUUID()}`);
   await mkdir(join(testDir, 'data', 'items'), { recursive: true });
   await mkdir(join(testDir, 'data', 'jobs'), { recursive: true });

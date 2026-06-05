@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Product } from '@helm/shared';
 import type { IssueTrackerAdapter } from '@helm/adapters';
 import type { WorkflowStage } from '@helm/workflow';
+import { TRACKER_WRITE_TIMEOUT_MS } from '../lib/with-timeout.js';
 import { backfillProductStages } from './writeback-backfill.js';
 import type { ItemState } from './types.js';
 
@@ -155,7 +156,7 @@ describe('backfillProductStages', () => {
       _adapter: adapter as unknown as IssueTrackerAdapter,
       _listItems: async () => items,
     });
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(TRACKER_WRITE_TIMEOUT_MS);
     const result = await pending;
 
     expect(adapter.setSubStage).toHaveBeenCalledTimes(3);

@@ -11,13 +11,27 @@ import type { WorkflowStage } from '@helm/workflow';
 export const EXTERNAL_ID_REGEX = /^(?!\.)[A-Za-z0-9._-]+$/;
 
 /**
- * Validates filesystem path inputs taken from env vars (`HELM_KNOWLEDGE_REPO_PATH`,
- * `HELM_DATA_DIR`) before they are joined into filesystem operations.
+ * Character allowlist for filesystem path inputs — rejects spaces, shell
+ * metacharacters, and control characters. It does NOT, on its own, prevent
+ * path traversal: `.` and `..` are valid characters, so `../x` matches.
+ * Use {@link isSafeFsPath} for the full check.
+ */
+export const SAFE_FS_PATH_REGEX = /^[A-Za-z0-9._/\-]+$/;
+
+/**
+ * Validates filesystem path inputs taken from env vars
+ * (`HELM_KNOWLEDGE_REPO_PATH`, `HELM_DATA_DIR`) before they are joined into
+ * filesystem operations. Combines the character allowlist with a path-segment
+ * check that rejects `.` and `..` segments, so a value cannot resolve to the
+ * current working directory or escape the intended directory tree.
  *
  * Single source of truth — shared by the product registry loader and the CLI
  * scripts (sync, writeback-backfill) so the path-safety check cannot drift.
  */
-export const SAFE_FS_PATH_REGEX = /^[A-Za-z0-9._/\-]+$/;
+export function isSafeFsPath(value: string): boolean {
+  if (!SAFE_FS_PATH_REGEX.test(value)) return false;
+  return !value.split('/').some((segment) => segment === '.' || segment === '..');
+}
 
 /**
  * A single recorded transition in an item's workflow history.

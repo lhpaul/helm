@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowStage } from '@helm/workflow';
+import { TRACKER_WRITE_TIMEOUT_MS } from '../lib/with-timeout.js';
 import type { ItemState } from './types.js';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
@@ -167,7 +168,7 @@ describe('transitionItem', () => {
       toStage: 'spec-ready',
       triggeredBy: 'agent:spec-writer',
     });
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(TRACKER_WRITE_TIMEOUT_MS);
     const result = await pending;
 
     expect(result.currentStage).toBe('spec-ready');

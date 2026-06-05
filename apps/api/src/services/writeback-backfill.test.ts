@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Product } from '@helm/shared';
 import type { IssueTrackerAdapter } from '@helm/adapters';
 import type { WorkflowStage } from '@helm/workflow';
@@ -58,6 +58,13 @@ beforeEach(() => {
   };
 });
 
+afterEach(() => {
+  // Reset timers + spies here (not in the test body) so a mid-test assertion
+  // failure cannot leak fake timers or spies into the next test.
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
 describe('backfillProductStages', () => {
   it('runs ensureSubStages once, then setSubStage for every store item', async () => {
     const items = [
@@ -97,7 +104,6 @@ describe('backfillProductStages', () => {
     expect(adapter.setSubStage).toHaveBeenCalledTimes(3);
     expect(result).toMatchObject({ reconciled: 2, total: 3, failed: 1 });
     expect(errSpy).toHaveBeenCalled();
-    errSpy.mockRestore();
   });
 
   it('reconciles only items belonging to the target product (shared store)', async () => {
@@ -162,8 +168,7 @@ describe('backfillProductStages', () => {
     expect(adapter.setSubStage).toHaveBeenCalledTimes(3);
     expect(result).toMatchObject({ reconciled: 2, total: 3, failed: 1 });
     expect(errSpy).toHaveBeenCalled();
-    errSpy.mockRestore();
-    vi.useRealTimers();
+    // Timer/spy cleanup happens in afterEach (failure-safe).
   });
 
   it('aborts (propagates) if ensureSubStages fails — no item could be reconciled', async () => {

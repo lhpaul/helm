@@ -65,6 +65,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Reset timers + spies here (not in the test body) so a mid-test assertion
+  // failure cannot leak fake timers or spies into the next test.
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -173,7 +176,7 @@ describe('transitionItem', () => {
 
     expect(result.currentStage).toBe('spec-ready');
     expect(errSpy).toHaveBeenCalled();
-    vi.useRealTimers();
+    // Timer/spy cleanup happens in afterEach (failure-safe).
   });
 
   it('is best-effort: an ensureSubStages failure skips setSubStage but still returns the result', async () => {

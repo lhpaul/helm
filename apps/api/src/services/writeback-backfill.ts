@@ -85,7 +85,12 @@ export async function backfillProductStages(
       return new ItemStore(paths.items).list();
     });
 
-  const items = await listItems();
+  // The item store is shared across products (a single data/items/ directory),
+  // and unlike `sync` (which lists from the per-product tracker) this lists from
+  // the store. Scope to THIS product's items so a multi-product instance never
+  // pushes another product's items onto this product's tracker.
+  const allItems = await listItems();
+  const items = allItems.filter((it) => it.productSlug === slug);
 
   // Ensure the stage map exists once before any setSubStage. A failure here is
   // fatal to the run (GitHub setSubStage would throw for every item), so it

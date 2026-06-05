@@ -29,9 +29,16 @@ const linearProduct = {
   },
 } as unknown as Product;
 
-const item = (externalId: string, currentStage: WorkflowStage): ItemState => ({
+// productSlug defaults to the github fixture's slug; the Linear test overrides it.
+// Backfill scopes to items whose productSlug matches the product under test, so
+// fixtures must carry the right slug.
+const item = (
+  externalId: string,
+  currentStage: WorkflowStage,
+  productSlug = 'gh-app',
+): ItemState => ({
   externalId,
-  productSlug: 'p',
+  productSlug,
   currentStage,
   history: [],
   createdAt: '2026-01-01T00:00:00Z',
@@ -52,7 +59,11 @@ beforeEach(() => {
 
 describe('backfillProductStages', () => {
   it('runs ensureSubStages once, then setSubStage for every store item', async () => {
-    const items = [item('LEA-1', 'merged'), item('LEA-2', 'released'), item('LEA-3', 'discovery')];
+    const items = [
+      item('LEA-1', 'merged', 'af'),
+      item('LEA-2', 'released', 'af'),
+      item('LEA-3', 'discovery', 'af'),
+    ];
 
     const result = await backfillProductStages(linearProduct, 'linear-key', '/data', {
       _adapter: adapter as unknown as IssueTrackerAdapter,
@@ -86,6 +97,27 @@ describe('backfillProductStages', () => {
     expect(result).toMatchObject({ reconciled: 2, total: 3, failed: 1 });
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+
+  it('reconciles only items belonging to the target product (shared store)', async () => {
+    // The store is shared across products; backfill for gh-app must ignore af's items.
+    const items = [
+      item('GH-1', 'merged', 'gh-app'),
+      item('LEA-9', 'released', 'af'),
+      item('GH-2', 'spec-ready', 'gh-app'),
+    ];
+
+    const result = await backfillProductStages(ghProduct, 'gh-token', '/data', {
+      _adapter: adapter as unknown as IssueTrackerAdapter,
+      _listItems: async () => items,
+    });
+
+    expect(adapter.setSubStage).toHaveBeenCalledTimes(2);
+    expect(adapter.setSubStage).toHaveBeenCalledWith('GH-1', 'merged');
+    expect(adapter.setSubStage).toHaveBeenCalledWith('GH-2', 'spec-ready');
+    expect(adapter.setSubStage).not.toHaveBeenCalledWith('LEA-9', 'released');
+    // total reflects the product-scoped count, not the full store.
+    expect(result).toMatchObject({ reconciled: 2, total: 2, failed: 0 });
   });
 
   it('is provider-agnostic — reconciles a github_projects product the same way', async () => {

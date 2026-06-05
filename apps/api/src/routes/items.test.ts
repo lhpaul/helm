@@ -8,6 +8,10 @@ import { _resetForTests } from '../services/index.js';
 
 // Stub the tracker adapter so writeback (ADR-033) is deterministic and never
 // touches the network — getProductConfig/getItemStore stay real (filesystem).
+// NOTE: the spies live in this file's own vi.hoisted block (not a shared helper)
+// because a vi.mock factory cannot reference an imported value — vitest hoists
+// the factory above imports, so a shared mock would throw "Cannot access before
+// initialization". The duplication across items/release/rollback is required.
 const { mockSetSubStage, mockEnsureSubStages } = vi.hoisted(() => ({
   mockSetSubStage: vi.fn().mockResolvedValue(undefined),
   mockEnsureSubStages: vi.fn().mockResolvedValue(undefined),

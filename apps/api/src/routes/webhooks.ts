@@ -115,8 +115,10 @@ webhooksRouter.post('/webhooks/github', async (c) => {
 
   // g. Dispatch.
   if (event.type === 'item_created') {
-    const config = await getProductConfig();
     try {
+      // getProductConfig() is inside the try so a config-load failure is caught
+      // and returned as a controlled 500 rather than escaping the handler.
+      const config = await getProductConfig();
       // createItem applies writeback, but webhook:github-projects is
       // tracker-originated → anti-echo skips it (the tracker already has the item).
       await createItem({

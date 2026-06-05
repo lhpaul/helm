@@ -11,6 +11,15 @@ import type { WorkflowStage } from '@helm/workflow';
 export const EXTERNAL_ID_REGEX = /^(?!\.)[A-Za-z0-9._-]+$/;
 
 /**
+ * Validates filesystem path inputs taken from env vars (`HELM_KNOWLEDGE_REPO_PATH`,
+ * `HELM_DATA_DIR`) before they are joined into filesystem operations.
+ *
+ * Single source of truth — shared by the product registry loader and the CLI
+ * scripts (sync, writeback-backfill) so the path-safety check cannot drift.
+ */
+export const SAFE_FS_PATH_REGEX = /^[A-Za-z0-9._/\-]+$/;
+
+/**
  * A single recorded transition in an item's workflow history.
  * fromStage is null only for the initial creation event.
  */

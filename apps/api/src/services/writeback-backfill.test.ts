@@ -80,7 +80,7 @@ describe('backfillProductStages', () => {
   });
 
   it('continues past a per-item failure (best-effort), counting reconciled vs failed', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     adapter.setSubStage
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error('item not in tracker'))
@@ -95,8 +95,8 @@ describe('backfillProductStages', () => {
     // All three were attempted — the failure did not abort the loop.
     expect(adapter.setSubStage).toHaveBeenCalledTimes(3);
     expect(result).toMatchObject({ reconciled: 2, total: 3, failed: 1 });
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
   });
 
   it('reconciles only items belonging to the target product (shared store)', async () => {
@@ -144,7 +144,7 @@ describe('backfillProductStages', () => {
 
   it('times out a stalled item, counts it failed, and continues the batch', async () => {
     vi.useFakeTimers();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     // Item B's setSubStage never resolves; A and C settle immediately.
     adapter.setSubStage.mockImplementation((externalId: string) =>
       externalId === 'B' ? new Promise(() => {}) : Promise.resolve(),
@@ -160,8 +160,8 @@ describe('backfillProductStages', () => {
 
     expect(adapter.setSubStage).toHaveBeenCalledTimes(3);
     expect(result).toMatchObject({ reconciled: 2, total: 3, failed: 1 });
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
     vi.useRealTimers();
   });
 

@@ -122,8 +122,8 @@ describe('transitionItem', () => {
 
   // ── Best-effort ───────────────────────────────────────────────────────────────
 
-  it('is best-effort: a setSubStage failure still returns the store result and logs a warning', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('is best-effort: a setSubStage failure still returns the store result and logs an error', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     adapter.setSubStage.mockRejectedValue(new Error('tracker 503'));
     store.transition.mockResolvedValue(itemAt('spec-ready'));
 
@@ -134,14 +134,14 @@ describe('transitionItem', () => {
     });
 
     expect(result.currentStage).toBe('spec-ready');
-    expect(warnSpy).toHaveBeenCalledWith(
+    expect(errSpy).toHaveBeenCalledWith(
       expect.stringContaining('[writeback] failed for HLM-1→spec-ready'),
       expect.anything(),
     );
   });
 
   it('is best-effort: an adapter resolution failure (e.g. missing token) does not fail the transition', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     mockGetAdapter.mockRejectedValue(new Error('GITHUB_TOKEN is not set'));
     store.transition.mockResolvedValue(itemAt('spec-ready'));
 
@@ -157,7 +157,7 @@ describe('transitionItem', () => {
 
   it('is best-effort: a hung setSubStage times out without failing the transition', async () => {
     vi.useFakeTimers();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     // setSubStage never resolves — without a timeout this would hang the request.
     adapter.setSubStage.mockReturnValue(new Promise(() => {}));
     store.transition.mockResolvedValue(itemAt('spec-ready'));
@@ -171,12 +171,12 @@ describe('transitionItem', () => {
     const result = await pending;
 
     expect(result.currentStage).toBe('spec-ready');
-    expect(warnSpy).toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalled();
     vi.useRealTimers();
   });
 
   it('is best-effort: an ensureSubStages failure skips setSubStage but still returns the result', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     adapter.ensureSubStages.mockRejectedValue(new Error('field creation failed'));
     store.transition.mockResolvedValue(itemAt('spec-ready'));
 
@@ -203,7 +203,7 @@ describe('transitionItem', () => {
   });
 
   it('re-runs ensureSubStages after a failure (memo evicts the rejected ensure)', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     adapter.ensureSubStages
       .mockRejectedValueOnce(new Error('transient'))
       .mockResolvedValue(undefined);

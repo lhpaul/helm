@@ -120,7 +120,7 @@ export async function backfillProductStages(
       );
     } catch (err) {
       failed++;
-      console.warn(
+      console.error(
         `[writeback-backfill] product=${slug} item=${item.externalId} failed:`,
         err instanceof Error ? err.message : err,
       );

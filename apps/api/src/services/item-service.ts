@@ -17,7 +17,7 @@ import type { ItemState } from './types.js';
  * This module is the thin seam that fixes that: each stage-mutating wrapper
  * applies the store change first (store stays the source of truth), then writes
  * the new stage back to the tracker through the single `writebackStage` choke
- * point. Writeback is best-effort — a tracker API hiccup logs a warning and the
+ * point. Writeback is best-effort — a tracker API hiccup is logged and the
  * workflow continues, mirroring how the webhook handlers already swallow
  * external errors.
  *
@@ -107,7 +107,7 @@ async function writebackStage(
       `writeback ${externalId}→${stage}`,
     );
   } catch (err) {
-    console.warn(`[writeback] failed for ${externalId}→${stage}:`, err);
+    console.error(`[writeback] failed for ${externalId}→${stage}:`, err);
   }
 }
 

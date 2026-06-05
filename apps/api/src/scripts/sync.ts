@@ -14,6 +14,7 @@
 import { join } from 'node:path';
 import { getProductRegistry } from '../services/index.js';
 import { syncProductItems } from '../services/sync.js';
+import { SAFE_FS_PATH_REGEX } from '../services/types.js';
 
 async function main(): Promise<void> {
   const slug = process.argv[2]?.trim();
@@ -34,7 +35,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const SAFE_FS_PATH_REGEX = /^[A-Za-z0-9._/\-]+$/;
   if (!SAFE_FS_PATH_REGEX.test(knowledgeRepoPath)) {
     console.error('Error: HELM_KNOWLEDGE_REPO_PATH contains invalid characters');
     process.exit(1);

@@ -4,6 +4,7 @@ import { WORKFLOW_STAGES } from '@helm/workflow';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
 import { mapErrorToResponse, validateExternalId } from '../lib/http-errors.js';
 import { getItemStore, getProductConfig } from '../services/index.js';
+import { createItem, transitionItem } from '../services/item-service.js';
 
 // NOTE: No authentication in v0. This server is self-hosted single-user.
 // Authentication and authorization enter in v1+ with multi-tenant support.
@@ -56,9 +57,11 @@ itemsRouter.post('/items', async (c) => {
     return c.json({ error: 'Failed to load product config' }, 500);
   }
 
-  const store = await getItemStore();
   try {
-    const item = await store.create({
+    // createItem wraps store.create with best-effort tracker writeback of the
+    // initial stage label (ADR-033). API creates are not tracker-originated, so
+    // the discovery label is written back.
+    const item = await createItem({
       externalId: bodyResult.data.externalId,
       productSlug,
       triggeredBy: bodyResult.data.triggeredBy,
@@ -95,9 +98,10 @@ itemsRouter.post('/items/:externalId/transitions', async (c) => {
     return c.json({ error: 'Invalid request body', details: bodyResult.error.issues }, 400);
   }
 
-  const store = await getItemStore();
   try {
-    const item = await store.transition({
+    // transitionItem wraps store.transition with best-effort tracker writeback
+    // of the new stage (ADR-033).
+    const item = await transitionItem({
       externalId,
       toStage: bodyResult.data.toStage,
       triggeredBy: bodyResult.data.triggeredBy,

@@ -5,17 +5,26 @@ import { _resetForTests } from '../services/index.js';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-const { mockParseWebhook, mockCreate, mockTransition } = vi.hoisted(() => ({
-  mockParseWebhook: vi.fn(),
-  mockCreate: vi.fn(),
-  mockTransition: vi.fn(),
-}));
+const { mockParseWebhook, mockCreate, mockTransition, mockSetSubStage, mockEnsureSubStages } =
+  vi.hoisted(() => ({
+    mockParseWebhook: vi.fn(),
+    mockCreate: vi.fn(),
+    mockTransition: vi.fn(),
+    mockSetSubStage: vi.fn(),
+    mockEnsureSubStages: vi.fn(),
+  }));
 
 vi.mock('../services/index.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../services/index.js')>();
   return {
     ...real,
-    getIssueTrackerAdapter: vi.fn().mockResolvedValue({ parseWebhook: mockParseWebhook }),
+    // The same Linear adapter serves parseWebhook AND writeback (setSubStage),
+    // so writeback (anti-echo) is observable through this single stub.
+    getIssueTrackerAdapter: vi.fn().mockResolvedValue({
+      parseWebhook: mockParseWebhook,
+      setSubStage: mockSetSubStage,
+      ensureSubStages: mockEnsureSubStages,
+    }),
     getItemStore: vi.fn().mockResolvedValue({ create: mockCreate, transition: mockTransition }),
     getProductConfig: vi.fn().mockResolvedValue({
       product: { slug: 'mome', name: 'MOME' },
@@ -108,7 +117,7 @@ describe('POST /api/webhooks/linear', () => {
         externalId: 'MOM-42',
         timestamp: 't',
       });
-      mockCreate.mockResolvedValue({});
+      mockCreate.mockResolvedValue({ history: [] });
 
       const res = await post(body);
 
@@ -146,13 +155,16 @@ describe('POST /api/webhooks/linear', () => {
         subStage: 'spec-ready',
         timestamp: 't',
       });
-      mockTransition.mockResolvedValue({});
+      mockTransition.mockResolvedValue({ history: [] });
 
       const res = await post(body);
       expect(res.status).toBe(200);
       expect(mockTransition).toHaveBeenCalledWith(
         expect.objectContaining({ externalId: 'MOM-5', toStage: 'spec-ready' }),
       );
+      // Anti-echo (ADR-033): a Linear-originated transition (webhook:linear) must
+      // NOT be written back to Linear.
+      expect(mockSetSubStage).not.toHaveBeenCalled();
     });
 
     it('returns 200 on WorkflowTransitionError (not a delivery problem)', async () => {

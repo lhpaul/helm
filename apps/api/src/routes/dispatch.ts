@@ -12,12 +12,12 @@ import {
   getJobStore,
   getIssueTrackerAdapter,
 } from '../services/index.js';
+import { transitionItem } from '../services/item-service.js';
 import { createRuntimeForProduct } from '../services/runtime-factory.js';
 import { validateExternalId } from '../lib/http-errors.js';
 import type { Job } from '../services/job-store.js';
 import type { ItemState } from '../services/types.js';
 import type { Product } from '@helm/shared';
-import type { ItemStore } from '../services/item-store.js';
 
 export const dispatchRouter = new Hono();
 
@@ -61,7 +61,6 @@ async function runDispatchJob(
   ctx: {
     product: Product;
     item: ItemState;
-    store: ItemStore;
     workdir: string;
     dataRoot: string;
     specialistId: string | undefined;
@@ -83,7 +82,10 @@ async function runDispatchJob(
       },
       ctx.product,
       runtime,
-      (input) => ctx.store.transition(input),
+      // transitionItem wraps store.transition with best-effort tracker writeback
+      // (ADR-033). Stage handlers advance the item with agent:* triggers, which
+      // are not tracker-originated, so each advance is mirrored to the tracker.
+      transitionItem,
       {
         workdir: ctx.workdir,
         dataRoot: ctx.dataRoot,
@@ -260,7 +262,6 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   void runDispatchJob(job, {
     product,
     item,
-    store,
     workdir,
     dataRoot,
     specialistId: bodyResult.data.specialistId,

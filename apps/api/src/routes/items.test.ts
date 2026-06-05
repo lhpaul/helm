@@ -2,9 +2,29 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../app.js';
 import { _resetForTests } from '../services/index.js';
+
+// Stub the tracker adapter so writeback (ADR-033) is deterministic and never
+// touches the network — getProductConfig/getItemStore stay real (filesystem).
+// NOTE: the spies live in this file's own vi.hoisted block (not a shared helper)
+// because a vi.mock factory cannot reference an imported value — vitest hoists
+// the factory above imports, so a shared mock would throw "Cannot access before
+// initialization". The duplication across items/release/rollback is required.
+const { mockSetSubStage, mockEnsureSubStages } = vi.hoisted(() => ({
+  mockSetSubStage: vi.fn().mockResolvedValue(undefined),
+  mockEnsureSubStages: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('../services/index.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../services/index.js')>();
+  return {
+    ...real,
+    getIssueTrackerAdapter: vi
+      .fn()
+      .mockResolvedValue({ setSubStage: mockSetSubStage, ensureSubStages: mockEnsureSubStages }),
+  };
+});
 
 // Minimal valid product config used for all item endpoint tests.
 // productSlug 'example-app' comes from here, not from request bodies.
@@ -43,6 +63,10 @@ let savedEnv: { dataDir: string | undefined; knowledgePath: string | undefined }
 
 beforeEach(async () => {
   _resetForTests();
+  // Isolate the writeback spies between tests (this suite uses _resetForTests,
+  // not clearAllMocks, so the hoisted mocks would otherwise accumulate calls).
+  mockSetSubStage.mockClear();
+  mockEnsureSubStages.mockClear();
   testDir = join(tmpdir(), `helm-items-api-${randomUUID()}`);
   await mkdir(join(testDir, 'data'), { recursive: true });
   await mkdir(join(testDir, 'knowledge', '.helm'), { recursive: true });
@@ -151,6 +175,9 @@ describe('POST /api/items/:externalId/transitions', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { currentStage: string };
     expect(body.currentStage).toBe('spec-draft');
+    // Writeback (ADR-033): an agent-triggered transition is not tracker-originated,
+    // so the new stage is pushed back to the tracker.
+    expect(mockSetSubStage).toHaveBeenCalledWith('HLM-1', 'spec-draft');
   });
 
   it('returns 400 when body is missing required fields', async () => {

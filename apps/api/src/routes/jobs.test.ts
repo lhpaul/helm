@@ -97,7 +97,7 @@ beforeEach(async () => {
 
   mockGetProductRegistry.mockResolvedValue([makeProduct()]);
   mockGet.mockResolvedValue(makeItem());
-  mockTransition.mockResolvedValue({ currentStage: 'spec-draft' });
+  mockTransition.mockResolvedValue({ currentStage: 'spec-draft', history: [] });
 
   mockCreateRuntime.mockImplementation(
     (_product: Product, externalId: string, workdir: string) =>

@@ -123,7 +123,7 @@ beforeEach(async () => {
 
   mockGetProductRegistry.mockResolvedValue([makeProduct()]);
   mockGet.mockResolvedValue(makeItem());
-  mockTransition.mockResolvedValue({ currentStage: 'spec-draft' });
+  mockTransition.mockResolvedValue({ currentStage: 'spec-draft', history: [] });
 });
 
 afterEach(async () => {

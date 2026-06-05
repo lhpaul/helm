@@ -1,15 +1,29 @@
 import { createHmac } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../app.js';
-import { _resetForTests, getGitHubAdapter, getProductConfig } from '../services/index.js';
+import {
+  _resetForTests,
+  getGitHubAdapter,
+  getIssueTrackerAdapter,
+  getProductConfig,
+} from '../services/index.js';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-const { mockParseWebhook, mockCreate, mockTransition, mockList } = vi.hoisted(() => ({
+const {
+  mockParseWebhook,
+  mockCreate,
+  mockTransition,
+  mockList,
+  mockSetSubStage,
+  mockEnsureSubStages,
+} = vi.hoisted(() => ({
   mockParseWebhook: vi.fn(),
   mockCreate: vi.fn(),
   mockTransition: vi.fn(),
   mockList: vi.fn(),
+  mockSetSubStage: vi.fn(),
+  mockEnsureSubStages: vi.fn(),
 }));
 
 vi.mock('../services/index.js', async (importOriginal) => {
@@ -17,6 +31,10 @@ vi.mock('../services/index.js', async (importOriginal) => {
   return {
     ...real,
     getGitHubAdapter: vi.fn().mockResolvedValue({ parseWebhook: mockParseWebhook }),
+    // Writeback (ADR-033) resolves the tracker adapter through this accessor.
+    getIssueTrackerAdapter: vi
+      .fn()
+      .mockResolvedValue({ setSubStage: mockSetSubStage, ensureSubStages: mockEnsureSubStages }),
     getItemStore: vi
       .fn()
       .mockResolvedValue({ create: mockCreate, transition: mockTransition, list: mockList }),
@@ -88,6 +106,14 @@ describe('POST /api/webhooks/github', () => {
       workflow: { final_stage: 'released' },
     } as never);
     vi.mocked(getGitHubAdapter).mockResolvedValue({ parseWebhook: mockParseWebhook } as never);
+    // Writeback adapter stub (ADR-033): ensureSubStages + setSubStage resolve so
+    // a successful writeback can be asserted; clearAllMocks wiped the impls.
+    mockEnsureSubStages.mockResolvedValue(undefined);
+    mockSetSubStage.mockResolvedValue(undefined);
+    vi.mocked(getIssueTrackerAdapter).mockResolvedValue({
+      setSubStage: mockSetSubStage,
+      ensureSubStages: mockEnsureSubStages,
+    } as never);
   });
 
   afterEach(() => {
@@ -130,7 +156,7 @@ describe('POST /api/webhooks/github', () => {
         externalId: 'issue_42',
         timestamp: 't',
       });
-      mockCreate.mockResolvedValue({});
+      mockCreate.mockResolvedValue({ history: [] });
 
       const res = await post(body);
 
@@ -168,13 +194,17 @@ describe('POST /api/webhooks/github', () => {
         subStage: 'spec-ready',
         timestamp: 't',
       });
-      mockTransition.mockResolvedValue({});
+      mockTransition.mockResolvedValue({ history: [] });
 
       const res = await post(body, 'projects_v2_item');
       expect(res.status).toBe(200);
       expect(mockTransition).toHaveBeenCalledWith(
         expect.objectContaining({ externalId: 'issue_5', toStage: 'spec-ready' }),
       );
+      // Anti-echo (ADR-033): this transition is tracker-originated
+      // (webhook:github-projects), so it must NOT be written back — otherwise it
+      // would loop tracker → store → tracker.
+      expect(mockSetSubStage).not.toHaveBeenCalled();
     });
 
     it('returns 200 on WorkflowTransitionError (not a delivery problem)', async () => {
@@ -258,7 +288,12 @@ describe('POST /api/webhooks/github', () => {
 
     it('transitions spec-draft → spec-ready when helm/spec/ branch is merged', async () => {
       const body = mergedPrPayload('helm/spec/issue_42');
-      mockTransition.mockResolvedValue({});
+      // Writeback reads the resulting ItemState, so the mock returns a realistic one.
+      mockTransition.mockResolvedValue({
+        externalId: 'issue_42',
+        currentStage: 'spec-ready',
+        history: [],
+      });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
@@ -267,8 +302,11 @@ describe('POST /api/webhooks/github', () => {
         toStage: 'spec-ready',
         triggeredBy: 'webhook:knowledge-repo',
       });
-      // Fix 1: the adapter is never consulted for pull_request events.
+      // Fix 1: the GitHub Projects adapter is never consulted for pull_request events.
       expect(getGitHubAdapter).not.toHaveBeenCalled();
+      // Writeback (ADR-033): webhook:knowledge-repo is NOT tracker-originated, so
+      // the new stage IS pushed back to the tracker.
+      expect(mockSetSubStage).toHaveBeenCalledWith('issue_42', 'spec-ready');
     });
 
     it('returns 200 on WorkflowTransitionError for spec merge (item already past spec-draft)', async () => {
@@ -304,7 +342,7 @@ describe('POST /api/webhooks/github', () => {
 
     it('transitions plan-draft → plan-ready when helm/plan/ branch is merged', async () => {
       const body = mergedPrPayload('helm/plan/issue_42');
-      mockTransition.mockResolvedValue({});
+      mockTransition.mockResolvedValue({ history: [] });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
@@ -350,7 +388,7 @@ describe('POST /api/webhooks/github', () => {
 
     it('transitions code-review → merged when helm/impl/ branch is merged', async () => {
       const body = mergedPrPayload('helm/impl/issue_42');
-      mockTransition.mockResolvedValue({});
+      mockTransition.mockResolvedValue({ history: [] });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
@@ -453,7 +491,7 @@ describe('POST /api/webhooks/github', () => {
         { externalId: 'issue_3', currentStage: 'merged' },
         { externalId: 'issue_4', currentStage: 'released' }, // already released — skipped
       ]);
-      mockTransition.mockResolvedValue({});
+      mockTransition.mockResolvedValue({ history: [] });
 
       const res = await post(releasePayload(), 'release');
 
@@ -508,7 +546,7 @@ describe('POST /api/webhooks/github', () => {
       const { ItemNotFoundError } = await import('../services/errors.js');
       mockTransition
         .mockRejectedValueOnce(new ItemNotFoundError('issue_1')) // vanished between list and transition
-        .mockResolvedValueOnce({});
+        .mockResolvedValueOnce({ history: [] });
 
       const res = await post(releasePayload(), 'release');
 
@@ -555,7 +593,7 @@ describe('POST /api/webhooks/github', () => {
 
     it('processes a pull_request_merged for a Linear product without the GitHub adapter', async () => {
       const body = mergedPrPayload('helm/impl/issue_42');
-      mockTransition.mockResolvedValue({});
+      mockTransition.mockResolvedValue({ history: [] });
 
       const res = await post(body, 'pull_request');
 

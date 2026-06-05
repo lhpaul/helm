@@ -14,6 +14,7 @@ import {
   getItemStore,
   getProductConfig,
 } from '../services/index.js';
+import { createItem, transitionItem } from '../services/item-service.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
 
 // ── Artifact branch routing ───────────────────────────────────────────────────
@@ -114,9 +115,13 @@ webhooksRouter.post('/webhooks/github', async (c) => {
 
   // g. Dispatch.
   if (event.type === 'item_created') {
-    const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
     try {
-      await itemStore.create({
+      // getProductConfig() is inside the try so a config-load failure is caught
+      // and returned as a controlled 500 rather than escaping the handler.
+      const config = await getProductConfig();
+      // createItem applies writeback, but webhook:github-projects is
+      // tracker-originated → anti-echo skips it (the tracker already has the item).
+      await createItem({
         externalId: event.externalId,
         productSlug: config.product.slug,
         triggeredBy: 'webhook:github-projects',
@@ -130,9 +135,11 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       }
     }
   } else if (event.type === 'item_updated' && event.subStage != null) {
-    const itemStore = await getItemStore();
     try {
-      await itemStore.transition({
+      // transitionItem applies writeback, but webhook:github-projects is
+      // tracker-originated → anti-echo skips it, preventing a tracker→store→
+      // tracker echo loop.
+      await transitionItem({
         externalId: event.externalId,
         toStage: event.subStage,
         triggeredBy: 'webhook:github-projects',
@@ -157,9 +164,11 @@ webhooksRouter.post('/webhooks/github', async (c) => {
     if (parsed !== null) {
       const toStage = ARTIFACT_STAGE_MAP[parsed.kind];
       const triggeredBy = ARTIFACT_TRIGGERED_BY_MAP[parsed.kind];
-      const itemStore = await getItemStore();
       try {
-        await itemStore.transition({
+        // triggeredBy is webhook:code-repo / webhook:knowledge-repo — NOT
+        // tracker-originated, so transitionItem writes the new stage back to the
+        // tracker (the merge happened in GitHub, the tracker doesn't know yet).
+        await transitionItem({
           externalId: parsed.externalId,
           toStage,
           triggeredBy,
@@ -202,7 +211,9 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       let promoted = 0;
       for (const item of merged) {
         try {
-          await itemStore.transition({
+          // webhook:release is NOT tracker-originated → transitionItem writes the
+          // released stage back to the tracker for each promoted item.
+          await transitionItem({
             externalId: item.externalId,
             toStage: 'released',
             triggeredBy: 'webhook:release',
@@ -282,9 +293,10 @@ webhooksRouter.post('/webhooks/linear', async (c) => {
 
   // g. Dispatch.
   if (event.type === 'item_created') {
-    const itemStore = await getItemStore();
     try {
-      await itemStore.create({
+      // webhook:linear is tracker-originated → createItem's writeback is
+      // anti-echo-skipped (the issue already exists in Linear).
+      await createItem({
         externalId: event.externalId,
         productSlug: config.product.slug,
         triggeredBy: 'webhook:linear',
@@ -298,9 +310,10 @@ webhooksRouter.post('/webhooks/linear', async (c) => {
       }
     }
   } else if (event.type === 'item_updated' && event.subStage != null) {
-    const itemStore = await getItemStore();
     try {
-      await itemStore.transition({
+      // webhook:linear is tracker-originated → transitionItem's writeback is
+      // anti-echo-skipped, preventing a tracker→store→tracker echo loop.
+      await transitionItem({
         externalId: event.externalId,
         toStage: event.subStage,
         triggeredBy: 'webhook:linear',

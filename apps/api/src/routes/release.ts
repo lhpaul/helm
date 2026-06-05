@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { mapErrorToResponse, validateExternalId } from '../lib/http-errors.js';
 import { getItemStore, getProductConfig } from '../services/index.js';
+import { transitionItem } from '../services/item-service.js';
 import { ItemNotFoundError, StageMismatchError } from '../services/errors.js';
 
 // NOTE: No authentication in v0. This server is self-hosted single-user.
@@ -87,7 +88,10 @@ releaseRouter.post('/items/:externalId/release', async (c) => {
       throw new StageMismatchError(externalId, 'merged', item.currentStage);
     }
 
-    const updated = await store.transition({
+    // transitionItem wraps store.transition with best-effort tracker writeback
+    // (ADR-033). manual:release is not tracker-originated → the released stage
+    // is mirrored to the tracker.
+    const updated = await transitionItem({
       externalId,
       toStage: 'released',
       triggeredBy: 'manual:release',

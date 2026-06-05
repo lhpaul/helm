@@ -6,6 +6,7 @@ import { GitHubProjectsAdapter, LinearAdapter } from '@helm/adapters';
 import type { IssueTrackerAdapter } from '@helm/adapters';
 import { ItemStore } from './item-store.js';
 import { JobStore } from './job-store.js';
+import { isSafeFsPath } from './types.js';
 
 // ── ItemStore singleton ───────────────────────────────────────────────────────
 
@@ -205,9 +206,8 @@ export async function getProductRegistry(): Promise<Product[]> {
   _productRegistryPromise = (async () => {
     const knowledgePath = process.env.HELM_KNOWLEDGE_REPO_PATH?.trim();
     if (!knowledgePath) throw new Error('HELM_KNOWLEDGE_REPO_PATH environment variable not set');
-    const SAFE_FS_PATH_REGEX = /^[A-Za-z0-9._/\-]+$/;
-    if (!SAFE_FS_PATH_REGEX.test(knowledgePath)) {
-      throw new Error('HELM_KNOWLEDGE_REPO_PATH contains invalid characters');
+    if (!isSafeFsPath(knowledgePath)) {
+      throw new Error("HELM_KNOWLEDGE_REPO_PATH contains invalid characters or '.'/'..' segments");
     }
 
     const registryFilePath = join(knowledgePath, '.helm', 'products.yaml');
@@ -245,6 +245,14 @@ export async function getProductRegistry(): Promise<Product[]> {
     _productRegistryPromise = null;
   }
 }
+
+// Transition + tracker-writeback wrappers (ADR-033) live in ./item-service.ts.
+// They are imported DIRECTLY from there by call sites (not re-exported here) on
+// purpose: item-service.ts imports the factory accessors above, so re-exporting
+// it would create an index↔item-service cycle. The cycle is benign at runtime
+// but breaks `vi.mock('./index.js', importOriginal)` — the spread would bind the
+// real wrappers to the real getItemStore instead of the test's mock. Keeping the
+// dependency one-directional (item-service → index) avoids that entirely.
 
 // ── Test utilities ────────────────────────────────────────────────────────────
 

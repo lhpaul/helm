@@ -178,6 +178,16 @@ describe('backfillProductStages', () => {
     expect(adapter.setSubStage).not.toHaveBeenCalled();
   });
 
+  it('rejects an unsafe dataRoot at the service boundary', async () => {
+    await expect(
+      backfillProductStages(ghProduct, 'gh-token', '/data/../escape', {
+        _adapter: adapter as unknown as IssueTrackerAdapter,
+        _listItems: async () => [],
+      }),
+    ).rejects.toThrow(/Invalid dataRoot/);
+    expect(adapter.ensureSubStages).not.toHaveBeenCalled();
+  });
+
   it('rejects an unsupported provider when building the default adapter', async () => {
     const badProduct = {
       product: { slug: 'x', name: 'X' },

@@ -30,7 +30,14 @@ export const SAFE_FS_PATH_REGEX = /^[A-Za-z0-9._/\-]+$/;
  */
 export function isSafeFsPath(value: string): boolean {
   if (!SAFE_FS_PATH_REGEX.test(value)) return false;
-  return !value.split('/').some((segment) => segment === '.' || segment === '..');
+  const segments = value.split('/');
+  return segments.every((segment, index) => {
+    // Allow only a single leading empty segment — the '/' that starts an absolute
+    // path ('/abs/path'). Reject the bare root ('/'), trailing and consecutive
+    // slashes ('data/', 'a//b'), and '.'/'..' traversal segments.
+    if (segment === '') return index === 0;
+    return segment !== '.' && segment !== '..';
+  });
 }
 
 /**

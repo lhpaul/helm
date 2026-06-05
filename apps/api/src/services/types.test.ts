@@ -24,6 +24,18 @@ describe('isSafeFsPath', () => {
     expect(isSafeFsPath('a/./b')).toBe(false);
   });
 
+  it('rejects the bare root and empty (consecutive/trailing) segments', () => {
+    expect(isSafeFsPath('/')).toBe(false);
+    expect(isSafeFsPath('//')).toBe(false);
+    expect(isSafeFsPath('a//b')).toBe(false);
+    expect(isSafeFsPath('data/')).toBe(false);
+  });
+
+  it('allows the single leading slash of an absolute path', () => {
+    expect(isSafeFsPath('/Users/me/Git/helm-knowledge')).toBe(true);
+    expect(isSafeFsPath('/var/lib/helm/data')).toBe(true);
+  });
+
   it('does not reject dots that are not whole segments', () => {
     // A leading-dot dir or dotted filename is fine — only '.'/'..' segments are blocked.
     expect(isSafeFsPath('.helm')).toBe(true);

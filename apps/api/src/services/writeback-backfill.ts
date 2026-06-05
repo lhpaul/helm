@@ -4,6 +4,7 @@ import { ensureDataDir } from '@helm/storage';
 import type { Product } from '@helm/shared';
 import { TRACKER_WRITE_TIMEOUT_MS, withTimeout } from '../lib/with-timeout.js';
 import { ItemStore } from './item-store.js';
+import { isSafeFsPath } from './types.js';
 import type { ItemState } from './types.js';
 
 /**
@@ -74,6 +75,14 @@ export async function backfillProductStages(
   dataRoot: string,
   options?: BackfillOptions,
 ): Promise<BackfillResult> {
+  // Defense-in-depth: the CLI validates dataRoot, but guard the service boundary
+  // too so a bad path can't reach ensureDataDir from another caller.
+  if (!isSafeFsPath(dataRoot)) {
+    throw new Error(
+      `Invalid dataRoot: "${dataRoot}" — must not contain invalid characters or '.'/'..' segments`,
+    );
+  }
+
   const slug = product.product.slug;
   const start = Date.now();
 

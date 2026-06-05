@@ -23,6 +23,7 @@ describe('isSafeFsPath', () => {
   });
 
   it("rejects '.' and '..' path segments (traversal / ambiguous CWD)", () => {
+    expect(isSafeFsPath('.')).toBe(false);
     expect(isSafeFsPath('..')).toBe(false);
     expect(isSafeFsPath('../sibling')).toBe(false);
     expect(isSafeFsPath('/abs/../escape')).toBe(false);

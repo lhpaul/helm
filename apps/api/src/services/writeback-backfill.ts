@@ -4,7 +4,6 @@ import { ensureDataDir } from '@helm/storage';
 import type { Product } from '@helm/shared';
 import { TRACKER_WRITE_TIMEOUT_MS, withTimeout } from '../lib/with-timeout.js';
 import { ItemStore } from './item-store.js';
-import { isSafeFsPath } from './types.js';
 import type { ItemState } from './types.js';
 
 /**
@@ -75,14 +74,12 @@ export async function backfillProductStages(
   dataRoot: string,
   options?: BackfillOptions,
 ): Promise<BackfillResult> {
-  // Defense-in-depth: the CLI validates dataRoot, but guard the service boundary
-  // too so a bad path can't reach ensureDataDir from another caller.
-  if (!isSafeFsPath(dataRoot)) {
-    throw new Error(
-      `Invalid dataRoot: "${dataRoot}" — must not contain invalid characters or '.'/'..' segments`,
-    );
-  }
-
+  // NOTE: dataRoot is intentionally NOT re-validated here. isSafeFsPath guards
+  // UNTRUSTED user env input (HELM_KNOWLEDGE_REPO_PATH / HELM_DATA_DIR, checked
+  // at the CLI). dataRoot may instead be a trusted computed default
+  // (join(process.cwd(), 'data')), which can legitimately contain characters the
+  // allowlist rejects (e.g. a space in '/Users/My Name/…'). Validating it here
+  // would reject valid working directories.
   const slug = product.product.slug;
   const start = Date.now();
 

@@ -39,6 +39,11 @@ import type { ItemState } from './types.js';
  * (the tracker already has the new stage). Every other trigger — `webhook:code-repo`,
  * `webhook:knowledge-repo`, `webhook:release`, `manual:*`, `agent:*` — originates
  * outside the tracker, so the tracker does NOT know yet and we DO write back.
+ *
+ * Prefix match (not exact equality) is intentional: it is forward-compatible with
+ * a future sub-typed tracker trigger (e.g. `webhook:github-projects:item_updated`)
+ * without reopening the echo. It is safe today because no non-tracker trigger
+ * shares either prefix, so there are no false anti-echo matches.
  */
 function isTrackerOriginated(triggeredBy: string): boolean {
   return (

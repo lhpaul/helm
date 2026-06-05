@@ -85,7 +85,7 @@ async function runDispatchJob(
       // transitionItem wraps store.transition with best-effort tracker writeback
       // (ADR-033). Stage handlers advance the item with agent:* triggers, which
       // are not tracker-originated, so each advance is mirrored to the tracker.
-      (input) => transitionItem(input),
+      transitionItem,
       {
         workdir: ctx.workdir,
         dataRoot: ctx.dataRoot,

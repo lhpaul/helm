@@ -2,6 +2,7 @@ import type { WorkflowStage } from '@helm/workflow';
 import type { IssueTracker } from '@helm/shared';
 import type { IssueTrackerAdapter } from '@helm/adapters';
 import { getIssueTrackerAdapter, getItemStore, getProductConfig } from './index.js';
+import { TRACKER_WRITE_TIMEOUT_MS, withTimeout } from '../lib/with-timeout.js';
 import type { ItemState } from './types.js';
 
 /**
@@ -93,9 +94,18 @@ async function writebackStage(
 
   try {
     const [adapter, product] = await Promise.all([getIssueTrackerAdapter(), getProductConfig()]);
-    // Ensure the stage map exists once (memoized) before setting the label.
-    await ensureSubStagesOnce(adapter, product.issue_tracker);
-    await adapter.setSubStage(externalId, stage);
+    // Bound the tracker network calls so a stalled connection can't hang the
+    // request path (the route awaits this). On timeout the race rejects and the
+    // catch below logs + continues — the store is already the source of truth.
+    await withTimeout(
+      (async () => {
+        // Ensure the stage map exists once (memoized) before setting the label.
+        await ensureSubStagesOnce(adapter, product.issue_tracker);
+        await adapter.setSubStage(externalId, stage);
+      })(),
+      TRACKER_WRITE_TIMEOUT_MS,
+      `writeback ${externalId}→${stage}`,
+    );
   } catch (err) {
     console.warn(`[writeback] failed for ${externalId}→${stage}:`, err);
   }

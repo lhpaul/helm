@@ -2,6 +2,7 @@ import { GitHubProjectsAdapter, LinearAdapter } from '@helm/adapters';
 import type { IssueTrackerAdapter } from '@helm/adapters';
 import { ensureDataDir } from '@helm/storage';
 import type { Product } from '@helm/shared';
+import { TRACKER_WRITE_TIMEOUT_MS, withTimeout } from '../lib/with-timeout.js';
 import { ItemStore } from './item-store.js';
 import type { ItemState } from './types.js';
 
@@ -94,14 +95,25 @@ export async function backfillProductStages(
 
   // Ensure the stage map exists once before any setSubStage. A failure here is
   // fatal to the run (GitHub setSubStage would throw for every item), so it
-  // propagates to the caller rather than being swallowed per-item.
-  await adapter.ensureSubStages(product.issue_tracker);
+  // propagates to the caller rather than being swallowed per-item. Bounded so a
+  // stalled tracker connection can't hang the whole run indefinitely.
+  await withTimeout(
+    adapter.ensureSubStages(product.issue_tracker),
+    TRACKER_WRITE_TIMEOUT_MS,
+    'ensureSubStages',
+  );
 
   let reconciled = 0;
   let failed = 0;
   for (const item of items) {
     try {
-      await adapter.setSubStage(item.externalId, item.currentStage);
+      // Bounded per item so one stalled item fails (and is counted) instead of
+      // blocking the rest of the batch indefinitely.
+      await withTimeout(
+        adapter.setSubStage(item.externalId, item.currentStage),
+        TRACKER_WRITE_TIMEOUT_MS,
+        `setSubStage ${item.externalId}`,
+      );
       reconciled++;
       console.log(
         `[writeback-backfill] product=${slug} item=${item.externalId} stage=${item.currentStage}`,

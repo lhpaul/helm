@@ -155,6 +155,26 @@ describe('transitionItem', () => {
     expect(adapter.setSubStage).not.toHaveBeenCalled();
   });
 
+  it('is best-effort: a hung setSubStage times out without failing the transition', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // setSubStage never resolves — without a timeout this would hang the request.
+    adapter.setSubStage.mockReturnValue(new Promise(() => {}));
+    store.transition.mockResolvedValue(itemAt('spec-ready'));
+
+    const pending = transitionItem({
+      externalId: 'HLM-1',
+      toStage: 'spec-ready',
+      triggeredBy: 'agent:spec-writer',
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    const result = await pending;
+
+    expect(result.currentStage).toBe('spec-ready');
+    expect(warnSpy).toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
   it('is best-effort: an ensureSubStages failure skips setSubStage but still returns the result', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     adapter.ensureSubStages.mockRejectedValue(new Error('field creation failed'));

@@ -142,6 +142,29 @@ describe('backfillProductStages', () => {
     expect(result).toMatchObject({ reconciled: 0, total: 0, failed: 0 });
   });
 
+  it('times out a stalled item, counts it failed, and continues the batch', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Item B's setSubStage never resolves; A and C settle immediately.
+    adapter.setSubStage.mockImplementation((externalId: string) =>
+      externalId === 'B' ? new Promise(() => {}) : Promise.resolve(),
+    );
+    const items = [item('A', 'merged'), item('B', 'merged'), item('C', 'merged')];
+
+    const pending = backfillProductStages(ghProduct, 'gh-token', '/data', {
+      _adapter: adapter as unknown as IssueTrackerAdapter,
+      _listItems: async () => items,
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    const result = await pending;
+
+    expect(adapter.setSubStage).toHaveBeenCalledTimes(3);
+    expect(result).toMatchObject({ reconciled: 2, total: 3, failed: 1 });
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
   it('aborts (propagates) if ensureSubStages fails — no item could be reconciled', async () => {
     adapter.ensureSubStages.mockRejectedValue(new Error('cannot create field'));
 

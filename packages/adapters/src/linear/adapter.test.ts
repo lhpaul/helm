@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { LinearAdapter } from './adapter.js';
 import type { LinearTrackerConfig } from './adapter.js';
-import { LinearAuthError, LinearAPIError } from './errors.js';
+import { LinearAuthError, LinearAPIError, LinearNotFoundError } from './errors.js';
 import type {
   GetTeamByKeyResponse,
   ListTeamIssuesResponse,
@@ -393,6 +393,88 @@ describe('LinearAdapter.setStatus', () => {
     });
     const adapter = makeAdapter(fetch);
     await expect(adapter.setStatus(ISSUE_IDENTIFIER, 'open')).resolves.toBeUndefined();
+  });
+});
+
+// ── setWorkflowStateByType (ADR-034) ────────────────────────────────────────────
+
+describe('LinearAdapter.setWorkflowStateByType', () => {
+  const updateRes: UpdateIssueStateResponse = {
+    issueUpdate: {
+      success: true,
+      issue: {
+        id: ISSUE_UUID,
+        identifier: ISSUE_IDENTIFIER,
+        state: { id: 'state-started', name: 'In Progress', type: 'started' },
+      },
+    },
+  };
+
+  // The GraphQL variables sent on a given fetch call (body = {query, variables}).
+  function variablesOf(fetch: Mock, callIndex: number): Record<string, unknown> {
+    const body = fetch.mock.calls[callIndex]?.[1]?.body as string;
+    return JSON.parse(body).variables;
+  }
+
+  it('resolves the started-type stateId and calls UPDATE_ISSUE_STATE', async () => {
+    // call 1 resolveIssueId, call 2 ensureStates → LIST_TEAM_STATES, call 3 UPDATE_ISSUE_STATE
+    const fetch = mockFetch([{ issue: issueRes().issue }, statesRes(), updateRes]);
+    const adapter = makeAdapter(fetch);
+    await expect(
+      adapter.setWorkflowStateByType(ISSUE_IDENTIFIER, 'started'),
+    ).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    // started → first state of type 'started' in statesRes() == 'state-started'
+    expect(variablesOf(fetch, 2)).toMatchObject({ issueId: ISSUE_UUID, stateId: 'state-started' });
+  });
+
+  it('resolves the completed-type stateId and calls UPDATE_ISSUE_STATE', async () => {
+    const fetch = mockFetch([{ issue: issueRes().issue }, statesRes(), updateRes]);
+    const adapter = makeAdapter(fetch);
+    await adapter.setWorkflowStateByType(ISSUE_IDENTIFIER, 'completed');
+    // completed → first state of type 'completed' in statesRes() == 'state-done'
+    expect(variablesOf(fetch, 2)).toMatchObject({ issueId: ISSUE_UUID, stateId: 'state-done' });
+  });
+
+  it('throws LinearNotFoundError when the team has no state of the requested type', async () => {
+    // states with no 'completed'-type node — requesting completed must throw.
+    const statesNoCompleted: ListTeamStatesResponse = {
+      workflowStates: {
+        nodes: [
+          { id: 'state-backlog', name: 'Backlog', type: 'backlog' },
+          { id: 'state-started', name: 'In Progress', type: 'started' },
+        ],
+      },
+    };
+    const fetch = mockFetch([{ issue: issueRes().issue }, statesNoCompleted]);
+    const adapter = makeAdapter(fetch);
+    await expect(adapter.setWorkflowStateByType(ISSUE_IDENTIFIER, 'completed')).rejects.toThrow(
+      LinearNotFoundError,
+    );
+    // resolveIssueId + ensureStates only — no UPDATE_ISSUE_STATE call.
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('picks the FIRST state of a type when a team has several (ADR-034: first by position)', async () => {
+    // Two 'started'-type states — Linear returns them ordered by position, so the
+    // adapter must resolve the first ('state-started-1'), not a later one.
+    const statesMultiStarted: ListTeamStatesResponse = {
+      workflowStates: {
+        nodes: [
+          { id: 'state-backlog', name: 'Backlog', type: 'backlog' },
+          { id: 'state-started-1', name: 'In Development', type: 'started' },
+          { id: 'state-started-2', name: 'In Review', type: 'started' },
+          { id: 'state-done', name: 'Done', type: 'completed' },
+        ],
+      },
+    };
+    const fetch = mockFetch([{ issue: issueRes().issue }, statesMultiStarted, updateRes]);
+    const adapter = makeAdapter(fetch);
+    await adapter.setWorkflowStateByType(ISSUE_IDENTIFIER, 'started');
+    expect(variablesOf(fetch, 2)).toMatchObject({
+      issueId: ISSUE_UUID,
+      stateId: 'state-started-1',
+    });
   });
 });
 

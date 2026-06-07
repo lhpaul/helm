@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { WorkflowStage } from '@helm/workflow';
+import type { NativeStateType, WorkflowStage } from '@helm/workflow';
 import { WORKFLOW_STAGES } from '@helm/workflow';
 import type { IssueTracker } from '@helm/shared';
 import type { IssueTrackerAdapter } from '../interface.js';
@@ -76,6 +76,9 @@ export class LinearAdapter implements IssueTrackerAdapter {
   // State IDs for this team (fetched once)
   private openStateId: string | null = null;
   private closedStateId: string | null = null;
+  // Native workflow-state map: Linear state `type` → first stateId of that type
+  // (by position). Built from the same LIST_TEAM_STATES fetch (ADR-034).
+  private readonly stateTypeToId = new Map<string, string>();
   private statesReady = false;
   private statesInitPromise: Promise<void> | null = null;
 
@@ -214,6 +217,32 @@ export class LinearAdapter implements IssueTrackerAdapter {
     if (!stateId) {
       throw new LinearNotFoundError(
         `No ${status} workflow state found for team '${this.config.team_key}'`,
+      );
+    }
+    await this.executeGraphQL<UpdateIssueStateResponse>(UPDATE_ISSUE_STATE, { issueId, stateId });
+    this.itemCache = null;
+  }
+
+  /**
+   * Sets the item's NATIVE workflow state by Linear state TYPE (ADR-034).
+   *
+   * Mirrors the Helm stage into the team's native Status column: `started` →
+   * "In Development", `completed` → "Completed". Resolves the type to a concrete
+   * stateId via the `stateTypeToId` map (built in `loadStates`, first state per
+   * type by position) and reuses the same `UPDATE_ISSUE_STATE` mutation as
+   * `setStatus`. Unlike `setStatus` (open/closed only) this can target any
+   * resolved type.
+   *
+   * Throws `LinearNotFoundError` if the team has no state of the requested type.
+   */
+  async setWorkflowStateByType(externalId: string, type: NativeStateType): Promise<void> {
+    const issueId = await this.resolveIssueId(externalId);
+    await this.ensureStates();
+
+    const stateId = this.stateTypeToId.get(type);
+    if (!stateId) {
+      throw new LinearNotFoundError(
+        `No '${type}'-type workflow state found for team '${this.config.team_key}'`,
       );
     }
     await this.executeGraphQL<UpdateIssueStateResponse>(UPDATE_ISSUE_STATE, { issueId, stateId });
@@ -376,6 +405,16 @@ export class LinearAdapter implements IssueTrackerAdapter {
       if (s) {
         this.closedStateId = s.id;
         break;
+      }
+    }
+    // Native-state map (ADR-034): keep the FIRST state per type. Linear returns
+    // states ordered by position, so first === the team's primary state of that
+    // type. A per-product override for teams with multiple states of a type is a
+    // future hook; AF has exactly one `started` and one `completed`.
+    this.stateTypeToId.clear();
+    for (const s of states) {
+      if (!this.stateTypeToId.has(s.type)) {
+        this.stateTypeToId.set(s.type, s.id);
       }
     }
     this.statesReady = true;

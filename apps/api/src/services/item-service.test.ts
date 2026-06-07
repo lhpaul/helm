@@ -223,6 +223,151 @@ describe('transitionItem', () => {
   });
 });
 
+// ── Native workflow state mirroring (ADR-034) ─────────────────────────────────
+
+describe('transitionItem — native workflow state (ADR-034)', () => {
+  const LINEAR_TRACKER = {
+    provider: 'linear' as const,
+    team_key: 'LEA',
+    api_key_env: 'LINEAR_API_KEY',
+    webhook_secret_env: 'LINEAR_WEBHOOK_SECRET',
+  };
+
+  let linearAdapter: {
+    setSubStage: ReturnType<typeof vi.fn>;
+    ensureSubStages: ReturnType<typeof vi.fn>;
+    setWorkflowStateByType: ReturnType<typeof vi.fn>;
+  };
+
+  beforeEach(() => {
+    // Linear adapter WITH the native-state capability — overrides the top-level
+    // github_projects fixture for this block.
+    linearAdapter = {
+      setSubStage: vi.fn().mockResolvedValue(undefined),
+      ensureSubStages: vi.fn().mockResolvedValue(undefined),
+      setWorkflowStateByType: vi.fn().mockResolvedValue(undefined),
+    };
+    mockGetProductConfig.mockResolvedValue({ issue_tracker: LINEAR_TRACKER });
+    mockGetAdapter.mockResolvedValue(linearAdapter);
+  });
+
+  it('sets the mapped native state (started) on a pre-merged transition', async () => {
+    store.transition.mockResolvedValue(itemAt('spec-ready', 'LEA-1'));
+
+    await transitionItem({
+      externalId: 'LEA-1',
+      toStage: 'spec-ready',
+      triggeredBy: 'agent:spec-writer',
+    });
+
+    expect(linearAdapter.setWorkflowStateByType).toHaveBeenCalledWith('LEA-1', 'started');
+    expect(linearAdapter.setSubStage).toHaveBeenCalledWith('LEA-1', 'spec-ready');
+  });
+
+  it.each(['merged', 'released'] as const)(
+    'sets the completed native state for terminal stage %s',
+    async (stage) => {
+      store.transition.mockResolvedValue(itemAt(stage, 'LEA-1'));
+
+      await transitionItem({
+        externalId: 'LEA-1',
+        toStage: stage,
+        triggeredBy: 'webhook:code-repo',
+      });
+
+      expect(linearAdapter.setWorkflowStateByType).toHaveBeenCalledWith('LEA-1', 'completed');
+    },
+  );
+
+  it('is independent best-effort: a native-state failure still sets the label and returns the result', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    linearAdapter.setWorkflowStateByType.mockRejectedValue(new Error('no started state'));
+    store.transition.mockResolvedValue(itemAt('spec-ready', 'LEA-1'));
+
+    const result = await transitionItem({
+      externalId: 'LEA-1',
+      toStage: 'spec-ready',
+      triggeredBy: 'agent:spec-writer',
+    });
+
+    expect(result.currentStage).toBe('spec-ready');
+    expect(linearAdapter.setSubStage).toHaveBeenCalledWith('LEA-1', 'spec-ready');
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[writeback] native state failed for LEA-1→started'),
+      expect.anything(),
+    );
+  });
+
+  it('is independent best-effort: a label failure does not prevent the native-state set', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    linearAdapter.setSubStage.mockRejectedValue(new Error('label 503'));
+    store.transition.mockResolvedValue(itemAt('spec-ready', 'LEA-1'));
+
+    await transitionItem({
+      externalId: 'LEA-1',
+      toStage: 'spec-ready',
+      triggeredBy: 'agent:spec-writer',
+    });
+
+    expect(linearAdapter.setWorkflowStateByType).toHaveBeenCalledWith('LEA-1', 'started');
+  });
+
+  it('does NOT set native state for a tracker-originated transition (anti-echo)', async () => {
+    store.transition.mockResolvedValue(itemAt('spec-ready', 'LEA-1'));
+
+    await transitionItem({
+      externalId: 'LEA-1',
+      toStage: 'spec-ready',
+      triggeredBy: 'webhook:linear',
+    });
+
+    expect(linearAdapter.setWorkflowStateByType).not.toHaveBeenCalled();
+    expect(linearAdapter.setSubStage).not.toHaveBeenCalled();
+  });
+
+  it('skips the native-state step for a GitHub product even when the adapter supports it (Linear-only gate)', async () => {
+    const ghAdapter = {
+      setSubStage: vi.fn().mockResolvedValue(undefined),
+      ensureSubStages: vi.fn().mockResolvedValue(undefined),
+      setWorkflowStateByType: vi.fn().mockResolvedValue(undefined),
+    };
+    mockGetProductConfig.mockResolvedValue({ issue_tracker: ISSUE_TRACKER }); // github_projects
+    mockGetAdapter.mockResolvedValue(ghAdapter);
+    store.transition.mockResolvedValue(itemAt('spec-ready'));
+
+    await transitionItem({
+      externalId: 'HLM-1',
+      toStage: 'spec-ready',
+      triggeredBy: 'agent:spec-writer',
+    });
+
+    expect(ghAdapter.setSubStage).toHaveBeenCalledWith('HLM-1', 'spec-ready');
+    expect(ghAdapter.setWorkflowStateByType).not.toHaveBeenCalled();
+  });
+
+  it('skips the native-state step when a Linear adapter lacks the capability (feature-detect)', async () => {
+    // A Linear product whose adapter does NOT implement setWorkflowStateByType
+    // (the `!adapter.setWorkflowStateByType` guard) — the label still writes and
+    // nothing throws.
+    const adapterNoNative = {
+      setSubStage: vi.fn().mockResolvedValue(undefined),
+      ensureSubStages: vi.fn().mockResolvedValue(undefined),
+    };
+    mockGetProductConfig.mockResolvedValue({ issue_tracker: LINEAR_TRACKER });
+    mockGetAdapter.mockResolvedValue(adapterNoNative);
+    store.transition.mockResolvedValue(itemAt('spec-ready', 'LEA-1'));
+
+    const result = await transitionItem({
+      externalId: 'LEA-1',
+      toStage: 'spec-ready',
+      triggeredBy: 'agent:spec-writer',
+    });
+
+    expect(result.currentStage).toBe('spec-ready');
+    expect(adapterNoNative.setSubStage).toHaveBeenCalledWith('LEA-1', 'spec-ready');
+  });
+});
+
 // ── forceTransitionItem ───────────────────────────────────────────────────────
 
 describe('forceTransitionItem', () => {

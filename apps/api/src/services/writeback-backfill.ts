@@ -1,6 +1,7 @@
 import { GitHubProjectsAdapter, LinearAdapter } from '@helm/adapters';
 import type { IssueTrackerAdapter } from '@helm/adapters';
 import { ensureDataDir } from '@helm/storage';
+import { nativeStateTypeForStage } from '@helm/workflow';
 import type { Product } from '@helm/shared';
 import { TRACKER_WRITE_TIMEOUT_MS, withTimeout } from '../lib/with-timeout.js';
 import { ItemStore } from './item-store.js';
@@ -20,12 +21,19 @@ import type { ItemState } from './types.js';
  */
 
 export type BackfillResult = {
-  /** Items whose stage was successfully written to the tracker. */
+  /** Items whose stage (sub-stage label) was successfully written to the tracker. */
   reconciled: number;
   /** Total items found in the store. */
   total: number;
-  /** Items whose writeback threw (logged, did not abort the run). */
+  /** Items whose label writeback threw (logged, did not abort the run). */
   failed: number;
+  /**
+   * Items whose native workflow Status was set (ADR-034, Linear only). Always 0
+   * for non-Linear products or adapters without the capability.
+   */
+  nativeReconciled: number;
+  /** Items whose native-state write threw (logged, secondary — does not flip `failed`). */
+  nativeFailed: number;
   durationMs: number;
 };
 
@@ -109,8 +117,16 @@ export async function backfillProductStages(
     'ensureSubStages',
   );
 
+  // Native-state mirroring (ADR-034) is Linear-only and feature-detected, so a
+  // GitHub product or an injected adapter without the capability skips it.
+  const mirrorsNativeState =
+    product.issue_tracker.provider === 'linear' &&
+    typeof adapter.setWorkflowStateByType === 'function';
+
   let reconciled = 0;
   let failed = 0;
+  let nativeReconciled = 0;
+  let nativeFailed = 0;
   for (const item of items) {
     try {
       // Bounded per item so one stalled item fails (and is counted) instead of
@@ -131,7 +147,37 @@ export async function backfillProductStages(
         err instanceof Error ? err.message : err,
       );
     }
+
+    // Independent best-effort native-state set — a failure here is secondary and
+    // does NOT flip the item to `failed` (the label is the primary signal).
+    if (mirrorsNativeState) {
+      const type = nativeStateTypeForStage(item.currentStage);
+      try {
+        await withTimeout(
+          adapter.setWorkflowStateByType!(item.externalId, type),
+          TRACKER_WRITE_TIMEOUT_MS,
+          `setWorkflowStateByType ${item.externalId}`,
+        );
+        nativeReconciled++;
+        console.log(
+          `[writeback-backfill] product=${slug} item=${item.externalId} native-state=${type}`,
+        );
+      } catch (err) {
+        nativeFailed++;
+        console.error(
+          `[writeback-backfill] product=${slug} item=${item.externalId} native-state failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
   }
 
-  return { reconciled, total: items.length, failed, durationMs: Date.now() - start };
+  return {
+    reconciled,
+    total: items.length,
+    failed,
+    nativeReconciled,
+    nativeFailed,
+    durationMs: Date.now() - start,
+  };
 }

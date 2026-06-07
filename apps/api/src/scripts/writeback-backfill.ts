@@ -102,6 +102,16 @@ async function main(): Promise<void> {
     if (result.failed > 0) {
       console.warn(`[writeback-backfill] ${result.failed} item(s) failed — see logs above`);
     }
+    // Native Status mirroring (ADR-034) is Linear-only; for GitHub products
+    // nativeReconciled stays 0 and this line is omitted.
+    if (result.nativeReconciled > 0 || result.nativeFailed > 0) {
+      console.log(`Native Status set on ${result.nativeReconciled}/${result.total} items`);
+      if (result.nativeFailed > 0) {
+        console.warn(
+          `[writeback-backfill] ${result.nativeFailed} native-state write(s) failed — see logs above`,
+        );
+      }
+    }
   } catch (err) {
     console.error(`[writeback-backfill] Error: ${err instanceof Error ? err.message : err}`);
     process.exit(1);

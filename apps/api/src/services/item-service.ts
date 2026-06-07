@@ -1,5 +1,6 @@
 import type { WorkflowStage } from '@helm/workflow';
-import type { IssueTracker } from '@helm/shared';
+import { nativeStateTypeForStage } from '@helm/workflow';
+import type { IssueTracker, Product } from '@helm/shared';
 import type { IssueTrackerAdapter } from '@helm/adapters';
 import { getIssueTrackerAdapter, getItemStore, getProductConfig } from './index.js';
 import { TRACKER_WRITE_TIMEOUT_MS, withTimeout } from '../lib/with-timeout.js';
@@ -88,6 +89,12 @@ function ensureSubStagesOnce(adapter: IssueTrackerAdapter, config: IssueTracker)
  * Best-effort by contract — never throws. Anti-echo short-circuits
  * tracker-originated transitions. The store remains the source of truth, so a
  * writeback failure (auth, network, missing item) is logged and swallowed.
+ *
+ * Two INDEPENDENT best-effort writes happen here (ADR-033 + ADR-034):
+ *   1. the `helm:*` sub-stage label (primary signal, all providers), and
+ *   2. the native workflow Status (secondary, Linear-only).
+ * Each has its own try/timeout so a failure in one cannot block the other — the
+ * label is the primary signal; the native state is a convenience mirror.
  */
 async function writebackStage(
   externalId: string,
@@ -97,8 +104,18 @@ async function writebackStage(
   // Anti-echo: the tracker already has this change.
   if (isTrackerOriginated(triggeredBy)) return;
 
+  let adapter: IssueTrackerAdapter;
+  let product: Product;
   try {
-    const [adapter, product] = await Promise.all([getIssueTrackerAdapter(), getProductConfig()]);
+    [adapter, product] = await Promise.all([getIssueTrackerAdapter(), getProductConfig()]);
+  } catch (err) {
+    // Adapter/config resolution failed (e.g. missing token) — nothing to write.
+    console.error(`[writeback] failed for ${externalId}→${stage}:`, err);
+    return;
+  }
+
+  // (1) Sub-stage label — primary signal, all providers.
+  try {
     // Bound the tracker network calls so a stalled connection can't hang the
     // request path (the route awaits this). On timeout the race rejects and the
     // catch below logs + continues — the store is already the source of truth.
@@ -113,6 +130,38 @@ async function writebackStage(
     );
   } catch (err) {
     console.error(`[writeback] failed for ${externalId}→${stage}:`, err);
+  }
+
+  // (2) Native workflow Status — secondary, Linear-only, independent.
+  await writebackNativeState(adapter, product, externalId, stage);
+}
+
+/**
+ * Mirrors the stage into the tracker's NATIVE workflow Status (ADR-034).
+ *
+ * Independent best-effort: gated to Linear products (GitHub Projects' native
+ * Status is a deferred follow-up) and feature-detected on the adapter, so
+ * non-Linear adapters skip cleanly. A failure here is logged and swallowed — it
+ * must never affect the label write or the route, since the `helm:*` label is
+ * the primary signal and the native state only a convenience mirror.
+ */
+async function writebackNativeState(
+  adapter: IssueTrackerAdapter,
+  product: Product,
+  externalId: string,
+  stage: WorkflowStage,
+): Promise<void> {
+  if (product.issue_tracker.provider !== 'linear' || !adapter.setWorkflowStateByType) return;
+
+  const type = nativeStateTypeForStage(stage);
+  try {
+    await withTimeout(
+      adapter.setWorkflowStateByType(externalId, type),
+      TRACKER_WRITE_TIMEOUT_MS,
+      `writeback-native ${externalId}→${type}`,
+    );
+  } catch (err) {
+    console.error(`[writeback] native state failed for ${externalId}→${type}:`, err);
   }
 }
 

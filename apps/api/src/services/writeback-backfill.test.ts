@@ -183,6 +183,78 @@ describe('backfillProductStages', () => {
     expect(adapter.setSubStage).not.toHaveBeenCalled();
   });
 
+  // ── Native workflow state (ADR-034) ───────────────────────────────────────────
+
+  describe('native workflow state', () => {
+    let linearAdapter: {
+      ensureSubStages: ReturnType<typeof vi.fn>;
+      setSubStage: ReturnType<typeof vi.fn>;
+      setWorkflowStateByType: ReturnType<typeof vi.fn>;
+    };
+
+    beforeEach(() => {
+      linearAdapter = {
+        ensureSubStages: vi.fn().mockResolvedValue(undefined),
+        setSubStage: vi.fn().mockResolvedValue(undefined),
+        setWorkflowStateByType: vi.fn().mockResolvedValue(undefined),
+      };
+    });
+
+    it('sets the mapped native state per item for a Linear product', async () => {
+      const items = [item('LEA-1', 'merged', 'af'), item('LEA-2', 'discovery', 'af')];
+
+      const result = await backfillProductStages(linearProduct, 'linear-key', '/data', {
+        _adapter: linearAdapter as unknown as IssueTrackerAdapter,
+        _listItems: async () => items,
+      });
+
+      expect(linearAdapter.setWorkflowStateByType).toHaveBeenCalledWith('LEA-1', 'completed');
+      expect(linearAdapter.setWorkflowStateByType).toHaveBeenCalledWith('LEA-2', 'started');
+      expect(result).toMatchObject({ reconciled: 2, nativeReconciled: 2, nativeFailed: 0 });
+    });
+
+    it('continues past a per-item native failure without aborting or flipping `failed`', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      linearAdapter.setWorkflowStateByType
+        .mockRejectedValueOnce(new Error('no completed state'))
+        .mockResolvedValue(undefined);
+      const items = [item('LEA-1', 'merged', 'af'), item('LEA-2', 'merged', 'af')];
+
+      const result = await backfillProductStages(linearProduct, 'linear-key', '/data', {
+        _adapter: linearAdapter as unknown as IssueTrackerAdapter,
+        _listItems: async () => items,
+      });
+
+      // The label write (primary signal) succeeded for both; the native failure
+      // is secondary and must NOT flip the item to `failed`.
+      expect(linearAdapter.setSubStage).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({
+        reconciled: 2,
+        failed: 0,
+        nativeReconciled: 1,
+        nativeFailed: 1,
+      });
+      expect(errSpy).toHaveBeenCalled();
+    });
+
+    it('skips the native-state step for a GitHub product even when the adapter supports it', async () => {
+      const ghAdapter = {
+        ensureSubStages: vi.fn().mockResolvedValue(undefined),
+        setSubStage: vi.fn().mockResolvedValue(undefined),
+        setWorkflowStateByType: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const result = await backfillProductStages(ghProduct, 'gh-token', '/data', {
+        _adapter: ghAdapter as unknown as IssueTrackerAdapter,
+        _listItems: async () => [item('GH-1', 'merged')],
+      });
+
+      expect(ghAdapter.setSubStage).toHaveBeenCalledWith('GH-1', 'merged');
+      expect(ghAdapter.setWorkflowStateByType).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ reconciled: 1, nativeReconciled: 0, nativeFailed: 0 });
+    });
+  });
+
   it('rejects an unsupported provider when building the default adapter', async () => {
     const badProduct = {
       product: { slug: 'x', name: 'X' },

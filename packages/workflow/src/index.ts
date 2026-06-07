@@ -6,4 +6,6 @@ export {
   getValidNextStages,
   validateTransition,
   isWorkflowStage,
+  nativeStateTypeForStage,
 } from './state-machine.js';
+export type { NativeStateType } from './state-machine.js';

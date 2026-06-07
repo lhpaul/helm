@@ -76,3 +76,30 @@ export function validateTransition(from: WorkflowStage, to: WorkflowStage): void
 export function isWorkflowStage(s: string): s is WorkflowStage {
   return (WORKFLOW_STAGES as ReadonlyArray<string>).includes(s);
 }
+
+// ── Native workflow-state mapping (ADR-034) ─────────────────────────────────────
+
+/**
+ * The two native tracker workflow-state *types* Helm mirrors a stage into.
+ *
+ * Linear's full type vocabulary is `backlog | unstarted | started | completed |
+ * cancelled | triage`; Helm only ever drives an item into `started`
+ * ("In Development") or `completed` ("Completed"). `backlog` / `cancelled`
+ * stay human/initial and are never auto-set.
+ */
+export type NativeStateType = 'started' | 'completed';
+
+/**
+ * Maps a Helm workflow stage to the native tracker workflow-state TYPE
+ * (ADR-034, 2-bucket mapping):
+ *   - `merged` / `released` → `completed` (terminal; a completed-type state
+ *     closes the issue, subsuming the deferred setStatus-close idea)
+ *   - every earlier stage    → `started`  (actively being worked)
+ *
+ * Single source of truth for the stage→native-state mapping, colocated with the
+ * state machine so it can never drift from WORKFLOW_STAGES. Mapping is by state
+ * TYPE (not display name) so a team renaming "In Development" doesn't break us.
+ */
+export function nativeStateTypeForStage(stage: WorkflowStage): NativeStateType {
+  return stage === 'merged' || stage === 'released' ? 'completed' : 'started';
+}

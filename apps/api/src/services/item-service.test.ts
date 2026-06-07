@@ -344,6 +344,28 @@ describe('transitionItem — native workflow state (ADR-034)', () => {
     expect(ghAdapter.setSubStage).toHaveBeenCalledWith('HLM-1', 'spec-ready');
     expect(ghAdapter.setWorkflowStateByType).not.toHaveBeenCalled();
   });
+
+  it('skips the native-state step when a Linear adapter lacks the capability (feature-detect)', async () => {
+    // A Linear product whose adapter does NOT implement setWorkflowStateByType
+    // (the `!adapter.setWorkflowStateByType` guard) — the label still writes and
+    // nothing throws.
+    const adapterNoNative = {
+      setSubStage: vi.fn().mockResolvedValue(undefined),
+      ensureSubStages: vi.fn().mockResolvedValue(undefined),
+    };
+    mockGetProductConfig.mockResolvedValue({ issue_tracker: LINEAR_TRACKER });
+    mockGetAdapter.mockResolvedValue(adapterNoNative);
+    store.transition.mockResolvedValue(itemAt('spec-ready', 'LEA-1'));
+
+    const result = await transitionItem({
+      externalId: 'LEA-1',
+      toStage: 'spec-ready',
+      triggeredBy: 'agent:spec-writer',
+    });
+
+    expect(result.currentStage).toBe('spec-ready');
+    expect(adapterNoNative.setSubStage).toHaveBeenCalledWith('LEA-1', 'spec-ready');
+  });
 });
 
 // ── forceTransitionItem ───────────────────────────────────────────────────────

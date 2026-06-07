@@ -1,4 +1,4 @@
-import type { WorkflowStage } from '@helm/workflow';
+import type { NativeStateType, WorkflowStage } from '@helm/workflow';
 import type { IssueTracker } from '@helm/shared';
 import type { ItemFilter, NormalizedEvent, NormalizedItem } from './types.js';
 
@@ -35,6 +35,20 @@ export interface IssueTrackerAdapter {
 
   /** Updates the open/closed status of the tracker item. */
   setStatus(externalId: string, status: 'open' | 'closed'): Promise<void>;
+
+  /**
+   * Optional capability (ADR-034): set the item's NATIVE workflow state by type
+   * (`started` → "In Development", `completed` → "Completed"), mirroring the
+   * Helm stage into the tracker's native Status column in addition to the
+   * `helm:*` sub-stage label.
+   *
+   * Optional because not every tracker can resolve a state by type: the Linear
+   * adapter implements it; GitHub Projects' native Status (a project
+   * single-select) is a deferred follow-up and leaves this undefined. Call sites
+   * must feature-detect (`adapter.setWorkflowStateByType?.(…)`) and gate on a
+   * Linear product, so non-Linear adapters skip it cleanly.
+   */
+  setWorkflowStateByType?(externalId: string, type: NativeStateType): Promise<void>;
 
   /** Posts a comment on the tracker item. */
   comment(externalId: string, body: string): Promise<void>;

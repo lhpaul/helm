@@ -4,9 +4,10 @@ import {
   canTransition,
   getValidNextStages,
   isWorkflowStage,
+  nativeStateTypeForStage,
   validateTransition,
 } from './state-machine.js';
-import { WorkflowTransitionError } from './types.js';
+import { WORKFLOW_STAGES, WorkflowTransitionError } from './types.js';
 
 describe('canTransition', () => {
   describe('valid transitions', () => {
@@ -126,5 +127,32 @@ describe('constants and type guard', () => {
     expect(isWorkflowStage('released')).toBe(true);
     expect(isWorkflowStage('bogus-stage')).toBe(false);
     expect(isWorkflowStage('')).toBe(false);
+  });
+});
+
+describe('nativeStateTypeForStage (ADR-034)', () => {
+  it('maps merged → completed', () => {
+    expect(nativeStateTypeForStage('merged')).toBe('completed');
+  });
+
+  it('maps released → completed', () => {
+    expect(nativeStateTypeForStage('released')).toBe('completed');
+  });
+
+  it.each(WORKFLOW_STAGES.filter((s) => s !== 'merged' && s !== 'released'))(
+    'maps pre-merged stage %s → started',
+    (stage) => {
+      expect(nativeStateTypeForStage(stage)).toBe('started');
+    },
+  );
+
+  it('is exhaustive: every WORKFLOW_STAGE maps to started or completed', () => {
+    for (const stage of WORKFLOW_STAGES) {
+      const type = nativeStateTypeForStage(stage);
+      expect(['started', 'completed']).toContain(type);
+      // 2-bucket invariant: completed iff terminal-area stage.
+      const isTerminal = stage === 'merged' || stage === 'released';
+      expect(type).toBe(isTerminal ? 'completed' : 'started');
+    }
   });
 });

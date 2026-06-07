@@ -19,6 +19,7 @@
 import { LinearAdapter } from '@helm/adapters';
 import { getProductRegistry } from '../services/index.js';
 import { isSafeFsPath } from '../services/types.js';
+import { TRACKER_WRITE_TIMEOUT_MS, withTimeout } from '../lib/with-timeout.js';
 
 async function main(): Promise<void> {
   const slug = process.argv[2]?.trim();
@@ -77,7 +78,14 @@ async function main(): Promise<void> {
 
   let states;
   try {
-    states = await adapter.listWorkflowStates();
+    // Bound the Linear API call so a stalled connection can't hang the CLI
+    // indefinitely (same posture as the writeback paths). LinearAdapter's fetch
+    // has no internal timeout; withTimeout rejects and we exit below.
+    states = await withTimeout(
+      adapter.listWorkflowStates(),
+      TRACKER_WRITE_TIMEOUT_MS,
+      'list-linear-states',
+    );
   } catch (err) {
     console.error(
       `[list-linear-states] Error fetching states for team "${issue_tracker.team_key}": ${err instanceof Error ? err.message : err}`,

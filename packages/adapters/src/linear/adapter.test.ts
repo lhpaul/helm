@@ -454,6 +454,28 @@ describe('LinearAdapter.setWorkflowStateByType', () => {
     // resolveIssueId + ensureStates only — no UPDATE_ISSUE_STATE call.
     expect(fetch).toHaveBeenCalledTimes(2);
   });
+
+  it('picks the FIRST state of a type when a team has several (ADR-034: first by position)', async () => {
+    // Two 'started'-type states — Linear returns them ordered by position, so the
+    // adapter must resolve the first ('state-started-1'), not a later one.
+    const statesMultiStarted: ListTeamStatesResponse = {
+      workflowStates: {
+        nodes: [
+          { id: 'state-backlog', name: 'Backlog', type: 'backlog' },
+          { id: 'state-started-1', name: 'In Development', type: 'started' },
+          { id: 'state-started-2', name: 'In Review', type: 'started' },
+          { id: 'state-done', name: 'Done', type: 'completed' },
+        ],
+      },
+    };
+    const fetch = mockFetch([{ issue: issueRes().issue }, statesMultiStarted, updateRes]);
+    const adapter = makeAdapter(fetch);
+    await adapter.setWorkflowStateByType(ISSUE_IDENTIFIER, 'started');
+    expect(variablesOf(fetch, 2)).toMatchObject({
+      issueId: ISSUE_UUID,
+      stateId: 'state-started-1',
+    });
+  });
 });
 
 // ── comment ───────────────────────────────────────────────────────────────────

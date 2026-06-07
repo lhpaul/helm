@@ -147,6 +147,22 @@ export const ProductSchema = z
          *     returns 409 and the release webhook is a no-op for this product.
          */
         final_stage: z.enum(['merged', 'released']).default('released'),
+        /**
+         * Per-stage override of the native tracker Status, resolved by Linear
+         * workflow-state **id** (ADR-035). Maps a Helm stage to an exact Linear
+         * state id, overriding the by-**type** 2-bucket default (ADR-034) for
+         * that stage:
+         *   - keys are Helm workflow stages (validated against WORKFLOW_STAGES);
+         *   - values are Linear workflow-state ids (opaque UUIDs — use the
+         *     `list-linear-states` helper to discover them).
+         *
+         * Unmapped stages, and products without a `native_state_map`, fall back
+         * to the by-type default — so this is additive and backward-compatible.
+         * Resolved by id (not display name) so it survives a state rename in
+         * Linear. Linear-only: ignored for GitHub Projects (native Status
+         * mirroring there is still deferred).
+         */
+        native_state_map: z.record(WorkflowStageSchema, z.string().min(1)).optional(),
       })
       .strict(),
     specialists: SpecialistsSchema,

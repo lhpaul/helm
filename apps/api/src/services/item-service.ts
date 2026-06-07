@@ -1,8 +1,8 @@
 import type { WorkflowStage } from '@helm/workflow';
-import { nativeStateTypeForStage } from '@helm/workflow';
 import type { IssueTracker, Product } from '@helm/shared';
 import type { IssueTrackerAdapter } from '@helm/adapters';
 import { getIssueTrackerAdapter, getItemStore, getProductConfig } from './index.js';
+import { resolveNativeStateWrite } from './native-state-writeback.js';
 import { TRACKER_WRITE_TIMEOUT_MS, withTimeout } from '../lib/with-timeout.js';
 import type { ItemState } from './types.js';
 
@@ -137,13 +137,15 @@ async function writebackStage(
 }
 
 /**
- * Mirrors the stage into the tracker's NATIVE workflow Status (ADR-034).
+ * Mirrors the stage into the tracker's NATIVE workflow Status (ADR-034 by-type,
+ * with the ADR-035 per-product by-id override).
  *
- * Independent best-effort: gated to Linear products (GitHub Projects' native
- * Status is a deferred follow-up) and feature-detected on the adapter, so
- * non-Linear adapters skip cleanly. A failure here is logged and swallowed — it
- * must never affect the label write or the route, since the `helm:*` label is
- * the primary signal and the native state only a convenience mirror.
+ * Independent best-effort: the precedence (mapped id vs by-type default) is
+ * resolved once in `resolveNativeStateWrite`, which returns `null` for a
+ * non-Linear product or a capability-less adapter so this skips cleanly. A
+ * failure here is logged and swallowed — it must never affect the label write
+ * or the route, since the `helm:*` label is the primary signal and the native
+ * state only a convenience mirror.
  */
 async function writebackNativeState(
   adapter: IssueTrackerAdapter,
@@ -151,17 +153,17 @@ async function writebackNativeState(
   externalId: string,
   stage: WorkflowStage,
 ): Promise<void> {
-  if (product.issue_tracker.provider !== 'linear' || !adapter.setWorkflowStateByType) return;
+  const write = resolveNativeStateWrite(adapter, product, stage);
+  if (!write) return;
 
-  const type = nativeStateTypeForStage(stage);
   try {
     await withTimeout(
-      adapter.setWorkflowStateByType(externalId, type),
+      write.run(externalId),
       TRACKER_WRITE_TIMEOUT_MS,
-      `writeback-native ${externalId}→${type}`,
+      `writeback-native ${externalId}→${write.label}`,
     );
   } catch (err) {
-    console.error(`[writeback] native state failed for ${externalId}→${type}:`, err);
+    console.error(`[writeback] native state failed for ${externalId}→${write.label}:`, err);
   }
 }
 

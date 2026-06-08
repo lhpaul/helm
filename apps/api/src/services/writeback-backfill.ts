@@ -1,10 +1,10 @@
 import { GitHubProjectsAdapter, LinearAdapter } from '@helm/adapters';
 import type { IssueTrackerAdapter } from '@helm/adapters';
 import { ensureDataDir } from '@helm/storage';
-import { nativeStateTypeForStage } from '@helm/workflow';
 import type { Product } from '@helm/shared';
 import { TRACKER_WRITE_TIMEOUT_MS, withTimeout } from '../lib/with-timeout.js';
 import { ItemStore } from './item-store.js';
+import { resolveNativeStateWrite } from './native-state-writeback.js';
 import type { ItemState } from './types.js';
 
 /**
@@ -117,12 +117,6 @@ export async function backfillProductStages(
     'ensureSubStages',
   );
 
-  // Native-state mirroring (ADR-034) is Linear-only and feature-detected, so a
-  // GitHub product or an injected adapter without the capability skips it.
-  const mirrorsNativeState =
-    product.issue_tracker.provider === 'linear' &&
-    typeof adapter.setWorkflowStateByType === 'function';
-
   let reconciled = 0;
   let failed = 0;
   let nativeReconciled = 0;
@@ -149,18 +143,20 @@ export async function backfillProductStages(
     }
 
     // Independent best-effort native-state set — a failure here is secondary and
-    // does NOT flip the item to `failed` (the label is the primary signal).
-    if (mirrorsNativeState) {
-      const type = nativeStateTypeForStage(item.currentStage);
+    // does NOT flip the item to `failed` (the label is the primary signal). The
+    // by-id override vs by-type default precedence (ADR-035/034) is resolved by
+    // the shared helper, identical to the live writeback path.
+    const nativeWrite = resolveNativeStateWrite(adapter, product, item.currentStage);
+    if (nativeWrite) {
       try {
         await withTimeout(
-          adapter.setWorkflowStateByType!(item.externalId, type),
+          nativeWrite.run(item.externalId),
           TRACKER_WRITE_TIMEOUT_MS,
-          `setWorkflowStateByType ${item.externalId}`,
+          `setWorkflowState ${item.externalId}`,
         );
         nativeReconciled++;
         console.log(
-          `[writeback-backfill] product=${slug} item=${item.externalId} native-state=${type}`,
+          `[writeback-backfill] product=${slug} item=${item.externalId} native-state=${nativeWrite.label}`,
         );
       } catch (err) {
         nativeFailed++;

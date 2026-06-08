@@ -312,3 +312,39 @@ describe('ProductSchema — final_stage (ADR-032)', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('ProductSchema — native_state_map (ADR-035)', () => {
+  const withNativeStateMap = (map: unknown) => ({
+    ...makeRawProduct(KEBAB_SPECIALISTS),
+    workflow: { stages_enabled: ['discovery', 'released'], native_state_map: map },
+  });
+
+  it('is optional — a product without a native_state_map parses (backward compatible)', () => {
+    const result = ProductSchema.safeParse(makeRawProduct(KEBAB_SPECIALISTS));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.workflow.native_state_map).toBeUndefined();
+  });
+
+  it('parses a map of workflow stages to non-empty state ids', () => {
+    const map = { merged: 'state-merged-uuid', released: 'state-released-uuid' };
+    const result = ProductSchema.safeParse(withNativeStateMap(map));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.workflow.native_state_map).toEqual(map);
+  });
+
+  it('allows mapping any stage, not just merged/released', () => {
+    const map = { 'code-review': 'state-in-review', 'in-development': 'state-in-dev' };
+    const result = ProductSchema.safeParse(withNativeStateMap(map));
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a key that is not a known workflow stage', () => {
+    const result = ProductSchema.safeParse(withNativeStateMap({ 'not-a-stage': 'state-uuid' }));
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an empty-string state id', () => {
+    const result = ProductSchema.safeParse(withNativeStateMap({ merged: '' }));
+    expect(result.success).toBe(false);
+  });
+});

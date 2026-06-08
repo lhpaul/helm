@@ -8,7 +8,8 @@
     "test": "vitest run",
     "lint": "eslint src/",
     "sync": "bun run src/scripts/sync.ts",
-    "writeback-backfill": "bun run src/scripts/writeback-backfill.ts"
+    "writeback-backfill": "bun run src/scripts/writeback-backfill.ts",
+    "list-linear-states": "bun run src/scripts/list-linear-states.ts"
   },
   "dependencies": {
     "@helm/adapters": "workspace:*",

@@ -255,6 +255,84 @@ describe('backfillProductStages', () => {
     });
   });
 
+  // ── Native state by-id override (ADR-035) ─────────────────────────────────────
+
+  describe('native state by-id override', () => {
+    // A Linear product mapping merged/released to distinct completed-type ids.
+    const linearProductWithMap = {
+      product: { slug: 'af', name: 'AF' },
+      issue_tracker: {
+        provider: 'linear',
+        team_key: 'LEA',
+        api_key_env: 'LINEAR_API_KEY',
+        webhook_secret_env: 'LINEAR_WEBHOOK_SECRET',
+      },
+      workflow: {
+        native_state_map: { merged: 'state-merged-uuid', released: 'state-released-uuid' },
+      },
+    } as unknown as Product;
+
+    let linearAdapter: {
+      ensureSubStages: ReturnType<typeof vi.fn>;
+      setSubStage: ReturnType<typeof vi.fn>;
+      setWorkflowStateByType: ReturnType<typeof vi.fn>;
+      setWorkflowStateById: ReturnType<typeof vi.fn>;
+    };
+
+    beforeEach(() => {
+      linearAdapter = {
+        ensureSubStages: vi.fn().mockResolvedValue(undefined),
+        setSubStage: vi.fn().mockResolvedValue(undefined),
+        setWorkflowStateByType: vi.fn().mockResolvedValue(undefined),
+        setWorkflowStateById: vi.fn().mockResolvedValue(undefined),
+      };
+    });
+
+    it('applies the by-id override per mapped item and by-type for unmapped items', async () => {
+      const items = [
+        item('LEA-1', 'merged', 'af'), // mapped → by id
+        item('LEA-2', 'released', 'af'), // mapped → by id
+        item('LEA-3', 'discovery', 'af'), // unmapped → by type (started)
+      ];
+
+      const result = await backfillProductStages(linearProductWithMap, 'linear-key', '/data', {
+        _adapter: linearAdapter as unknown as IssueTrackerAdapter,
+        _listItems: async () => items,
+      });
+
+      expect(linearAdapter.setWorkflowStateById).toHaveBeenCalledWith('LEA-1', 'state-merged-uuid');
+      expect(linearAdapter.setWorkflowStateById).toHaveBeenCalledWith(
+        'LEA-2',
+        'state-released-uuid',
+      );
+      expect(linearAdapter.setWorkflowStateByType).toHaveBeenCalledWith('LEA-3', 'started');
+      expect(linearAdapter.setWorkflowStateByType).not.toHaveBeenCalledWith('LEA-1', 'completed');
+      expect(result).toMatchObject({ reconciled: 3, nativeReconciled: 3, nativeFailed: 0 });
+    });
+
+    it('a per-item by-id native failure does not abort or flip the label result', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      linearAdapter.setWorkflowStateById
+        .mockRejectedValueOnce(new Error('invalid state id'))
+        .mockResolvedValue(undefined);
+      const items = [item('LEA-1', 'merged', 'af'), item('LEA-2', 'released', 'af')];
+
+      const result = await backfillProductStages(linearProductWithMap, 'linear-key', '/data', {
+        _adapter: linearAdapter as unknown as IssueTrackerAdapter,
+        _listItems: async () => items,
+      });
+
+      expect(linearAdapter.setSubStage).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({
+        reconciled: 2,
+        failed: 0,
+        nativeReconciled: 1,
+        nativeFailed: 1,
+      });
+      expect(errSpy).toHaveBeenCalled();
+    });
+  });
+
   it('rejects an unsupported provider when building the default adapter', async () => {
     const badProduct = {
       product: { slug: 'x', name: 'X' },

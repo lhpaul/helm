@@ -50,6 +50,20 @@ export interface IssueTrackerAdapter {
    */
   setWorkflowStateByType?(externalId: string, type: NativeStateType): Promise<void>;
 
+  /**
+   * Optional capability (ADR-035): set the item's NATIVE workflow state by an
+   * exact tracker state **id**, the per-product override of the by-type default
+   * above. Driven by `workflow.native_state_map` so a team with several states
+   * of one type (e.g. distinct Merged / Released completed-type states) can map
+   * each Helm stage to a precise native column.
+   *
+   * Optional and Linear-only for the same reason as `setWorkflowStateByType`:
+   * the Linear adapter implements it; GitHub Projects leaves it undefined. Call
+   * sites feature-detect (`adapter.setWorkflowStateById?.(…)`) and gate on a
+   * Linear product, falling back to the by-type path when it is undefined.
+   */
+  setWorkflowStateById?(externalId: string, stateId: string): Promise<void>;
+
   /** Posts a comment on the tracker item. */
   comment(externalId: string, body: string): Promise<void>;
 

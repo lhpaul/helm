@@ -368,6 +368,107 @@ describe('transitionItem — native workflow state (ADR-034)', () => {
   });
 });
 
+describe('transitionItem — native state by-id override (ADR-035)', () => {
+  const LINEAR_TRACKER = {
+    provider: 'linear' as const,
+    team_key: 'LEA',
+    api_key_env: 'LINEAR_API_KEY',
+    webhook_secret_env: 'LINEAR_WEBHOOK_SECRET',
+  };
+
+  // A Linear adapter with BOTH native-state capabilities.
+  let linearAdapter: {
+    setSubStage: ReturnType<typeof vi.fn>;
+    ensureSubStages: ReturnType<typeof vi.fn>;
+    setWorkflowStateByType: ReturnType<typeof vi.fn>;
+    setWorkflowStateById: ReturnType<typeof vi.fn>;
+  };
+
+  beforeEach(() => {
+    linearAdapter = {
+      setSubStage: vi.fn().mockResolvedValue(undefined),
+      ensureSubStages: vi.fn().mockResolvedValue(undefined),
+      setWorkflowStateByType: vi.fn().mockResolvedValue(undefined),
+      setWorkflowStateById: vi.fn().mockResolvedValue(undefined),
+    };
+    mockGetAdapter.mockResolvedValue(linearAdapter);
+  });
+
+  const withMap = (map: Record<string, string>) =>
+    mockGetProductConfig.mockResolvedValue({
+      issue_tracker: LINEAR_TRACKER,
+      workflow: { native_state_map: map },
+    });
+
+  it('uses setWorkflowStateById with the mapped id for a mapped stage (override wins)', async () => {
+    withMap({ released: 'state-released-uuid', merged: 'state-merged-uuid' });
+    store.transition.mockResolvedValue(itemAt('released', 'LEA-1'));
+
+    await transitionItem({
+      externalId: 'LEA-1',
+      toStage: 'released',
+      triggeredBy: 'webhook:release',
+    });
+
+    expect(linearAdapter.setWorkflowStateById).toHaveBeenCalledWith('LEA-1', 'state-released-uuid');
+    expect(linearAdapter.setWorkflowStateByType).not.toHaveBeenCalled();
+    expect(linearAdapter.setSubStage).toHaveBeenCalledWith('LEA-1', 'released');
+  });
+
+  it('falls back to by-type for a stage absent from the map', async () => {
+    withMap({ released: 'state-released-uuid' }); // 'merged' not mapped
+    store.transition.mockResolvedValue(itemAt('merged', 'LEA-1'));
+
+    await transitionItem({
+      externalId: 'LEA-1',
+      toStage: 'merged',
+      triggeredBy: 'webhook:code-repo',
+    });
+
+    expect(linearAdapter.setWorkflowStateByType).toHaveBeenCalledWith('LEA-1', 'completed');
+    expect(linearAdapter.setWorkflowStateById).not.toHaveBeenCalled();
+  });
+
+  it('falls back to by-type when the adapter lacks setWorkflowStateById even if the stage is mapped', async () => {
+    const adapterNoById = {
+      setSubStage: vi.fn().mockResolvedValue(undefined),
+      ensureSubStages: vi.fn().mockResolvedValue(undefined),
+      setWorkflowStateByType: vi.fn().mockResolvedValue(undefined),
+    };
+    mockGetAdapter.mockResolvedValue(adapterNoById);
+    withMap({ released: 'state-released-uuid' });
+    store.transition.mockResolvedValue(itemAt('released', 'LEA-1'));
+
+    await transitionItem({
+      externalId: 'LEA-1',
+      toStage: 'released',
+      triggeredBy: 'webhook:release',
+    });
+
+    expect(adapterNoById.setWorkflowStateByType).toHaveBeenCalledWith('LEA-1', 'completed');
+  });
+
+  it('is independent best-effort: a by-id failure still sets the label and returns the result', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    linearAdapter.setWorkflowStateById.mockRejectedValue(new Error('invalid state id'));
+    withMap({ released: 'state-released-uuid' });
+    store.transition.mockResolvedValue(itemAt('released', 'LEA-1'));
+
+    const result = await transitionItem({
+      externalId: 'LEA-1',
+      toStage: 'released',
+      triggeredBy: 'webhook:release',
+    });
+
+    expect(result.currentStage).toBe('released');
+    expect(linearAdapter.setSubStage).toHaveBeenCalledWith('LEA-1', 'released');
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[writeback] native state failed for LEA-1→id:state-released-uuid'),
+      expect.anything(),
+    );
+  });
+});
+
 // ── forceTransitionItem ───────────────────────────────────────────────────────
 
 describe('forceTransitionItem', () => {

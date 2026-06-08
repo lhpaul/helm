@@ -478,6 +478,84 @@ describe('LinearAdapter.setWorkflowStateByType', () => {
   });
 });
 
+// ── setWorkflowStateById (ADR-035) ──────────────────────────────────────────────
+
+describe('LinearAdapter.setWorkflowStateById', () => {
+  const updateRes: UpdateIssueStateResponse = {
+    issueUpdate: {
+      success: true,
+      issue: {
+        id: ISSUE_UUID,
+        identifier: ISSUE_IDENTIFIER,
+        state: { id: 'state-done', name: 'Done', type: 'completed' },
+      },
+    },
+  };
+
+  function variablesOf(fetch: Mock, callIndex: number): Record<string, unknown> {
+    const body = fetch.mock.calls[callIndex]?.[1]?.body as string;
+    return JSON.parse(body).variables;
+  }
+
+  it('sets the exact configured state id via UPDATE_ISSUE_STATE', async () => {
+    // call 1 resolveIssueId, call 2 ensureStates → LIST_TEAM_STATES, call 3 UPDATE_ISSUE_STATE
+    const fetch = mockFetch([{ issue: issueRes().issue }, statesRes(), updateRes]);
+    const adapter = makeAdapter(fetch);
+    // 'state-done' is a real state in statesRes().
+    await expect(
+      adapter.setWorkflowStateById(ISSUE_IDENTIFIER, 'state-done'),
+    ).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(variablesOf(fetch, 2)).toMatchObject({ issueId: ISSUE_UUID, stateId: 'state-done' });
+  });
+
+  it('can target a NON-primary state of a type (the ADR-035 use case)', async () => {
+    // Two completed-type states — by-type would collapse onto the first
+    // ('state-merged'); by-id can target the second ('state-released').
+    const statesTwoCompleted: ListTeamStatesResponse = {
+      workflowStates: {
+        nodes: [
+          { id: 'state-backlog', name: 'Backlog', type: 'backlog' },
+          { id: 'state-started', name: 'In Progress', type: 'started' },
+          { id: 'state-merged', name: 'Merged', type: 'completed' },
+          { id: 'state-released', name: 'Released', type: 'completed' },
+        ],
+      },
+    };
+    const fetch = mockFetch([{ issue: issueRes().issue }, statesTwoCompleted, updateRes]);
+    const adapter = makeAdapter(fetch);
+    await adapter.setWorkflowStateById(ISSUE_IDENTIFIER, 'state-released');
+    expect(variablesOf(fetch, 2)).toMatchObject({ issueId: ISSUE_UUID, stateId: 'state-released' });
+  });
+
+  it('throws LinearNotFoundError for an id not in the team states (no mutation)', async () => {
+    const fetch = mockFetch([{ issue: issueRes().issue }, statesRes()]);
+    const adapter = makeAdapter(fetch);
+    await expect(
+      adapter.setWorkflowStateById(ISSUE_IDENTIFIER, 'state-does-not-exist'),
+    ).rejects.toThrow(LinearNotFoundError);
+    // resolveIssueId + ensureStates only — no UPDATE_ISSUE_STATE call.
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── listWorkflowStates (ADR-035 discovery helper) ───────────────────────────────
+
+describe('LinearAdapter.listWorkflowStates', () => {
+  it('returns the team states as { id, name, type } in position order', async () => {
+    const fetch = mockFetch([statesRes()]);
+    const adapter = makeAdapter(fetch);
+    const states = await adapter.listWorkflowStates();
+    expect(states).toEqual([
+      { id: 'state-backlog', name: 'Backlog', type: 'backlog' },
+      { id: 'state-started', name: 'In Progress', type: 'started' },
+      { id: 'state-done', name: 'Done', type: 'completed' },
+      { id: 'state-cancelled', name: 'Cancelled', type: 'cancelled' },
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ── comment ───────────────────────────────────────────────────────────────────
 
 describe('LinearAdapter.comment', () => {

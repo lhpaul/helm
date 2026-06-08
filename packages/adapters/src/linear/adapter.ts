@@ -79,6 +79,9 @@ export class LinearAdapter implements IssueTrackerAdapter {
   // Native workflow-state map: Linear state `type` → first stateId of that type
   // (by position). Built from the same LIST_TEAM_STATES fetch (ADR-034).
   private readonly stateTypeToId = new Map<string, string>();
+  // Every valid workflow-state id for this team. Used by setWorkflowStateById
+  // (ADR-035) to reject a misconfigured native_state_map id before mutating.
+  private readonly validStateIds = new Set<string>();
   private statesReady = false;
   private statesInitPromise: Promise<void> | null = null;
 
@@ -249,9 +252,52 @@ export class LinearAdapter implements IssueTrackerAdapter {
     this.itemCache = null;
   }
 
+  /**
+   * Sets the item's NATIVE workflow state by an exact Linear state **id**
+   * (ADR-035, per-product override of the ADR-034 by-type default).
+   *
+   * Used when a product's `workflow.native_state_map` maps this stage to a
+   * specific state id — e.g. a team with two completed-type states (Merged +
+   * Released) that the by-type bucket would collapse onto the first. Verifies
+   * `stateId` is a real state for the team (built in `loadStates`) and reuses
+   * the same `UPDATE_ISSUE_STATE` mutation as `setWorkflowStateByType`.
+   *
+   * Throws `LinearNotFoundError` if `stateId` is not one of the team's states,
+   * so a typo'd / stale id in the config is surfaced rather than silently
+   * sending an invalid mutation. The writeback caller swallows it best-effort.
+   */
+  async setWorkflowStateById(externalId: string, stateId: string): Promise<void> {
+    const issueId = await this.resolveIssueId(externalId);
+    await this.ensureStates();
+
+    if (!this.validStateIds.has(stateId)) {
+      throw new LinearNotFoundError(
+        `Workflow state id '${stateId}' is not a valid state for team '${this.config.team_key}' ` +
+          `— check native_state_map (use 'list-linear-states' to discover ids)`,
+      );
+    }
+    await this.executeGraphQL<UpdateIssueStateResponse>(UPDATE_ISSUE_STATE, { issueId, stateId });
+    this.itemCache = null;
+  }
+
   async comment(externalId: string, body: string): Promise<void> {
     const issueId = await this.resolveIssueId(externalId);
     await this.executeGraphQL<CreateCommentResponse>(CREATE_COMMENT, { issueId, body });
+  }
+
+  /**
+   * Lists the team's native workflow states as `{ id, name, type }` (ADR-035).
+   *
+   * Backs the `list-linear-states` operator helper: by-id `native_state_map`
+   * config needs the opaque state ids, and this is how an operator discovers
+   * them. Returns the team's states in Linear's position order (the same order
+   * `loadStates` consumes for the by-type first-per-type buckets).
+   */
+  async listWorkflowStates(): Promise<Array<{ id: string; name: string; type: string }>> {
+    const res = await this.executeGraphQL<ListTeamStatesResponse>(LIST_TEAM_STATES, {
+      teamKey: this.config.team_key,
+    });
+    return res.workflowStates.nodes.map((s) => ({ id: s.id, name: s.name, type: s.type }));
   }
 
   // ── IssueTrackerAdapter: webhook ──────────────────────────────────────────
@@ -412,10 +458,14 @@ export class LinearAdapter implements IssueTrackerAdapter {
     // type. A per-product override for teams with multiple states of a type is a
     // future hook; AF has exactly one `started` and one `completed`.
     this.stateTypeToId.clear();
+    this.validStateIds.clear();
     for (const s of states) {
       if (!this.stateTypeToId.has(s.type)) {
         this.stateTypeToId.set(s.type, s.id);
       }
+      // Track every state id so setWorkflowStateById (ADR-035) can validate a
+      // configured native_state_map id against the team's real states.
+      this.validStateIds.add(s.id);
     }
     this.statesReady = true;
   }

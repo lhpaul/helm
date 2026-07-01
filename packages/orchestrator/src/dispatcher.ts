@@ -12,11 +12,8 @@ import {
   handleImplementerResult,
   type ImplementerPublishOptions,
 } from './specialists/implementer.js';
-import {
-  provisionCodeWorkspace,
-  provisionReviewerWorkspace,
-  artifactsDirFor,
-} from './specialists/code-workspace.js';
+import { runCodeReviewLoop } from './review-loop/code-review-loop.js';
+import { provisionCodeWorkspace, artifactsDirFor } from './specialists/code-workspace.js';
 import {
   fetchProductContext,
   materializeProductContext,
@@ -25,12 +22,6 @@ import {
 } from './specialists/fetch-product-context.js';
 import type { FetchFn } from './specialists/fetch-product-context.js';
 import type { RunGit, RunGh } from './specialists/spec-publisher.js';
-import {
-  fanoutReviewers,
-  shouldRemediate,
-  type ReviewerKind,
-} from './specialists/reviewer-fanout.js';
-import { buildRemediationParams, handleRemediationResult } from './specialists/remediation.js';
 import { findCodePRUrl, findArtifactPRUrl } from './specialists/pr-helpers.js';
 import { runEarlyRemediation, type EarlyRemediatorKind } from './specialists/early-remediator.js';
 
@@ -577,194 +568,28 @@ export async function dispatchStageHandler(
       };
     }
 
-    // Fan-out across code/security/test reviewers in parallel.
-    // The item stays in 'code-review' during the fan-out; the remediation gate
-    // below decides whether to run remediation or wait for a human merge.
-    const fanoutResult = await fanoutReviewers(
-      item.externalId,
+    // Bounded fanout ↔ remediate loop (ADR-036), then optional external review.
+    const loopResult = await runCodeReviewLoop({
+      externalId: item.externalId,
       product,
       prUrl,
-      options.githubToken,
+      codeRepo,
+      githubToken: options.githubToken,
       runtime,
-      options?.runGit,
-      options?.runGh,
-    );
+      transition,
+      runGit: options.runGit,
+      runGh: options.runGh,
+    });
 
-    // If the fan-out failed at the block level (e.g. workspace provisioning) with
-    // no reviewer results, there is nothing to gate on — return the failure as-is.
-    if (fanoutResult.status === 'error' && fanoutResult.reviewerResults.length === 0) {
-      return {
-        specialistId,
-        status: fanoutResult.status,
-        costUsd: fanoutResult.costUsd,
-        durationMs: fanoutResult.durationMs,
-        prUrl: fanoutResult.prUrl,
-        error: fanoutResult.error,
-      };
-    }
-
-    // ── Remediation gate ──────────────────────────────────────────────────────
-    // Any reviewer's CRITICAL/HIGH finding triggers remediation — code, security,
-    // or test (ADR-019, extended by ADR-025 to cover the code-reviewer too).
-    // No high findings → no-op; the item stays in code-review awaiting human merge.
-    if (!shouldRemediate(fanoutResult.reviewerResults)) {
-      return {
-        specialistId,
-        status: fanoutResult.status,
-        costUsd: fanoutResult.costUsd,
-        durationMs: fanoutResult.durationMs,
-        prUrl: fanoutResult.prUrl,
-        error: fanoutResult.error,
-        // No newStage — item stays in code-review
-      };
-    }
-
-    // Gate active. Provision the workspace BEFORE the transition so a clone/auth/
-    // network failure leaves the item re-dispatchable in code-review rather than
-    // stuck in remediation with no specialist mapped to recover it (mirrors the
-    // S16b implementer provisioning-before-transition fix).
-    let remediationWorkspace = '';
-    try {
-      const provisioned = await provisionReviewerWorkspace(
-        { externalId: item.externalId, codeRepo, githubToken: options.githubToken },
-        options.runGit,
-      );
-      remediationWorkspace = provisioned.workspacePath;
-    } catch (err) {
-      // Provisioning failed before any transition — the item stays in code-review
-      // and can be re-dispatched.
-      return {
-        specialistId,
-        status: 'error',
-        costUsd: fanoutResult.costUsd,
-        durationMs: fanoutResult.durationMs,
-        prUrl: fanoutResult.prUrl,
-        error: `Failed to provision remediation workspace: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-
-    // Workspace exists — everything from here must clean it up on the way out.
-    try {
-      // Clone OK → transition into remediation. The whole remediation step runs
-      // inside this same dispatch (composite Job): cost is summed across fan-out +
-      // remediation; durationMs is the max of the two phases (fan-out ran its
-      // reviewers in parallel, remediation runs after).
-      try {
-        await transition({
-          externalId: item.externalId,
-          toStage: 'remediation',
-          triggeredBy: 'specialist:remediation',
-        });
-      } catch (err) {
-        // Transition failed after provisioning — the finally below removes the
-        // workspace; the item stays in code-review (re-dispatchable).
-        return {
-          specialistId,
-          status: 'error',
-          costUsd: fanoutResult.costUsd,
-          durationMs: fanoutResult.durationMs,
-          prUrl: fanoutResult.prUrl,
-          error: `Failed to transition to remediation: ${err instanceof Error ? err.message : String(err)}`,
-        };
-      }
-
-      // Inject the full code/security/test review bodies so the agent has
-      // context. All three reviewer kinds flow to the remediator (ADR-025) — it
-      // is the unified safety net behind the code-reviewer too.
-      const findingsByKind = new Map<ReviewerKind, string>();
-      for (const r of fanoutResult.reviewerResults) {
-        if (r.commentBody) {
-          findingsByKind.set(r.kind, r.commentBody);
-        }
-      }
-
-      const params = buildRemediationParams(
-        item.externalId,
-        product,
-        remediationWorkspace,
-        prUrl,
-        findingsByKind,
-      );
-      const session = await runtime.spawn(params);
-      const agentResult = await session.wait();
-
-      const remediationResult = await handleRemediationResult(
-        item.externalId,
-        agentResult,
-        remediationWorkspace,
-        prUrl,
-        options.githubToken,
-        codeRepo,
-        options.runGit,
-        options.runGh,
-      );
-
-      const aggregatedCost = fanoutResult.costUsd + remediationResult.costUsd;
-      const aggregatedDuration = Math.max(fanoutResult.durationMs, remediationResult.durationMs);
-
-      if (remediationResult.status !== 'done') {
-        // Remediation failed — leave the item in 'remediation' (no return transition).
-        return {
-          specialistId,
-          status: 'error',
-          costUsd: aggregatedCost,
-          durationMs: aggregatedDuration,
-          prUrl: fanoutResult.prUrl,
-          error: remediationResult.error,
-        };
-      }
-
-      // Remediation succeeded — transition back to code-review for re-review/merge.
-      try {
-        await transition({
-          externalId: item.externalId,
-          toStage: 'code-review',
-          triggeredBy: 'specialist:remediation',
-        });
-      } catch (err) {
-        return {
-          specialistId,
-          status: 'error',
-          costUsd: aggregatedCost,
-          durationMs: aggregatedDuration,
-          prUrl: fanoutResult.prUrl,
-          error: `Failed to transition back to code-review: ${err instanceof Error ? err.message : String(err)}`,
-        };
-      }
-
-      // The item is back in code-review. But if the fan-out itself reported an
-      // error (a reviewer crashed or a comment failed to post), surface it: the
-      // remediator only addressed the findings that DID surface, so reviewer
-      // coverage is incomplete and a successful remediation must not paint over
-      // it with a green status (ADR-025). The transition still stands — the item
-      // is genuinely in code-review — but the job is reported as an error so the
-      // operator knows part of the review pipeline broke and can re-dispatch.
-      if (fanoutResult.status === 'error') {
-        return {
-          specialistId,
-          status: 'error',
-          newStage: 'code-review',
-          costUsd: aggregatedCost,
-          durationMs: aggregatedDuration,
-          prUrl: fanoutResult.prUrl,
-          error: `Remediation succeeded, but the reviewer fan-out reported an error (reviewer coverage may be incomplete): ${fanoutResult.error}`,
-        };
-      }
-
-      return {
-        specialistId,
-        status: 'done',
-        newStage: 'code-review',
-        costUsd: aggregatedCost,
-        durationMs: aggregatedDuration,
-        prUrl: fanoutResult.prUrl,
-      };
-    } finally {
-      await rm(remediationWorkspace, { recursive: true, force: true }).catch(() => {});
-      await rm(artifactsDirFor(remediationWorkspace), { recursive: true, force: true }).catch(
-        () => {},
-      );
-    }
+    return {
+      specialistId,
+      status: loopResult.status,
+      newStage: loopResult.newStage,
+      costUsd: loopResult.costUsd,
+      durationMs: loopResult.durationMs,
+      prUrl: loopResult.prUrl,
+      error: loopResult.error,
+    };
   }
 
   // ── Early-stage remediators (ADR-024) ──────────────────────────────────────

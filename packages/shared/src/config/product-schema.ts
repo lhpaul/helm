@@ -172,6 +172,40 @@ export const ProductSchema = z
       })
       .strict()
       .optional(),
+    /**
+     * PR review loop configuration (ADR-036). Optional — defaults apply when omitted.
+     */
+    review: z
+      .object({
+        external: z
+          .object({
+            provider: z.enum(['haystack']).optional(),
+            haystack: z
+              .object({
+                major_is_blocking: z.boolean().default(false),
+                poll_interval_sec: z.number().int().positive().default(15),
+                timeout_sec: z.number().int().positive().default(120),
+              })
+              .strict()
+              .optional(),
+          })
+          .strict()
+          .optional(),
+        loop: z
+          .object({
+            max_cycles: z.number().int().positive().default(5),
+            stop_rule: z
+              .object({
+                no_progress_cycles: z.number().int().positive().default(2),
+              })
+              .strict()
+              .optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

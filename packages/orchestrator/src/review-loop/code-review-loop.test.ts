@@ -5,7 +5,7 @@ import type { Product } from '@helm/shared';
 import type { ItemTransitionFn } from '../specialists/spec-writer.js';
 import type { RunGit } from '../specialists/git-helpers.js';
 import { MockAgentRuntime } from '../runtimes/mock.js';
-import { runCodeReviewLoop } from './code-review-loop.js';
+import { runCodeReviewLoop, formatExternalBlockersForRemediation } from './code-review-loop.js';
 
 vi.mock('../specialists/reviewer-fanout.js', () => ({
   fanoutReviewers: vi.fn(),
@@ -42,7 +42,7 @@ vi.mock('../external-review/run.js', () => ({
 }));
 
 import { fanoutReviewers, shouldRemediate } from '../specialists/reviewer-fanout.js';
-import { handleRemediationResult } from '../specialists/remediation.js';
+import { buildRemediationParams, handleRemediationResult } from '../specialists/remediation.js';
 import { provisionReviewerWorkspace } from '../specialists/code-workspace.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
 import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
@@ -333,5 +333,88 @@ describe('runCodeReviewLoop', () => {
       cyclesCompleted: 1,
     });
     expect(result.error).toContain('External review escalated: blocking_findings');
+  });
+
+  it('remediates external needs_fixes and re-runs internal fanout instead of returning done', async () => {
+    vi.mocked(runExternalReviewIfConfigured)
+      .mockResolvedValueOnce({
+        status: 'needs_fixes',
+        blockers: [
+          {
+            id: 'ext-1',
+            severity: 'high',
+            blocking: true,
+            summary: 'External blocker',
+            path: 'src/a.ts',
+          },
+        ],
+        advisories: [],
+      })
+      .mockResolvedValueOnce({ status: 'skipped', reason: 'not_configured' });
+
+    const result = await runLoop();
+
+    expect(result.status).toBe('done');
+    expect(fanoutReviewers).toHaveBeenCalledTimes(2);
+    expect(transition).toHaveBeenCalledTimes(2);
+    expect(buildRemediationParams).toHaveBeenCalledWith(
+      'issue_1',
+      baseProduct,
+      '/tmp/ws',
+      PR_URL,
+      expect.any(Map),
+    );
+    const findingsByKind = vi.mocked(buildRemediationParams).mock.calls.at(-1)![4] as Map<
+      string,
+      string
+    >;
+    expect(findingsByKind.get('code')).toContain('External blocker');
+    expect(findingsByKind.get('code')).toContain('src/a.ts');
+  });
+
+  it('returns error when external needs_fixes remediation fails', async () => {
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'needs_fixes',
+      blockers: [{ id: 'ext-1', severity: 'high', blocking: true, summary: 'External blocker' }],
+      advisories: [],
+    });
+    vi.mocked(handleRemediationResult).mockResolvedValueOnce({
+      status: 'error',
+      costUsd: 0.02,
+      durationMs: 200,
+      commentPosted: false,
+      pushed: false,
+      error: 'external remediation failed',
+    });
+
+    const result = await runLoop();
+
+    expect(result).toMatchObject({
+      status: 'error',
+      cyclesCompleted: 1,
+      newStage: 'remediation',
+      error: 'external remediation failed',
+    });
+  });
+});
+
+describe('formatExternalBlockersForRemediation', () => {
+  it('includes severity, summary, path, and fix hints', () => {
+    const body = formatExternalBlockersForRemediation([
+      {
+        id: '1',
+        severity: 'high',
+        blocking: true,
+        summary: 'Missing null check',
+        path: 'src/a.ts',
+        detail: 'value may be undefined',
+        fixHint: 'Add optional chaining',
+      },
+    ]);
+
+    expect(body).toContain('**HIGH**: Missing null check');
+    expect(body).toContain('File: src/a.ts');
+    expect(body).toContain('value may be undefined');
+    expect(body).toContain('Fix: Add optional chaining');
   });
 });

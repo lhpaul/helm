@@ -12,6 +12,7 @@ import { buildRemediationParams, handleRemediationResult } from '../specialists/
 import { provisionReviewerWorkspace, artifactsDirFor } from '../specialists/code-workspace.js';
 import type { RunGit, RunGh } from '../specialists/git-helpers.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
+import type { NormalizedFinding } from '../external-review/types.js';
 import { resolveReviewLoopConfig } from './config.js';
 import {
   countBlockingFindings,
@@ -51,6 +52,19 @@ function escalationMessage(reason: StopRuleEscalationReason, cyclesCompleted: nu
   return `Review loop escalated: no progress on blocking findings for ${cyclesCompleted} consecutive remediation cycle(s)`;
 }
 
+/** Formats external adapter blockers for the code-remediator prompt. */
+export function formatExternalBlockersForRemediation(blockers: NormalizedFinding[]): string {
+  return blockers
+    .map((finding) => {
+      const lines = [`- **${finding.severity.toUpperCase()}**: ${finding.summary}`];
+      if (finding.path) lines.push(`  - File: ${finding.path}`);
+      if (finding.detail) lines.push(`  - ${finding.detail}`);
+      if (finding.fixHint) lines.push(`  - Fix: ${finding.fixHint}`);
+      return lines.join('\n');
+    })
+    .join('\n\n');
+}
+
 /**
  * Bounded internal fanout ↔ remediate loop (ADR-036), then optional external review
  * when configured (Haystack adapter follows in a subsequent change).
@@ -68,116 +82,169 @@ export async function runCodeReviewLoop(
   let ranRemediation = false;
 
   while (true) {
-    const fanoutResult = await fanoutReviewers(
-      params.externalId,
-      params.product,
-      params.prUrl,
-      params.githubToken,
-      params.runtime,
-      params.runGit,
-      params.runGh,
-    );
-    lastFanout = fanoutResult;
-    totalCost += fanoutResult.costUsd;
-    maxDuration = Math.max(maxDuration, fanoutResult.durationMs);
+    while (true) {
+      const fanoutResult = await fanoutReviewers(
+        params.externalId,
+        params.product,
+        params.prUrl,
+        params.githubToken,
+        params.runtime,
+        params.runGit,
+        params.runGh,
+      );
+      lastFanout = fanoutResult;
+      totalCost += fanoutResult.costUsd;
+      maxDuration = Math.max(maxDuration, fanoutResult.durationMs);
 
-    if (fanoutResult.status === 'error' && fanoutResult.reviewerResults.length === 0) {
-      return {
-        status: 'error',
-        prUrl: fanoutResult.prUrl,
-        costUsd: totalCost,
-        durationMs: maxDuration,
-        cyclesCompleted: cycle,
-        error: fanoutResult.error,
-      };
+      if (fanoutResult.status === 'error' && fanoutResult.reviewerResults.length === 0) {
+        return {
+          status: 'error',
+          prUrl: fanoutResult.prUrl,
+          costUsd: totalCost,
+          durationMs: maxDuration,
+          cyclesCompleted: cycle,
+          error: fanoutResult.error,
+        };
+      }
+
+      if (!shouldRemediate(fanoutResult.reviewerResults)) {
+        break;
+      }
+
+      const blockerCount = countBlockingFindings(fanoutResult.reviewerResults);
+      noProgressStreak = nextNoProgressStreak(priorBlockerCount, blockerCount, noProgressStreak);
+      priorBlockerCount = blockerCount;
+
+      const stop = evaluateStopRule({
+        cycle,
+        maxCycles: loopConfig.maxCycles,
+        noProgressCycles: loopConfig.noProgressCycles,
+        noProgressStreak,
+      });
+      if (stop.escalate) {
+        return {
+          status: 'error',
+          prUrl: fanoutResult.prUrl,
+          costUsd: totalCost,
+          durationMs: maxDuration,
+          cyclesCompleted: cycle,
+          escalated: true,
+          escalationReason: stop.reason,
+          error: escalationMessage(stop.reason, cycle),
+        };
+      }
+
+      const remediationOutcome = await runRemediationPass({
+        ...params,
+        fanoutResult,
+        totalCost,
+        maxDuration,
+      });
+      ranRemediation = true;
+      totalCost = remediationOutcome.totalCost;
+      maxDuration = remediationOutcome.maxDuration;
+
+      if (remediationOutcome.status === 'error') {
+        return {
+          status: 'error',
+          prUrl: fanoutResult.prUrl,
+          costUsd: totalCost,
+          durationMs: maxDuration,
+          cyclesCompleted: cycle,
+          newStage: remediationOutcome.newStage,
+          error: remediationOutcome.error,
+        };
+      }
+
+      cycle += 1;
     }
 
-    if (!shouldRemediate(fanoutResult.reviewerResults)) {
-      break;
-    }
-
-    const blockerCount = countBlockingFindings(fanoutResult.reviewerResults);
-    noProgressStreak = nextNoProgressStreak(priorBlockerCount, blockerCount, noProgressStreak);
-    priorBlockerCount = blockerCount;
-
-    const stop = evaluateStopRule({
-      cycle,
-      maxCycles: loopConfig.maxCycles,
-      noProgressCycles: loopConfig.noProgressCycles,
-      noProgressStreak,
-    });
-    if (stop.escalate) {
+    const fanout = lastFanout!;
+    const external = await runExternalReviewIfConfigured(params.product, params.prUrl);
+    if (external.status === 'escalate') {
       return {
         status: 'error',
-        prUrl: fanoutResult.prUrl,
+        prUrl: fanout.prUrl,
         costUsd: totalCost,
         durationMs: maxDuration,
         cyclesCompleted: cycle,
         escalated: true,
-        escalationReason: stop.reason,
-        error: escalationMessage(stop.reason, cycle),
+        error: `External review escalated: ${external.reason}`,
       };
     }
 
-    const remediationOutcome = await runRemediationPass({
-      ...params,
-      fanoutResult,
-      totalCost,
-      maxDuration,
-    });
-    ranRemediation = true;
-    totalCost = remediationOutcome.totalCost;
-    maxDuration = remediationOutcome.maxDuration;
+    if (external.status === 'needs_fixes') {
+      const blockerCount = external.blockers.length;
+      noProgressStreak = nextNoProgressStreak(priorBlockerCount, blockerCount, noProgressStreak);
+      priorBlockerCount = blockerCount;
 
-    if (remediationOutcome.status === 'error') {
+      const stop = evaluateStopRule({
+        cycle,
+        maxCycles: loopConfig.maxCycles,
+        noProgressCycles: loopConfig.noProgressCycles,
+        noProgressStreak,
+      });
+      if (stop.escalate) {
+        return {
+          status: 'error',
+          prUrl: fanout.prUrl,
+          costUsd: totalCost,
+          durationMs: maxDuration,
+          cyclesCompleted: cycle,
+          escalated: true,
+          escalationReason: stop.reason,
+          error: escalationMessage(stop.reason, cycle),
+        };
+      }
+
+      const remediationOutcome = await runRemediationPass({
+        ...params,
+        fanoutResult: fanout,
+        totalCost,
+        maxDuration,
+        externalFindingsBody: formatExternalBlockersForRemediation(external.blockers),
+      });
+      ranRemediation = true;
+      totalCost = remediationOutcome.totalCost;
+      maxDuration = remediationOutcome.maxDuration;
+
+      if (remediationOutcome.status === 'error') {
+        return {
+          status: 'error',
+          prUrl: fanout.prUrl,
+          costUsd: totalCost,
+          durationMs: maxDuration,
+          cyclesCompleted: cycle,
+          newStage: remediationOutcome.newStage,
+          error: remediationOutcome.error,
+        };
+      }
+
+      cycle += 1;
+      continue;
+    }
+
+    if (fanout.status === 'error') {
       return {
         status: 'error',
-        prUrl: fanoutResult.prUrl,
+        prUrl: fanout.prUrl,
         costUsd: totalCost,
         durationMs: maxDuration,
         cyclesCompleted: cycle,
-        newStage: remediationOutcome.newStage,
-        error: remediationOutcome.error,
+        newStage: ranRemediation ? 'code-review' : undefined,
+        error: `Reviewer fan-out reported an error (reviewer coverage may be incomplete): ${fanout.error}`,
       };
     }
 
-    cycle += 1;
-  }
-
-  const fanout = lastFanout!;
-  const external = await runExternalReviewIfConfigured(params.product, params.prUrl);
-  if (external.status === 'escalate') {
     return {
-      status: 'error',
-      prUrl: fanout.prUrl,
-      costUsd: totalCost,
-      durationMs: maxDuration,
-      cyclesCompleted: cycle,
-      escalated: true,
-      error: `External review escalated: ${external.reason}`,
-    };
-  }
-
-  if (fanout.status === 'error') {
-    return {
-      status: 'error',
+      status: 'done',
       prUrl: fanout.prUrl,
       costUsd: totalCost,
       durationMs: maxDuration,
       cyclesCompleted: cycle,
       newStage: ranRemediation ? 'code-review' : undefined,
-      error: `Reviewer fan-out reported an error (reviewer coverage may be incomplete): ${fanout.error}`,
     };
   }
-
-  return {
-    status: 'done',
-    prUrl: fanout.prUrl,
-    costUsd: totalCost,
-    durationMs: maxDuration,
-    cyclesCompleted: cycle,
-    newStage: ranRemediation ? 'code-review' : undefined,
-  };
 }
 
 type RemediationPassOutcome =
@@ -203,6 +270,7 @@ async function runRemediationPass(input: {
   fanoutResult: ReviewerFanoutResult;
   totalCost: number;
   maxDuration: number;
+  externalFindingsBody?: string;
 }): Promise<RemediationPassOutcome> {
   let remediationWorkspace = '';
   try {
@@ -243,9 +311,16 @@ async function runRemediationPass(input: {
     }
 
     const findingsByKind = new Map<ReviewerKind, string>();
-    for (const r of input.fanoutResult.reviewerResults) {
-      if (r.commentBody) {
-        findingsByKind.set(r.kind, r.commentBody);
+    if (input.externalFindingsBody) {
+      findingsByKind.set(
+        'code',
+        ['## External review blockers', '', input.externalFindingsBody].join('\n'),
+      );
+    } else {
+      for (const r of input.fanoutResult.reviewerResults) {
+        if (r.commentBody) {
+          findingsByKind.set(r.kind, r.commentBody);
+        }
       }
     }
 

@@ -8,6 +8,7 @@
   "packageManager": "pnpm@11.5.0",
   "scripts": {
     "dev": "turbo run dev",
+    "sync-env": "pnpm --filter @helm/api sync-env",
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",

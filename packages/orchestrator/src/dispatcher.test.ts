@@ -1606,7 +1606,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
 
   it('gate active + remediation done: two transitions, status done, aggregated cost/duration', async () => {
     const runtime = new MockAgentRuntime({ messages: [] });
-    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true);
 
     const result = await dispatchStageHandler(
       { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
@@ -1618,8 +1618,8 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
 
     expect(result.status).toBe('done');
     expect(result.newStage).toBe('code-review');
-    // cost = fan-out (0.03) + remediation (0.02); duration = max(100, 200)
-    expect(result.costUsd).toBeCloseTo(0.05, 5);
+    // cost = fan-out ×2 (0.03) + remediation (0.02); duration = max(100, 200)
+    expect(result.costUsd).toBeCloseTo(0.08, 5);
     expect(result.durationMs).toBe(200);
 
     // Two transitions: code-review → remediation, then remediation → code-review
@@ -1640,7 +1640,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
 
   it('gate active + remediation done BUT fan-out errored: status error (coverage gap surfaced), still transitions back', async () => {
     const runtime = new MockAgentRuntime({ messages: [] });
-    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true);
     // A reviewer gated remediation, but another reviewer failed — the fan-out
     // reports an error even though the gating findings were remediated.
     vi.mocked(fanoutReviewers).mockResolvedValue({
@@ -1693,7 +1693,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
 
   it('gate active via code-reviewer HIGH: remediator receives findings from all three reviewer kinds (ADR-025)', async () => {
     const runtime = new MockAgentRuntime({ messages: [] });
-    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true);
     // Fan-out: the code-reviewer reports a HIGH and pushed no source (summary
     // only); security and test also posted comments.
     vi.mocked(fanoutReviewers).mockResolvedValue({
@@ -1751,7 +1751,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
 
   it('gate active + remediation error: one transition (to remediation), status error', async () => {
     const runtime = new MockAgentRuntime({ messages: [] });
-    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true);
     vi.mocked(handleRemediationResult).mockResolvedValue({
       status: 'error',
       costUsd: 0.02,
@@ -1774,7 +1774,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     // Only the transition INTO remediation happened — no return transition.
     expect(transition).toHaveBeenCalledTimes(1);
     expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'remediation' }));
-    expect(result.newStage).toBeUndefined();
+    expect(result.newStage).toBe('remediation');
     // Teardown still runs on the error path: workspace + sibling artifacts dir
     // (both match the helm-review-issue_1- prefix) are removed.
     expect(await listReviewWorkspaces()).toHaveLength(0);
@@ -1783,7 +1783,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
   it('gate active + provision fails: status error, NO transition, no agent, no workspace leftover', async () => {
     const runtime = new MockAgentRuntime({ messages: [] });
     const spawnSpy = vi.spyOn(runtime, 'spawn');
-    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true);
 
     // runGit that fails the clone — provisionReviewerWorkspace throws and cleans
     // up its own workspace before propagating.
@@ -1816,7 +1816,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
   it('gate active + transition to remediation fails after provision: status error, workspace cleaned up', async () => {
     const runtime = new MockAgentRuntime({ messages: [] });
     const spawnSpy = vi.spyOn(runtime, 'spawn');
-    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true);
     // First transition (code-review → remediation) rejects after the clone succeeded.
     transition.mockRejectedValueOnce(new Error('transition denied'));
 
@@ -1839,6 +1839,24 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     // The provisioned workspace was removed by the finally block.
     const after = await listReviewWorkspaces();
     expect(after).toEqual(before);
+  });
+
+  it('re-runs fan-out after remediation when blockers remain (ADR-036 internal loop)', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token', runGit: makeProvisionRunGit() },
+    );
+
+    expect(result.status).toBe('done');
+    expect(result.newStage).toBe('code-review');
+    expect(fanoutReviewers).toHaveBeenCalledTimes(2);
+    expect(transition).toHaveBeenCalledTimes(2);
   });
 });
 

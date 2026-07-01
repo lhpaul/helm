@@ -348,3 +348,35 @@ describe('ProductSchema — native_state_map (ADR-035)', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('ProductSchema — review loop (ADR-036)', () => {
+  const withReview = (review: unknown) => ({
+    ...makeRawProduct(KEBAB_SPECIALISTS),
+    review,
+  });
+
+  it('is optional — products without review parse', () => {
+    const result = ProductSchema.safeParse(makeRawProduct(KEBAB_SPECIALISTS));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.review).toBeUndefined();
+  });
+
+  it('parses external haystack provider and loop overrides', () => {
+    const result = ProductSchema.safeParse(
+      withReview({
+        external: { provider: 'haystack', haystack: { major_is_blocking: true } },
+        loop: { max_cycles: 3, stop_rule: { no_progress_cycles: 4 } },
+      }),
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.review?.external?.provider).toBe('haystack');
+      expect(result.data.review?.loop?.max_cycles).toBe(3);
+    }
+  });
+
+  it('rejects unknown external providers', () => {
+    const result = ProductSchema.safeParse(withReview({ external: { provider: 'coderabbit' } }));
+    expect(result.success).toBe(false);
+  });
+});

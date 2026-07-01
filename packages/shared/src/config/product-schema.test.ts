@@ -391,4 +391,41 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     );
     expect(result.success).toBe(false);
   });
+
+  it('applies ADR-036 defaults for haystack and stop_rule when fields are omitted', () => {
+    const result = ProductSchema.safeParse(
+      withReview({
+        external: { provider: 'haystack', haystack: {} },
+        loop: { stop_rule: {} },
+      }),
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.review?.external?.haystack).toEqual({
+        major_is_blocking: false,
+        poll_interval_sec: 15,
+        timeout_sec: 120,
+      });
+      expect(result.data.review?.loop?.max_cycles).toBe(5);
+      expect(result.data.review?.loop?.stop_rule?.no_progress_cycles).toBe(2);
+    }
+  });
+
+  it('rejects unknown keys in review.external.haystack', () => {
+    const result = ProductSchema.safeParse(
+      withReview({
+        external: { provider: 'haystack', haystack: { unknown_flag: true } },
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects unknown keys in review.loop.stop_rule', () => {
+    const result = ProductSchema.safeParse(
+      withReview({
+        loop: { stop_rule: { no_progress_cycles: 2, unknown_flag: true } },
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
 });

@@ -247,6 +247,78 @@ describe('runCodeReviewLoop', () => {
     });
   });
 
+  it('returns error when reviewer workspace provisioning fails', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(provisionReviewerWorkspace).mockRejectedValueOnce(new Error('clone failed'));
+
+    const result = await runLoop();
+
+    expect(result).toMatchObject({
+      status: 'error',
+      cyclesCompleted: 1,
+      newStage: 'code-review',
+    });
+    expect(result.error).toContain('Failed to provision remediation workspace');
+    expect(result.error).toContain('clone failed');
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('returns error when transition back to code-review fails after remediation', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    transition
+      .mockResolvedValueOnce({ currentStage: 'remediation' })
+      .mockRejectedValueOnce(new Error('back transition boom'));
+
+    const result = await runLoop();
+
+    expect(result).toMatchObject({
+      status: 'error',
+      cyclesCompleted: 1,
+      newStage: 'remediation',
+    });
+    expect(result.error).toContain('Failed to transition back to code-review');
+    expect(transition).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns error when fan-out errored after remediation completes', async () => {
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(
+        makeFanout({ status: 'error', error: 'partial reviewer coverage' }, undefined),
+      );
+
+    const result = await runLoop();
+
+    expect(result).toMatchObject({
+      status: 'error',
+      cyclesCompleted: 2,
+      newStage: 'code-review',
+    });
+    expect(result.error).toContain('Reviewer fan-out reported an error');
+    expect(result.error).toContain('partial reviewer coverage');
+  });
+
+  it('returns error when fan-out errored during the remediation pass', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(
+      makeFanout({ status: 'error', error: 'partial reviewer coverage' }),
+    );
+
+    const result = await runLoop();
+
+    expect(result).toMatchObject({
+      status: 'error',
+      cyclesCompleted: 1,
+      newStage: 'code-review',
+    });
+    expect(result.error).toContain(
+      'Remediation succeeded, but the reviewer fan-out reported an error',
+    );
+  });
+
   it('escalates when external review reports blockers', async () => {
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'escalate',

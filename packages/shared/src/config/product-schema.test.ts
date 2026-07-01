@@ -379,4 +379,16 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     const result = ProductSchema.safeParse(withReview({ external: { provider: 'coderabbit' } }));
     expect(result.success).toBe(false);
   });
+
+  it('rejects non-positive max_cycles', () => {
+    const result = ProductSchema.safeParse(withReview({ loop: { max_cycles: 0 } }));
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects non-positive no_progress_cycles', () => {
+    const result = ProductSchema.safeParse(
+      withReview({ loop: { stop_rule: { no_progress_cycles: 0 } } }),
+    );
+    expect(result.success).toBe(false);
+  });
 });

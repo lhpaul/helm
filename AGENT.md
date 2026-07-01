@@ -34,11 +34,39 @@ Leé estos antes de tomar decisiones técnicas:
 Las variables de entorno del server API viven en `apps/api/.env` (no en la raíz).
 Bun lee `.env` del directorio de trabajo del proceso — que es `apps/api/` cuando Turbo lanza el dev server.
 
-Para arrancar localmente: `cp apps/api/.env.example apps/api/.env` y completar los valores.
+### Secrets con 1Password (recomendado)
 
-| Variable                   | Paquete    | Descripción                                                                                                                            |
-| -------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `HELM_KNOWLEDGE_REPO_PATH` | `apps/api` | Path absoluto al knowledge repo del Product activo (donde vive `.helm/product.yaml`). Ejemplo: `/Users/lhpaul/Git/Helm/helm-knowledge` |
+Los secretos viven en 1Password; referencias `op://` en `apps/api/.env.template`.
+Paths locales y `GITHUB_TOKEN` van en `apps/api/.env.local` (gitignored).
+
+```bash
+cp apps/api/.env.local.example apps/api/.env.local
+# Editar .env.local: HELM_KNOWLEDGE_REPO_PATH, HELM_DATA_DIR, GITHUB_TOKEN
+
+pnpm sync-env   # op inject → apps/api/.env (correr tras rotar secrets o cambiar .env.local)
+pnpm dev
+```
+
+Requisitos: [1Password CLI](https://developer.1password.com/docs/cli/get-started/) (`op`) y sesión activa (`op signin`).
+
+| Archivo              | Commitear | Contenido                           |
+| -------------------- | --------- | ----------------------------------- |
+| `.env.template`      | sí        | Referencias `op://` a secretos      |
+| `.env.local.example` | sí        | Plantilla de paths locales          |
+| `.env.local`         | no        | Tus paths + token GitHub            |
+| `.env`               | no        | Generado por `sync-env`; lo lee Bun |
+
+### Variables
+
+| Variable                   | Dónde definirla | Descripción                                                                                                                            |
+| -------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `HELM_KNOWLEDGE_REPO_PATH` | `.env.local`    | Path absoluto al knowledge repo del Product activo (donde vive `.helm/product.yaml`). Ejemplo: `/Users/lhpaul/Git/Helm/helm-knowledge` |
+| `HELM_DATA_DIR`            | `.env.local`    | Path absoluto a `data/` operativo (default: `apps/api/data`)                                                                           |
+| `GITHUB_TOKEN`             | `.env.local`    | PAT GitHub o salida de `gh auth token`                                                                                                 |
+| `LINEAR_API_KEY`           | `.env.template` | PAT Linear (resuelto por 1Password)                                                                                                    |
+| `GITHUB_WEBHOOK_SECRET`    | `.env.template` | Secret del webhook GitHub (resuelto por 1Password)                                                                                     |
+
+Setup manual sin 1Password: copiar `apps/api/.env.example`, crear `.env` a mano con todos los valores en claro (no recomendado para secretos).
 
 Si en el futuro `apps/web` necesita variables de entorno, irán en `apps/web/.env.example` / `apps/web/.env` por separado.
 No centralizamos en root para no necesitar dotenv-cli overhead.

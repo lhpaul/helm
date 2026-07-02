@@ -39,12 +39,29 @@ vi.mock('../external-review/run.js', () => ({
     status: 'skipped',
     reason: 'not_configured',
   }),
+  parsePullRequestRef: vi.fn((prUrl: string) => {
+    const match = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+    if (!match) return null;
+    return { owner: match[1], repo: match[2], prNumber: Number(match[3]) };
+  }),
 }));
+vi.mock('../external-review/haystack/skip-evidence.js', () => ({
+  fetchHaystackSkipEvidence: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('../specialists/pr-helpers.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../specialists/pr-helpers.js')>();
+  return {
+    ...actual,
+    postPRComment: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 import { fanoutReviewers, shouldRemediate } from '../specialists/reviewer-fanout.js';
 import { buildRemediationParams, handleRemediationResult } from '../specialists/remediation.js';
 import { provisionReviewerWorkspace } from '../specialists/code-workspace.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
+import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
+import { postPRComment } from '../specialists/pr-helpers.js';
 import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
 
 const PR_URL = 'https://github.com/o/r/pull/42';
@@ -117,6 +134,7 @@ describe('runCodeReviewLoop', () => {
       status: 'skipped',
       reason: 'not_configured',
     });
+    vi.mocked(fetchHaystackSkipEvidence).mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -319,10 +337,10 @@ describe('runCodeReviewLoop', () => {
     );
   });
 
-  it('escalates when external review reports blockers', async () => {
+  it('escalates when external review reports escalate', async () => {
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'escalate',
-      reason: 'blocking_findings',
+      reason: 'haystack pending_timeout',
     });
 
     const result = await runLoop();
@@ -330,9 +348,69 @@ describe('runCodeReviewLoop', () => {
     expect(result).toMatchObject({
       status: 'error',
       escalated: true,
+      escalationReason: 'external_escalate',
       cyclesCompleted: 1,
     });
-    expect(result.error).toContain('External review escalated: blocking_findings');
+    expect(result.error).toContain('haystack pending_timeout');
+    expect(postPRComment).toHaveBeenCalledTimes(1);
+  });
+
+  it('escalates when external review skips with Haystack evidence', async () => {
+    const product: Product = {
+      ...baseProduct,
+      review: { external: { provider: 'haystack', haystack: {} } },
+    };
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'skipped',
+      reason: 'unavailable',
+    });
+    vi.mocked(fetchHaystackSkipEvidence).mockResolvedValue({
+      kind: 'analysis_ready',
+      detail: 'Haystack analysisStatus=ready while triage was unavailable',
+    });
+
+    const result = await runLoop(product);
+
+    expect(result).toMatchObject({
+      status: 'error',
+      escalated: true,
+      escalationReason: 'external_skip_evidence',
+    });
+    expect(runExternalReviewIfConfigured).toHaveBeenCalledTimes(1);
+  });
+
+  it('escalates after repeated external skips without evidence', async () => {
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        external: { provider: 'haystack', haystack: { poll_interval_sec: 1 } },
+        loop: { stop_rule: { no_progress_cycles: 2 } },
+      },
+    };
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'skipped',
+      reason: 'unavailable',
+    });
+    vi.mocked(fetchHaystackSkipEvidence).mockResolvedValue(null);
+
+    const result = await runCodeReviewLoop({
+      externalId: 'issue_1',
+      product,
+      prUrl: PR_URL,
+      codeRepo: product.code_repos[0]!,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+      sleep: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      status: 'error',
+      escalated: true,
+      escalationReason: 'external_repeated_skip',
+    });
+    expect(runExternalReviewIfConfigured).toHaveBeenCalledTimes(2);
   });
 
   it('remediates external needs_fixes and re-runs internal fanout instead of returning done', async () => {

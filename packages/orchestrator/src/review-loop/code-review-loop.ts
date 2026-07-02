@@ -11,9 +11,22 @@ import {
 import { buildRemediationParams, handleRemediationResult } from '../specialists/remediation.js';
 import { provisionReviewerWorkspace, artifactsDirFor } from '../specialists/code-workspace.js';
 import type { RunGit, RunGh } from '../specialists/git-helpers.js';
-import { runExternalReviewIfConfigured } from '../external-review/run.js';
-import type { NormalizedFinding } from '../external-review/types.js';
+import { runExternalReviewIfConfigured, parsePullRequestRef } from '../external-review/run.js';
+import type { RunExternalReviewDeps } from '../external-review/run.js';
+import type {
+  ExternalReviewContext,
+  ExternalReviewResult,
+  NormalizedFinding,
+} from '../external-review/types.js';
+import { defaultSleep } from '../external-review/haystack/triage-poll.js';
+import {
+  fetchHaystackSkipEvidence,
+  type HaystackSkipEvidence,
+} from '../external-review/haystack/skip-evidence.js';
+import { postPRComment } from '../specialists/pr-helpers.js';
 import { resolveReviewLoopConfig } from './config.js';
+import { formatReviewLoopEscalationComment } from './escalation-comment.js';
+import { evaluateExternalReviewStopRule } from './external-stop-rule.js';
 import {
   countBlockingFindings,
   evaluateStopRule,
@@ -43,13 +56,127 @@ export type RunCodeReviewLoopParams = {
   transition: ItemTransitionFn;
   runGit?: RunGit;
   runGh?: RunGh;
+  externalReviewDeps?: RunExternalReviewDeps;
+  sleep?: (ms: number) => Promise<void>;
 };
 
 function escalationMessage(reason: StopRuleEscalationReason, cyclesCompleted: number): string {
   if (reason === 'max_cycles') {
     return `Review loop escalated: reached max_cycles (${cyclesCompleted}) with CRITICAL/HIGH findings still open`;
   }
-  return `Review loop escalated: no progress on blocking findings for ${cyclesCompleted} consecutive remediation cycle(s)`;
+  if (reason === 'no_progress') {
+    return `Review loop escalated: no progress on blocking findings for ${cyclesCompleted} consecutive remediation cycle(s)`;
+  }
+  if (reason === 'external_escalate') {
+    return `Review loop escalated: external review returned escalate (${cyclesCompleted} cycle(s) completed)`;
+  }
+  if (reason === 'external_skip_evidence') {
+    return `Review loop escalated: external review skipped with evidence findings may exist (${cyclesCompleted} cycle(s) completed)`;
+  }
+  return `Review loop escalated: external review skipped repeatedly (${cyclesCompleted} cycle(s) completed)`;
+}
+
+function buildExternalReviewContext(params: RunCodeReviewLoopParams): ExternalReviewContext | null {
+  const prRef = parsePullRequestRef(params.prUrl);
+  if (!prRef) return null;
+  return {
+    owner: prRef.owner,
+    repo: prRef.repo,
+    prNumber: prRef.prNumber,
+    prUrl: params.prUrl,
+    defaultBranch: params.codeRepo.default_branch,
+  };
+}
+
+function externalRetryDelayMs(product: Product): number {
+  const pollSec = product.review?.external?.haystack?.poll_interval_sec ?? 15;
+  return pollSec * 1000;
+}
+
+async function postEscalationCommentBestEffort(
+  params: RunCodeReviewLoopParams,
+  input: {
+    reason: StopRuleEscalationReason;
+    message: string;
+    cyclesCompleted: number;
+    evidence?: HaystackSkipEvidence;
+    externalReason?: string;
+  },
+): Promise<void> {
+  const body = formatReviewLoopEscalationComment(input);
+  try {
+    await postPRComment(
+      { prUrl: params.prUrl, body, githubToken: params.githubToken },
+      params.runGh,
+    );
+  } catch {
+    // Best-effort — escalation still returns error to the operator.
+  }
+}
+
+type ExternalReviewLoopOutcome =
+  | { kind: 'continue'; external: ExternalReviewResult }
+  | {
+      kind: 'escalate';
+      reason: StopRuleEscalationReason;
+      message: string;
+      externalReason?: string;
+      evidence?: HaystackSkipEvidence;
+    };
+
+async function runExternalReviewWithStopRule(
+  params: RunCodeReviewLoopParams,
+  loopConfig: ReturnType<typeof resolveReviewLoopConfig>,
+): Promise<ExternalReviewLoopOutcome> {
+  const sleepFn = params.sleep ?? defaultSleep;
+  const provider = params.product.review?.external?.provider;
+  const externalCtx = buildExternalReviewContext(params);
+  let skipAttempt = 0;
+
+  while (true) {
+    skipAttempt += 1;
+    const external = await runExternalReviewIfConfigured(
+      params.product,
+      params.prUrl,
+      params.externalReviewDeps,
+    );
+
+    let evidence: HaystackSkipEvidence | null = null;
+    if (provider === 'haystack' && externalCtx) {
+      const shouldCheckEvidence =
+        external.status === 'escalate' ||
+        (external.status === 'skipped' && external.reason !== 'not_configured');
+      if (shouldCheckEvidence) {
+        evidence = await fetchHaystackSkipEvidence(
+          externalCtx,
+          params.externalReviewDeps?.runHaystack,
+        );
+      }
+    }
+
+    const decision = evaluateExternalReviewStopRule({
+      result: external,
+      skipAttempt,
+      maxSkipAttempts: loopConfig.noProgressCycles,
+      evidence,
+    });
+
+    if (decision.action === 'continue') {
+      return { kind: 'continue', external: decision.result };
+    }
+
+    if (decision.action === 'escalate') {
+      return {
+        kind: 'escalate',
+        reason: decision.reason,
+        message: decision.message,
+        externalReason: decision.externalReason,
+        evidence: decision.evidence,
+      };
+    }
+
+    await sleepFn(externalRetryDelayMs(params.product));
+  }
 }
 
 /** Formats external adapter blockers for the code-remediator prompt. */
@@ -160,8 +287,15 @@ export async function runCodeReviewLoop(
     }
 
     const fanout = lastFanout!;
-    const external = await runExternalReviewIfConfigured(params.product, params.prUrl);
-    if (external.status === 'escalate') {
+    const externalOutcome = await runExternalReviewWithStopRule(params, loopConfig);
+    if (externalOutcome.kind === 'escalate') {
+      await postEscalationCommentBestEffort(params, {
+        reason: externalOutcome.reason,
+        message: externalOutcome.message,
+        cyclesCompleted: cycle,
+        evidence: externalOutcome.evidence,
+        externalReason: externalOutcome.externalReason,
+      });
       return {
         status: 'error',
         prUrl: fanout.prUrl,
@@ -169,9 +303,12 @@ export async function runCodeReviewLoop(
         durationMs: maxDuration,
         cyclesCompleted: cycle,
         escalated: true,
-        error: `External review escalated: ${external.reason}`,
+        escalationReason: externalOutcome.reason,
+        error: externalOutcome.message,
       };
     }
+
+    const external = externalOutcome.external;
 
     if (external.status === 'needs_fixes') {
       const blockerCount = external.blockers.length;

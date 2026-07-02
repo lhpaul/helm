@@ -8,7 +8,12 @@ export function countBlockingFindings(results: ReviewerResult[]): number {
   }, 0);
 }
 
-export type StopRuleEscalationReason = 'max_cycles' | 'no_progress';
+export type StopRuleEscalationReason =
+  | 'max_cycles'
+  | 'no_progress'
+  | 'external_escalate'
+  | 'external_skip_evidence'
+  | 'external_repeated_skip';
 
 export type StopRuleEvaluation =
   | { escalate: false }

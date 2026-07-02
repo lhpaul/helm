@@ -51,4 +51,20 @@ describe('parseFalsePositivesCatalog', () => {
     expect(entries[0]!.title).toContain('First');
     expect(entries[1]!.title).toContain('Second');
   });
+
+  it('does not match catalog tokens as substrings inside unrelated words', () => {
+    const entries = parseFalsePositivesCatalog(`${SAMPLE}
+
+---
+
+## Health token
+
+**Pattern:** reviewer flags health endpoint contract
+
+**Why it's a false positive:** Spec-intended health behavior.
+`);
+    const healthEntry = entries.find((e) => e.title.includes('Health token'))!;
+    expect(healthEntry.matchesSummary('unhealthy retry logic in parser')).toBe(false);
+    expect(healthEntry.matchesSummary('reviewer flags health endpoint contract')).toBe(true);
+  });
 });

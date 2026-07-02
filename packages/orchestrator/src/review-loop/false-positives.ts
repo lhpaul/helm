@@ -57,8 +57,14 @@ function normalizeForMatch(text: string): string {
 function significantTokenOverlap(pattern: string, summary: string): boolean {
   const patternTokens = pattern.split(' ').filter((t) => t.length > 4);
   if (patternTokens.length === 0) return false;
-  const hits = patternTokens.filter((token) => summary.includes(token));
+  const hits = patternTokens.filter((token) => summaryIncludesToken(summary, token));
   return hits.length >= Math.min(3, patternTokens.length);
+}
+
+/** Word-boundary token match — avoids `health` matching `unhealthy`. */
+function summaryIncludesToken(summary: string, token: string): boolean {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`, 'i').test(summary);
 }
 
 /** Fetches the product knowledge-repo false-positive catalog (best-effort). */

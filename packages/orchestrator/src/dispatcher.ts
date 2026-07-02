@@ -13,6 +13,7 @@ import {
   type ImplementerPublishOptions,
 } from './specialists/implementer.js';
 import { runCodeReviewLoop } from './review-loop/code-review-loop.js';
+import type { StopRuleEscalationReason } from './review-loop/stop-rule.js';
 import { provisionCodeWorkspace, artifactsDirFor } from './specialists/code-workspace.js';
 import {
   fetchProductContext,
@@ -64,6 +65,10 @@ export type DispatchResult = {
   /** URL of the knowledge-repo PR opened by the publish step, if applicable. */
   prUrl?: string;
   error?: string;
+  /** ADR-036 review loop — set when code-review dispatch runs the bounded loop. */
+  escalated?: boolean;
+  escalationReason?: StopRuleEscalationReason;
+  cyclesCompleted?: number;
 };
 
 export type DispatchOptions = {
@@ -589,6 +594,9 @@ export async function dispatchStageHandler(
       durationMs: loopResult.durationMs,
       prUrl: loopResult.prUrl,
       error: loopResult.error,
+      escalated: loopResult.escalated,
+      escalationReason: loopResult.escalationReason,
+      cyclesCompleted: loopResult.cyclesCompleted,
     };
   }
 

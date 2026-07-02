@@ -69,18 +69,14 @@ export async function fetchFalsePositivesCatalog(
   const parsed = parseGitHubRepoUrl(product.knowledge_repo.url);
   if (!parsed) return [];
 
-  try {
-    const content = await fetchRawFile(
-      parsed.owner,
-      parsed.repo,
-      product.knowledge_repo.default_branch,
-      FALSE_POSITIVES_PATH,
-      token,
-      fetchFn,
-    );
-    if (!content) return [];
-    return parseFalsePositivesCatalog(content);
-  } catch {
-    return [];
-  }
+  const content = await fetchRawFile(
+    parsed.owner,
+    parsed.repo,
+    product.knowledge_repo.default_branch,
+    FALSE_POSITIVES_PATH,
+    token,
+    fetchFn,
+  );
+  if (!content) return [];
+  return parseFalsePositivesCatalog(content);
 }

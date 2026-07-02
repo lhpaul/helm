@@ -237,4 +237,51 @@ describe('upsertPRCommentByMarker', () => {
 
     expect(capturedArgs.some((args) => args[0] === 'pr' && args[1] === 'comment')).toBe(true);
   });
+
+  it('treats malformed paginated comment JSON as empty and creates a new comment', async () => {
+    const capturedArgs: string[][] = [];
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      capturedArgs.push([...args]);
+      if (args[0] === 'api' && args[2] === '--paginate') {
+        return { stdout: '[{"id":1}]\nnot-json' };
+      }
+      return { stdout: '' };
+    });
+
+    await upsertPRCommentByMarker(
+      {
+        prUrl: 'https://github.com/test-org/test-repo/pull/42',
+        body: '<!-- helm:review-loop-summary -->\nnew body',
+        githubToken: 'test-token',
+        marker: '<!-- helm:review-loop-summary -->',
+      },
+      runGh,
+    );
+
+    expect(capturedArgs.some((args) => args[0] === 'pr' && args[1] === 'comment')).toBe(true);
+  });
+
+  it('treats non-array gh comment JSON as empty and creates a new comment', async () => {
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'api' && args[2] === '--paginate') {
+        return { stdout: '{"message":"Not Found"}' };
+      }
+      return { stdout: '' };
+    });
+
+    await upsertPRCommentByMarker(
+      {
+        prUrl: 'https://github.com/test-org/test-repo/pull/42',
+        body: '<!-- helm:review-loop-summary -->\nnew body',
+        githubToken: 'test-token',
+        marker: '<!-- helm:review-loop-summary -->',
+      },
+      runGh,
+    );
+
+    expect(runGh).toHaveBeenCalledWith(
+      expect.arrayContaining(['pr', 'comment']),
+      expect.anything(),
+    );
+  });
 });

@@ -228,21 +228,31 @@ function parseGhIssueComments(stdout: string): Array<{
   body?: string;
   created_at?: string;
 }> {
+  type GhComment = { id: number; body?: string; created_at?: string };
+
+  const normalize = (value: unknown): GhComment[] => {
+    if (!Array.isArray(value)) return [];
+    if (value.length > 0 && Array.isArray(value[0])) {
+      return value.flat() as GhComment[];
+    }
+    return value as GhComment[];
+  };
+
   const trimmed = stdout.trim();
   if (!trimmed) return [];
+
   try {
-    const parsed = JSON.parse(trimmed) as
-      | Array<{ id: number; body?: string; created_at?: string }>
-      | Array<Array<{ id: number; body?: string; created_at?: string }>>;
-    if (Array.isArray(parsed) && parsed.length > 0 && Array.isArray(parsed[0])) {
-      return parsed.flat();
-    }
-    return parsed;
+    return normalize(JSON.parse(trimmed));
   } catch {
-    return trimmed
-      .split(/\n(?=\[)/)
-      .flatMap(
-        (chunk) => JSON.parse(chunk) as Array<{ id: number; body?: string; created_at?: string }>,
-      );
+    const merged: GhComment[] = [];
+    for (const chunk of trimmed.split(/\n(?=\[)/)) {
+      if (!chunk.trim()) continue;
+      try {
+        merged.push(...normalize(JSON.parse(chunk)));
+      } catch {
+        // Skip malformed paginated chunks — treat as no matching comment.
+      }
+    }
+    return merged;
   }
 }

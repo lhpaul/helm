@@ -14,6 +14,9 @@
  * `postPRComment` — posts a review comment on a GitHub PR as the orchestrator
  *   (GITHUB_TOKEN never enters agent subprocesses).
  */
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { CodeRepo, Product } from '@helm/shared';
 import { implBranchName, specBranchName, planBranchName } from '@helm/shared';
 import { parseGitHubRepoUrl } from './fetch-product-context.js';
@@ -123,6 +126,18 @@ export async function findArtifactPRUrl(
 
 // ── postPRComment ─────────────────────────────────────────────────────────────
 
+export type ParsedPRUrl = {
+  owner: string;
+  repo: string;
+  prNumber: string;
+};
+
+export function parsePRUrl(prUrl: string): ParsedPRUrl | null {
+  const match = prUrl.match(/https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  if (!match) return null;
+  return { owner: match[1]!, repo: match[2]!, prNumber: match[3]! };
+}
+
 export type PostPRCommentOpts = {
   /** Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/42 */
   prUrl: string;
@@ -141,15 +156,93 @@ export async function postPRComment(
 ): Promise<void> {
   const { prUrl, body, githubToken } = opts;
 
-  const match = prUrl.match(/https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-  if (!match) {
+  const parsed = parsePRUrl(prUrl);
+  if (!parsed) {
     throw new Error(`[pr-helpers] Cannot parse PR URL: ${prUrl}`);
   }
-  const owner = match[1]!;
-  const repo = match[2]!;
-  const prNumber = match[3]!;
+  const { owner, repo, prNumber } = parsed;
 
   await runGh(['pr', 'comment', prNumber, '--repo', `${owner}/${repo}`, '--body', body], {
     env: { GITHUB_TOKEN: githubToken },
   });
+}
+
+export type UpsertPRCommentByMarkerOpts = PostPRCommentOpts & {
+  /** HTML comment marker used to find an existing orchestrator comment. */
+  marker: string;
+};
+
+/**
+ * Creates or updates a PR comment identified by a stable HTML marker (ADR-036 summary).
+ */
+export async function upsertPRCommentByMarker(
+  opts: UpsertPRCommentByMarkerOpts,
+  runGh: RunGh = defaultRunGh,
+): Promise<void> {
+  const parsed = parsePRUrl(opts.prUrl);
+  if (!parsed) {
+    throw new Error(`[pr-helpers] Cannot parse PR URL: ${opts.prUrl}`);
+  }
+
+  const { owner, repo, prNumber } = parsed;
+  const repoSlug = `${owner}/${repo}`;
+
+  const listResult = await runGh(
+    ['api', `repos/${repoSlug}/issues/${prNumber}/comments`, '--paginate'],
+    { env: { GITHUB_TOKEN: opts.githubToken } },
+  );
+
+  const comments = parseGhIssueComments(listResult.stdout);
+  const existing = comments
+    .filter((comment) => (comment.body ?? '').includes(opts.marker))
+    .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
+    .at(-1);
+
+  if (existing) {
+    const payloadDir = await mkdtemp(join(tmpdir(), 'helm-pr-comment-'));
+    const payloadPath = join(payloadDir, 'payload.json');
+    try {
+      await writeFile(payloadPath, JSON.stringify({ body: opts.body }));
+      await runGh(
+        [
+          'api',
+          `repos/${repoSlug}/issues/comments/${existing.id}`,
+          '--method',
+          'PATCH',
+          '--input',
+          payloadPath,
+        ],
+        { env: { GITHUB_TOKEN: opts.githubToken } },
+      );
+    } finally {
+      await rm(payloadDir, { recursive: true, force: true });
+    }
+    return;
+  }
+
+  await postPRComment(opts, runGh);
+}
+
+function parseGhIssueComments(stdout: string): Array<{
+  id: number;
+  body?: string;
+  created_at?: string;
+}> {
+  const trimmed = stdout.trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed) as
+      | Array<{ id: number; body?: string; created_at?: string }>
+      | Array<Array<{ id: number; body?: string; created_at?: string }>>;
+    if (Array.isArray(parsed) && parsed.length > 0 && Array.isArray(parsed[0])) {
+      return parsed.flat();
+    }
+    return parsed;
+  } catch {
+    return trimmed
+      .split(/\n(?=\[)/)
+      .flatMap(
+        (chunk) => JSON.parse(chunk) as Array<{ id: number; body?: string; created_at?: string }>,
+      );
+  }
 }

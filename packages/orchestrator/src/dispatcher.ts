@@ -584,6 +584,7 @@ export async function dispatchStageHandler(
       transition,
       runGit: options.runGit,
       runGh: options.runGh,
+      fetchFn: options.fetchFn,
     });
 
     return {

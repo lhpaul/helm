@@ -55,6 +55,12 @@ vi.mock('../specialists/pr-helpers.js', async (importOriginal) => {
     postPRComment: vi.fn().mockResolvedValue(undefined),
   };
 });
+vi.mock('./false-positives.js', () => ({
+  fetchFalsePositivesCatalog: vi.fn().mockResolvedValue([]),
+}));
+vi.mock('./summary.js', () => ({
+  upsertReviewLoopSummaryComment: vi.fn().mockResolvedValue(undefined),
+}));
 
 import { fanoutReviewers, shouldRemediate } from '../specialists/reviewer-fanout.js';
 import { buildRemediationParams, handleRemediationResult } from '../specialists/remediation.js';
@@ -62,6 +68,7 @@ import { provisionReviewerWorkspace } from '../specialists/code-workspace.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
 import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
+import { upsertReviewLoopSummaryComment } from './summary.js';
 import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
 
 const PR_URL = 'https://github.com/o/r/pull/42';
@@ -473,6 +480,39 @@ describe('runCodeReviewLoop', () => {
       newStage: 'remediation',
       error: 'external remediation failed',
     });
+  });
+
+  it('posts Review Loop Summary on clean exit with external advisories', async () => {
+    const product: Product = {
+      ...baseProduct,
+      review: { external: { provider: 'haystack', haystack: {} } },
+    };
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'clean',
+      blockers: [],
+      advisories: [
+        {
+          id: 'adv-1',
+          severity: 'low',
+          blocking: false,
+          summary: 'Weak test coverage on summary module',
+        },
+      ],
+    });
+
+    const result = await runLoop(product);
+
+    expect(result.status).toBe('done');
+    expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prUrl: PR_URL,
+        cyclesCompleted: 1,
+        externalProvider: 'haystack',
+        advisories: expect.arrayContaining([
+          expect.objectContaining({ id: 'adv-1', summary: 'Weak test coverage on summary module' }),
+        ]),
+      }),
+    );
   });
 });
 

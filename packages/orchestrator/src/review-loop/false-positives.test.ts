@@ -25,4 +25,30 @@ describe('parseFalsePositivesCatalog', () => {
   it('returns empty array for header-only content', () => {
     expect(parseFalsePositivesCatalog('# Code-review false positives\n')).toEqual([]);
   });
+
+  it('splits sections when separators use Windows newlines or blank-line padding', () => {
+    const markdown = `# Code-review false positives
+
+---
+
+## First entry
+
+**Pattern:** alpha pattern one two three four
+
+**Why it's a false positive:** First rationale.
+
+---
+
+## Second entry
+
+**Pattern:** beta pattern one two three four
+
+**Why it's a false positive:** Second rationale.
+`.replace(/\n/g, '\r\n');
+
+    const entries = parseFalsePositivesCatalog(markdown);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]!.title).toContain('First');
+    expect(entries[1]!.title).toContain('Second');
+  });
 });

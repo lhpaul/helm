@@ -13,7 +13,8 @@ const FALSE_POSITIVES_PATH = 'false-positives.md';
 
 /** Parses `helm-knowledge/false-positives.md` sections into matchable entries. */
 export function parseFalsePositivesCatalog(markdown: string): FalsePositiveEntry[] {
-  const sections = markdown.split(/\n---\n/);
+  const normalized = markdown.replace(/\r\n/g, '\n');
+  const sections = normalized.split(/\n\s*---\s*\n/);
   const entries: FalsePositiveEntry[] = [];
 
   for (const section of sections) {

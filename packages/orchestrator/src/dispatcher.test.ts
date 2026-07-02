@@ -8,6 +8,7 @@ import { dispatchStageHandler, resolveSpecialistId } from './dispatcher.js';
 vi.mock('./specialists/pr-helpers.js', () => ({
   findCodePRUrl: vi.fn().mockResolvedValue('https://github.com/test-org/test-repo/pull/42'),
   findArtifactPRUrl: vi.fn().mockResolvedValue('https://github.com/test-org/test-knowledge/pull/7'),
+  postPRComment: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('./specialists/early-remediator.js', () => ({
   runEarlyRemediation: vi.fn().mockResolvedValue({
@@ -48,6 +49,20 @@ vi.mock('./specialists/remediation.js', () => ({
     commitSha: 'sha789',
   }),
 }));
+vi.mock('./external-review/run.js', () => ({
+  runExternalReviewIfConfigured: vi.fn().mockResolvedValue({
+    status: 'skipped',
+    reason: 'not_configured',
+  }),
+  parsePullRequestRef: vi.fn((prUrl: string) => {
+    const match = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+    if (!match) return null;
+    return { owner: match[1], repo: match[2], prNumber: Number(match[3]) };
+  }),
+}));
+vi.mock('./external-review/haystack/skip-evidence.js', () => ({
+  fetchHaystackSkipEvidence: vi.fn().mockResolvedValue(null),
+}));
 
 // Lazy imports for the mocked modules (imported after vi.mock hoisting).
 // We use type-safe lazy accessors so we can manipulate mock return values per test.
@@ -55,6 +70,7 @@ import { findCodePRUrl, findArtifactPRUrl } from './specialists/pr-helpers.js';
 import { runEarlyRemediation } from './specialists/early-remediator.js';
 import { fanoutReviewers, shouldRemediate } from './specialists/reviewer-fanout.js';
 import { buildRemediationParams, handleRemediationResult } from './specialists/remediation.js';
+import { runExternalReviewIfConfigured } from './external-review/run.js';
 import { MockAgentRuntime } from './runtimes/mock.js';
 import type { Product } from '@helm/shared';
 import type { ItemTransitionFn } from './specialists/spec-writer.js';
@@ -1476,6 +1492,10 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
       pushed: true,
       commitSha: 'sha789',
     });
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'skipped',
+      reason: 'not_configured',
+    });
   });
 
   /** runGit that simulates provisionReviewerWorkspace's clone (creates .git dir). */
@@ -1556,9 +1576,37 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     expect(result.prUrl).toBe('https://github.com/test-org/test-repo/pull/42');
     expect(result.costUsd).toBe(0.03);
     expect(result.durationMs).toBe(100);
+    expect(result.cyclesCompleted).toBe(1);
+    expect(result.escalated).toBeUndefined();
     // No newStage — item stays in code-review
     expect(result.newStage).toBeUndefined();
     expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('forwards review-loop escalation fields when external review escalates', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const product: Product = {
+      ...makeProduct(),
+      review: { external: { provider: 'haystack', haystack: {} } },
+    };
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'escalate',
+      reason: 'haystack pending_timeout',
+    });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'test-token' },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.escalated).toBe(true);
+    expect(result.escalationReason).toBe('external_escalate');
+    expect(result.cyclesCompleted).toBe(1);
+    expect(result.error).toContain('haystack pending_timeout');
   });
 
   it('gate inactive: no transition, status from fan-out (item stays in code-review)', async () => {

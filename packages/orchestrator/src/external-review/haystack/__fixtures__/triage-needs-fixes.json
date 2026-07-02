@@ -1,0 +1,27 @@
+{
+  "owner": "o",
+  "repo": "r",
+  "prNumber": 42,
+  "rating": 3,
+  "findings": [
+    {
+      "id": "finding-9001",
+      "category": "Logic error",
+      "summary": "Null dereference in handler",
+      "detail": "user may be undefined when session expires",
+      "agentFixPrompt": "Add a null guard before accessing user.id",
+      "source": {
+        "path": "apps/api/src/routes/items.ts",
+        "line": 88
+      }
+    },
+    {
+      "category": "Minor",
+      "summary": "Consider extracting helper",
+      "source": {
+        "path": "apps/api/src/routes/items.ts",
+        "line": 102
+      }
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Product } from '@helm/shared';
 import { parsePullRequestRef, runExternalReviewIfConfigured } from './run.js';
 
@@ -77,14 +77,33 @@ describe('runExternalReviewIfConfigured', () => {
     });
   });
 
-  it('returns not_implemented for haystack until CLI integration lands', async () => {
+  it('delegates to Haystack adapter when provider is haystack', async () => {
     const product: Product = {
       ...baseProduct,
       review: { external: { provider: 'haystack' } },
     };
-    await expect(runExternalReviewIfConfigured(product, PR_URL)).resolves.toEqual({
-      status: 'skipped',
-      reason: 'not_implemented',
+    const triage = {
+      owner: 'o',
+      repo: 'r',
+      prNumber: 42,
+      findings: [],
+    };
+    const runHaystack = vi.fn(async (args: string[]) => {
+      if (args[0] === 'triage') {
+        return { stdout: JSON.stringify(triage), stderr: '', exitCode: 0 };
+      }
+      return { stdout: '', stderr: '', exitCode: 1 };
     });
+
+    await expect(runExternalReviewIfConfigured(product, PR_URL, { runHaystack })).resolves.toEqual({
+      status: 'clean',
+      blockers: [],
+      advisories: [],
+      policy: undefined,
+    });
+    expect(runHaystack).toHaveBeenCalledWith(
+      ['triage', 'o/r#42', '--json', '--no-wait'],
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
   });
 });

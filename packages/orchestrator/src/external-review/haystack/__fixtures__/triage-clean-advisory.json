@@ -1,0 +1,18 @@
+{
+  "owner": "o",
+  "repo": "r",
+  "prNumber": 42,
+  "rating": 8,
+  "findings": [
+    {
+      "category": "Rules violation",
+      "summary": "CHANGELOG entry placement",
+      "detail": "Entry may be outside [Unreleased]",
+      "agentFixPrompt": "Verify CHANGELOG structure",
+      "source": {
+        "path": "CHANGELOG.md",
+        "line": 12
+      }
+    }
+  ]
+}

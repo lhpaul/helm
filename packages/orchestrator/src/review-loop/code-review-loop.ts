@@ -67,7 +67,7 @@ export function formatExternalBlockersForRemediation(blockers: NormalizedFinding
 
 /**
  * Bounded internal fanout ↔ remediate loop (ADR-036), then optional external review
- * when configured (Haystack adapter follows in a subsequent change).
+ * when configured (Haystack via HaystackExternalReviewAdapter).
  */
 export async function runCodeReviewLoop(
   params: RunCodeReviewLoopParams,

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { findCodePRUrl, postPRComment } from './pr-helpers.js';
+import { findCodePRUrl, postPRComment, upsertPRCommentByMarker } from './pr-helpers.js';
 import type { RunGh } from './git-helpers.js';
 import type { CodeRepo } from '@helm/shared';
 
@@ -180,5 +180,108 @@ describe('postPRComment', () => {
         runGh,
       ),
     ).rejects.toThrow('gh: rate limited');
+  });
+});
+
+describe('upsertPRCommentByMarker', () => {
+  it('patches an existing comment when the marker is present', async () => {
+    const capturedArgs: string[][] = [];
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      capturedArgs.push([...args]);
+      if (args[0] === 'api' && args[1]?.endsWith('/comments') && args[2] === '--paginate') {
+        return {
+          stdout: JSON.stringify([
+            { id: 99, body: '<!-- helm:review-loop-summary --> old', created_at: '2026-01-01' },
+          ]),
+        };
+      }
+      return { stdout: '' };
+    });
+
+    await upsertPRCommentByMarker(
+      {
+        prUrl: 'https://github.com/test-org/test-repo/pull/42',
+        body: '<!-- helm:review-loop-summary -->\nnew body',
+        githubToken: 'test-token',
+        marker: '<!-- helm:review-loop-summary -->',
+      },
+      runGh,
+    );
+
+    const patchCall = capturedArgs.find((args) => args.includes('PATCH'));
+    expect(patchCall).toBeDefined();
+    expect(patchCall!.join(' ')).toContain('issues/comments/99');
+    expect(runGh).not.toHaveBeenCalledWith(
+      expect.arrayContaining(['pr', 'comment']),
+      expect.anything(),
+    );
+  });
+
+  it('creates a new comment when no marker comment exists', async () => {
+    const capturedArgs: string[][] = [];
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      capturedArgs.push([...args]);
+      if (args[0] === 'api') return { stdout: '[]' };
+      return { stdout: '' };
+    });
+
+    await upsertPRCommentByMarker(
+      {
+        prUrl: 'https://github.com/test-org/test-repo/pull/42',
+        body: '<!-- helm:review-loop-summary -->\nnew body',
+        githubToken: 'test-token',
+        marker: '<!-- helm:review-loop-summary -->',
+      },
+      runGh,
+    );
+
+    expect(capturedArgs.some((args) => args[0] === 'pr' && args[1] === 'comment')).toBe(true);
+  });
+
+  it('treats malformed paginated comment JSON as empty and creates a new comment', async () => {
+    const capturedArgs: string[][] = [];
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      capturedArgs.push([...args]);
+      if (args[0] === 'api' && args[2] === '--paginate') {
+        return { stdout: '[{"id":1}]\nnot-json' };
+      }
+      return { stdout: '' };
+    });
+
+    await upsertPRCommentByMarker(
+      {
+        prUrl: 'https://github.com/test-org/test-repo/pull/42',
+        body: '<!-- helm:review-loop-summary -->\nnew body',
+        githubToken: 'test-token',
+        marker: '<!-- helm:review-loop-summary -->',
+      },
+      runGh,
+    );
+
+    expect(capturedArgs.some((args) => args[0] === 'pr' && args[1] === 'comment')).toBe(true);
+  });
+
+  it('treats non-array gh comment JSON as empty and creates a new comment', async () => {
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'api' && args[2] === '--paginate') {
+        return { stdout: '{"message":"Not Found"}' };
+      }
+      return { stdout: '' };
+    });
+
+    await upsertPRCommentByMarker(
+      {
+        prUrl: 'https://github.com/test-org/test-repo/pull/42',
+        body: '<!-- helm:review-loop-summary -->\nnew body',
+        githubToken: 'test-token',
+        marker: '<!-- helm:review-loop-summary -->',
+      },
+      runGh,
+    );
+
+    expect(runGh).toHaveBeenCalledWith(
+      expect.arrayContaining(['pr', 'comment']),
+      expect.anything(),
+    );
   });
 });

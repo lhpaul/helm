@@ -24,9 +24,12 @@ import {
   type HaystackSkipEvidence,
 } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
+import type { FetchFn } from '../specialists/fetch-product-context.js';
 import { resolveReviewLoopConfig } from './config.js';
 import { formatReviewLoopEscalationComment } from './escalation-comment.js';
 import { evaluateExternalReviewStopRule } from './external-stop-rule.js';
+import { fetchFalsePositivesCatalog } from './false-positives.js';
+import { upsertReviewLoopSummaryComment } from './summary.js';
 import {
   countBlockingFindings,
   evaluateStopRule,
@@ -58,6 +61,7 @@ export type RunCodeReviewLoopParams = {
   runGh?: RunGh;
   externalReviewDeps?: RunExternalReviewDeps;
   sleep?: (ms: number) => Promise<void>;
+  fetchFn?: FetchFn;
 };
 
 function escalationMessage(reason: StopRuleEscalationReason, cyclesCompleted: number): string {
@@ -111,6 +115,36 @@ async function postEscalationCommentBestEffort(
     );
   } catch {
     // Best-effort — escalation still returns error to the operator.
+  }
+}
+
+async function postReviewLoopSummaryBestEffort(
+  params: RunCodeReviewLoopParams,
+  input: {
+    cyclesCompleted: number;
+    advisories: NormalizedFinding[];
+    externalProvider?: string;
+  },
+): Promise<void> {
+  if (input.advisories.length === 0) return;
+
+  try {
+    const catalog = await fetchFalsePositivesCatalog(
+      params.product,
+      params.githubToken,
+      params.fetchFn,
+    );
+    await upsertReviewLoopSummaryComment({
+      prUrl: params.prUrl,
+      githubToken: params.githubToken,
+      cyclesCompleted: input.cyclesCompleted,
+      externalProvider: input.externalProvider,
+      advisories: input.advisories,
+      catalog,
+      runGh: params.runGh,
+    });
+  } catch {
+    // Best-effort — clean loop exit is still valid without the summary comment.
   }
 }
 
@@ -371,6 +405,14 @@ export async function runCodeReviewLoop(
         newStage: ranRemediation ? 'code-review' : undefined,
         error: `Reviewer fan-out reported an error (reviewer coverage may be incomplete): ${fanout.error}`,
       };
+    }
+
+    if (external.status === 'clean' && external.advisories.length > 0) {
+      await postReviewLoopSummaryBestEffort(params, {
+        cyclesCompleted: cycle,
+        advisories: external.advisories,
+        externalProvider: params.product.review?.external?.provider,
+      });
     }
 
     return {

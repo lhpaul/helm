@@ -599,7 +599,10 @@ async function runAdjudicationPass(input: {
       unifiedPlan: adjudicationResult.parsed.unifiedPlan,
     };
   } catch (err) {
-    console.error('[code-review-loop] Review adjudication failed:', err);
+    console.error(
+      '[code-review-loop] Review adjudication failed:',
+      err instanceof Error ? err.message : String(err),
+    );
     return {
       status: 'error',
       totalCost: input.totalCost,

@@ -1,7 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { buildReviewAdjudicatorParams } from './review-adjudicator.js';
+import {
+  buildReviewAdjudicatorParams,
+  handleReviewAdjudicatorResult,
+} from './review-adjudicator.js';
 import type { Product } from '@helm/shared';
+
+vi.mock('node:fs/promises', () => ({
+  readFile: vi.fn(),
+}));
+
+vi.mock('./pr-helpers.js', () => ({
+  postPRComment: vi.fn(),
+}));
+
+import { readFile } from 'node:fs/promises';
+import { postPRComment } from './pr-helpers.js';
 
 const product = {
   helm_version: '0' as const,
@@ -81,5 +95,52 @@ describe('buildReviewAdjudicatorParams', () => {
         new Map(),
       ),
     ).toThrow(/not configured/);
+  });
+});
+
+describe('handleReviewAdjudicatorResult', () => {
+  it('falls back to HUMAN_REQUIRED when the adjudication artifact is missing', async () => {
+    vi.mocked(readFile).mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
+    vi.mocked(postPRComment).mockResolvedValue(undefined);
+
+    const result = await handleReviewAdjudicatorResult(
+      'LEA-192',
+      {
+        status: 'done',
+        totalCostUsd: 0,
+        durationMs: 1,
+        messages: [],
+      },
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      'token',
+    );
+
+    expect(result).toMatchObject({
+      status: 'done',
+      commentPosted: true,
+      parsed: { status: 'HUMAN_REQUIRED' },
+    });
+  });
+
+  it('surfaces non-ENOENT read failures instead of masking them', async () => {
+    vi.mocked(readFile).mockRejectedValue(
+      Object.assign(new Error('permission denied'), { code: 'EACCES' }),
+    );
+
+    await expect(
+      handleReviewAdjudicatorResult(
+        'LEA-192',
+        {
+          status: 'done',
+          totalCostUsd: 0,
+          durationMs: 1,
+          messages: [],
+        },
+        '/tmp/ws',
+        'https://github.com/o/r/pull/1',
+        'token',
+      ),
+    ).rejects.toMatchObject({ code: 'EACCES' });
   });
 });

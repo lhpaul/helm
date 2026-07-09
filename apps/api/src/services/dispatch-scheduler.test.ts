@@ -9,7 +9,9 @@ const { mockGetItem, mockGetIssueTrackerAdapter, mockUpdateJob } = vi.hoisted(()
 
 vi.mock('./index.js', () => ({
   getIssueTrackerAdapter: (...args: unknown[]) => mockGetIssueTrackerAdapter(...args),
-  getJobStore: vi.fn().mockResolvedValue({ updateJob: mockUpdateJob }),
+  getJobStore: vi
+    .fn()
+    .mockResolvedValue({ updateJob: mockUpdateJob, createJobIfNoRunning: vi.fn() }),
   getProductRegistry: vi.fn(),
   getItemStore: vi.fn(),
 }));
@@ -27,8 +29,14 @@ vi.mock('@helm/orchestrator', () => ({
   resolveSpecialistId: vi.fn(),
 }));
 
-import { runDispatchJob } from './dispatch-scheduler.js';
-import { dispatchStageHandler } from '@helm/orchestrator';
+import { runDispatchJob, scheduleItemDispatch } from './dispatch-scheduler.js';
+import { dispatchStageHandler, resolveSpecialistId } from '@helm/orchestrator';
+import { getItemStore, getProductRegistry } from './index.js';
+
+const baseProduct = {
+  product: { slug: 'test-product', name: 'Test Product' },
+  code_repos: [{ url: 'https://github.com/o/r', default_branch: 'main', role: 'app' }],
+} as never;
 
 describe('runDispatchJob fetchTask', () => {
   beforeEach(() => {
@@ -98,5 +106,59 @@ describe('runDispatchJob fetchTask', () => {
       };
       await expect(options.fetchTask?.('LEA-1')).resolves.toBeNull();
     }
+  });
+});
+
+describe('scheduleItemDispatch', () => {
+  beforeEach(() => {
+    vi.mocked(resolveSpecialistId).mockReturnValue('reviewer-fanout');
+  });
+
+  it('returns a generic reason when the product is missing', async () => {
+    vi.mocked(getProductRegistry).mockResolvedValue([]);
+
+    await expect(
+      scheduleItemDispatch({
+        productSlug: 'missing',
+        externalId: 'LEA-1',
+        triggeredBy: 'test',
+      }),
+    ).resolves.toEqual({ scheduled: false, reason: 'Product not found' });
+  });
+
+  it('returns a generic reason when the item is missing', async () => {
+    vi.mocked(getProductRegistry).mockResolvedValue([baseProduct]);
+    vi.mocked(getItemStore).mockResolvedValue({ get: vi.fn().mockResolvedValue(null) } as never);
+
+    await expect(
+      scheduleItemDispatch({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        triggeredBy: 'test',
+      }),
+    ).resolves.toEqual({ scheduled: false, reason: 'Item not found' });
+  });
+
+  it('returns a generic reason when no specialist maps to the stage', async () => {
+    vi.mocked(getProductRegistry).mockResolvedValue([baseProduct]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'released',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockReturnValue(undefined);
+
+    await expect(
+      scheduleItemDispatch({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        triggeredBy: 'test',
+      }),
+    ).resolves.toEqual({
+      scheduled: false,
+      reason: 'No specialist mapped for the current stage',
+    });
   });
 });

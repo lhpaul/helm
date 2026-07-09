@@ -31,7 +31,7 @@ AUTO_REMEDIATE | HUMAN_REQUIRED
 
 Use HUMAN_REQUIRED when any product_decision or unresolved doc_conflict remains.`.trim();
 
-const STATUS_RE = /^##\s+Status\s*\n\s*(AUTO_REMEDIATE|HUMAN_REQUIRED)\s*$/im;
+const STATUS_RE = /^##\s+Status\s*\n\s*(AUTO_REMEDIATE|HUMAN_REQUIRED)\b/im;
 
 /**
  * Parses adjudication.md produced by the review-adjudicator specialist.

@@ -8,6 +8,11 @@ import { getIssueTrackerAdapter, getJobStore, getProductRegistry, getItemStore }
 import type { Job } from './job-store.js';
 import type { ItemState } from './types.js';
 
+function logErrorMessage(scope: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`[${scope}] ${message}`);
+}
+
 export type ScheduleItemDispatchResult =
   | { scheduled: true; jobId: string }
   | { scheduled: false; reason: string; runningJobId?: string };
@@ -43,7 +48,7 @@ export async function runDispatchJob(
         if (err instanceof GitHubNotFoundError || err instanceof LinearNotFoundError) {
           return null;
         }
-        console.error(`[dispatch] fetchTask failed for externalId=${taskExternalId}:`, err);
+        logErrorMessage('dispatch fetchTask', err);
         throw err;
       }
     };
@@ -83,7 +88,7 @@ export async function runDispatchJob(
         finishedAt: now,
       });
     } catch (updateErr) {
-      console.error('[dispatch] Failed to update job after error:', updateErr);
+      logErrorMessage('dispatch job update', updateErr);
     }
   }
 }
@@ -101,20 +106,20 @@ export async function scheduleItemDispatch(input: {
   const products = await getProductRegistry();
   const product = products.find((p) => p.product.slug === input.productSlug);
   if (!product) {
-    return { scheduled: false, reason: `Product not found: ${input.productSlug}` };
+    return { scheduled: false, reason: 'Product not found' };
   }
 
   const store = await getItemStore();
   const item = await store.get(input.externalId);
   if (!item || item.productSlug !== input.productSlug) {
-    return { scheduled: false, reason: `Item not found: ${input.externalId}` };
+    return { scheduled: false, reason: 'Item not found' };
   }
 
   const resolvedSpecialist = resolveSpecialistId(item.currentStage, input.specialistId);
   if (!resolvedSpecialist) {
     return {
       scheduled: false,
-      reason: `No specialist mapped for stage '${item.currentStage}'`,
+      reason: 'No specialist mapped for the current stage',
     };
   }
 
@@ -149,10 +154,7 @@ export async function scheduleItemDispatch(input: {
     feedback: undefined,
     githubToken: process.env.GITHUB_TOKEN?.trim(),
   }).catch((err) => {
-    console.error(
-      `[dispatch-scheduler] runDispatchJob failed for ${input.productSlug}/${input.externalId}:`,
-      err,
-    );
+    logErrorMessage('dispatch-scheduler runDispatchJob', err);
   });
 
   return { scheduled: true, jobId: outcome.job.jobId };

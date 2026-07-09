@@ -37,6 +37,20 @@ AUTO_REMEDIATE`;
     expect(parseAdjudicationBody(body).status).toBe('HUMAN_REQUIRED');
   });
 
+  it('parses AUTO_REMEDIATE when status line includes trailing commentary', () => {
+    const body = `# Review Adjudication: LEA-192
+
+## Status
+AUTO_REMEDIATE — aligned reviewers, no open conflicts
+
+## Unified remediation plan
+- **AUTO** · Add CSRF guard`;
+
+    expect(parseAdjudicationBody(body)).toMatchObject({
+      status: 'AUTO_REMEDIATE',
+    });
+  });
+
   it('defaults to HUMAN_REQUIRED when status is missing', () => {
     expect(
       parseAdjudicationBody('# Review Adjudication: X\n\n## Summary\nIncomplete'),

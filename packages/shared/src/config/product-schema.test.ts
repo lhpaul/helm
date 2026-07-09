@@ -361,17 +361,35 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     if (result.success) expect(result.data.review).toBeUndefined();
   });
 
-  it('parses external haystack provider and loop overrides', () => {
+  it('parses external haystack provider, loop overrides, and adjudication config', () => {
     const result = ProductSchema.safeParse(
       withReview({
         external: { provider: 'haystack', haystack: { major_is_blocking: true } },
-        loop: { max_cycles: 3, stop_rule: { no_progress_cycles: 4 } },
+        loop: {
+          max_cycles: 3,
+          adjudication: { enabled: false },
+          stop_rule: { no_progress_cycles: 4 },
+        },
       }),
     );
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.review?.external?.provider).toBe('haystack');
       expect(result.data.review?.loop?.max_cycles).toBe(3);
+      expect(result.data.review?.loop?.adjudication?.enabled).toBe(false);
+    }
+  });
+
+  it('parses optional review-adjudicator specialist (ADR-037)', () => {
+    const result = ProductSchema.safeParse({
+      ...makeRawProduct({
+        ...KEBAB_SPECIALISTS,
+        'review-adjudicator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+      }),
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.specialists['review-adjudicator']?.model).toBe('claude-sonnet-4-6');
     }
   });
 

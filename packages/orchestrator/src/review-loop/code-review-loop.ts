@@ -8,7 +8,16 @@ import {
   type ReviewerFanoutResult,
   type ReviewerKind,
 } from '../specialists/reviewer-fanout.js';
-import { buildRemediationParams, handleRemediationResult } from '../specialists/remediation.js';
+import {
+  buildRemediationParams,
+  handleRemediationResult,
+  type RemediationResult,
+} from '../specialists/remediation.js';
+import {
+  buildReviewAdjudicatorParams,
+  handleReviewAdjudicatorResult,
+} from '../specialists/review-adjudicator.js';
+import { fetchSpecForPlan, type FetchFn } from '../specialists/fetch-product-context.js';
 import { provisionReviewerWorkspace, artifactsDirFor } from '../specialists/code-workspace.js';
 import type { RunGit, RunGh } from '../specialists/git-helpers.js';
 import { runExternalReviewIfConfigured, parsePullRequestRef } from '../external-review/run.js';
@@ -25,7 +34,7 @@ import {
 } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
 import type { FetchFn } from '../specialists/fetch-product-context.js';
-import { resolveReviewLoopConfig } from './config.js';
+import { resolveReviewLoopConfig, type ReviewLoopConfig } from './config.js';
 import { formatReviewLoopEscalationComment } from './escalation-comment.js';
 import { evaluateExternalReviewStopRule } from './external-stop-rule.js';
 import { fetchFalsePositivesCatalog } from './false-positives.js';
@@ -70,6 +79,9 @@ function escalationMessage(reason: StopRuleEscalationReason, cyclesCompleted: nu
   }
   if (reason === 'no_progress') {
     return `Review loop escalated: no progress on blocking findings for ${cyclesCompleted} consecutive remediation cycle(s)`;
+  }
+  if (reason === 'adjudication_conflict') {
+    return `Review loop escalated: review-adjudicator requires human product or documentation decisions (${cyclesCompleted} cycle(s) completed)`;
   }
   if (reason === 'external_escalate') {
     return `Review loop escalated: external review returned escalate (${cyclesCompleted} cycle(s) completed)`;
@@ -238,7 +250,7 @@ export async function runCodeReviewLoop(
   let maxDuration = 0;
   let cycle = 1;
   let noProgressStreak = 0;
-  let priorBlockerCount: number | null = null;
+  let bestBlockerCount: number | null = null;
   let lastFanout: ReviewerFanoutResult | null = null;
   let ranRemediation = false;
 
@@ -273,8 +285,10 @@ export async function runCodeReviewLoop(
       }
 
       const blockerCount = countBlockingFindings(fanoutResult.reviewerResults);
-      noProgressStreak = nextNoProgressStreak(priorBlockerCount, blockerCount, noProgressStreak);
-      priorBlockerCount = blockerCount;
+      noProgressStreak = nextNoProgressStreak(bestBlockerCount, blockerCount, noProgressStreak);
+      if (bestBlockerCount === null || blockerCount < bestBlockerCount) {
+        bestBlockerCount = blockerCount;
+      }
 
       const stop = evaluateStopRule({
         cycle,
@@ -300,21 +314,29 @@ export async function runCodeReviewLoop(
         fanoutResult,
         totalCost,
         maxDuration,
+        loopConfig,
+        fetchFn: params.fetchFn,
       });
       ranRemediation = true;
       totalCost = remediationOutcome.totalCost;
       maxDuration = remediationOutcome.maxDuration;
 
       if (remediationOutcome.status === 'error') {
-        return {
-          status: 'error',
-          prUrl: fanoutResult.prUrl,
-          costUsd: totalCost,
-          durationMs: maxDuration,
-          cyclesCompleted: cycle,
-          newStage: remediationOutcome.newStage,
-          error: remediationOutcome.error,
-        };
+        const adjudicationEscalation = remediationErrorToLoopResult(
+          fanoutResult.prUrl,
+          remediationOutcome,
+          cycle,
+          totalCost,
+          maxDuration,
+        );
+        if (adjudicationEscalation.escalated) {
+          await postEscalationCommentBestEffort(params, {
+            reason: 'adjudication_conflict',
+            message: adjudicationEscalation.error ?? 'Adjudication conflict',
+            cyclesCompleted: cycle,
+          });
+        }
+        return adjudicationEscalation;
       }
 
       cycle += 1;
@@ -346,8 +368,10 @@ export async function runCodeReviewLoop(
 
     if (external.status === 'needs_fixes') {
       const blockerCount = external.blockers.length;
-      noProgressStreak = nextNoProgressStreak(priorBlockerCount, blockerCount, noProgressStreak);
-      priorBlockerCount = blockerCount;
+      noProgressStreak = nextNoProgressStreak(bestBlockerCount, blockerCount, noProgressStreak);
+      if (bestBlockerCount === null || blockerCount < bestBlockerCount) {
+        bestBlockerCount = blockerCount;
+      }
 
       const stop = evaluateStopRule({
         cycle,
@@ -374,21 +398,29 @@ export async function runCodeReviewLoop(
         totalCost,
         maxDuration,
         externalFindingsBody: formatExternalBlockersForRemediation(external.blockers),
+        loopConfig,
+        fetchFn: params.fetchFn,
       });
       ranRemediation = true;
       totalCost = remediationOutcome.totalCost;
       maxDuration = remediationOutcome.maxDuration;
 
       if (remediationOutcome.status === 'error') {
-        return {
-          status: 'error',
-          prUrl: fanout.prUrl,
-          costUsd: totalCost,
-          durationMs: maxDuration,
-          cyclesCompleted: cycle,
-          newStage: remediationOutcome.newStage,
-          error: remediationOutcome.error,
-        };
+        const adjudicationEscalation = remediationErrorToLoopResult(
+          fanout.prUrl,
+          remediationOutcome,
+          cycle,
+          totalCost,
+          maxDuration,
+        );
+        if (adjudicationEscalation.escalated) {
+          await postEscalationCommentBestEffort(params, {
+            reason: 'adjudication_conflict',
+            message: adjudicationEscalation.error ?? 'Adjudication conflict',
+            cyclesCompleted: cycle,
+          });
+        }
+        return adjudicationEscalation;
       }
 
       cycle += 1;
@@ -436,6 +468,209 @@ type RemediationPassOutcome =
       error: string;
     };
 
+type AdjudicationPassOutcome =
+  | { status: 'skipped' }
+  | {
+      status: 'auto_remediate';
+      totalCost: number;
+      maxDuration: number;
+      unifiedPlan: string;
+    }
+  | {
+      status: 'human_required';
+      totalCost: number;
+      maxDuration: number;
+      message: string;
+    }
+  | {
+      status: 'error';
+      totalCost: number;
+      maxDuration: number;
+      error: string;
+    };
+
+function buildFindingsByKind(
+  fanoutResult: ReviewerFanoutResult,
+  externalFindingsBody?: string,
+): Map<ReviewerKind, string> {
+  const findingsByKind = new Map<ReviewerKind, string>();
+  if (externalFindingsBody) {
+    findingsByKind.set(
+      'code',
+      ['## External review blockers', '', externalFindingsBody].join('\n'),
+    );
+    return findingsByKind;
+  }
+
+  for (const r of fanoutResult.reviewerResults) {
+    if (r.commentBody) {
+      findingsByKind.set(r.kind, r.commentBody);
+    }
+  }
+  return findingsByKind;
+}
+
+async function runAdjudicationPass(input: {
+  externalId: string;
+  product: Product;
+  prUrl: string;
+  codeRepo: CodeRepo;
+  githubToken: string;
+  runtime: IAgentRuntime;
+  runGit?: RunGit;
+  runGh?: RunGh;
+  fanoutResult: ReviewerFanoutResult;
+  totalCost: number;
+  maxDuration: number;
+  externalFindingsBody?: string;
+  fetchFn?: FetchFn;
+}): Promise<AdjudicationPassOutcome> {
+  let workspacePath = '';
+  try {
+    const provisioned = await provisionReviewerWorkspace(
+      {
+        externalId: input.externalId,
+        codeRepo: input.codeRepo,
+        githubToken: input.githubToken,
+      },
+      input.runGit,
+    );
+    workspacePath = provisioned.workspacePath;
+
+    const findingsByKind = buildFindingsByKind(input.fanoutResult, input.externalFindingsBody);
+    let spec: string | undefined;
+    try {
+      spec =
+        (await fetchSpecForPlan(
+          input.product,
+          input.externalId,
+          input.githubToken,
+          input.fetchFn ?? fetch,
+        )) ?? undefined;
+    } catch {
+      spec = undefined;
+    }
+
+    const params = buildReviewAdjudicatorParams(
+      input.externalId,
+      input.product,
+      workspacePath,
+      input.prUrl,
+      findingsByKind,
+      {
+        externalFindingsBody: input.externalFindingsBody,
+        spec,
+      },
+    );
+    const session = await input.runtime.spawn(params);
+    const agentResult = await session.wait();
+    const adjudicationResult = await handleReviewAdjudicatorResult(
+      input.externalId,
+      agentResult,
+      workspacePath,
+      input.prUrl,
+      input.githubToken,
+      input.runGh,
+    );
+
+    const totalCost = input.totalCost + adjudicationResult.costUsd;
+    const maxDuration = Math.max(input.maxDuration, adjudicationResult.durationMs);
+
+    if (adjudicationResult.status !== 'done' || !adjudicationResult.parsed) {
+      return {
+        status: 'error',
+        totalCost,
+        maxDuration,
+        error: adjudicationResult.error ?? 'Review adjudication failed',
+      };
+    }
+
+    if (adjudicationResult.parsed.status === 'HUMAN_REQUIRED') {
+      return {
+        status: 'human_required',
+        totalCost,
+        maxDuration,
+        message:
+          'Review-adjudicator reported unresolved product or documentation conflicts — see the adjudication PR comment for options.',
+      };
+    }
+
+    return {
+      status: 'auto_remediate',
+      totalCost,
+      maxDuration,
+      unifiedPlan: adjudicationResult.parsed.unifiedPlan,
+    };
+  } catch (err) {
+    return {
+      status: 'error',
+      totalCost: input.totalCost,
+      maxDuration: input.maxDuration,
+      error: `Review adjudication failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  } finally {
+    if (workspacePath) {
+      await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+      await rm(artifactsDirFor(workspacePath), { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
+function remediationErrorToLoopResult(
+  fanoutPrUrl: string,
+  remediationOutcome: Extract<RemediationPassOutcome, { status: 'error' }>,
+  cycle: number,
+  totalCost: number,
+  maxDuration: number,
+): CodeReviewLoopResult {
+  if (remediationOutcome.error?.startsWith('adjudication_conflict:')) {
+    const message = remediationOutcome.error.replace(/^adjudication_conflict:\s*/, '');
+    return {
+      status: 'error',
+      prUrl: fanoutPrUrl,
+      costUsd: totalCost,
+      durationMs: maxDuration,
+      cyclesCompleted: cycle,
+      escalated: true,
+      escalationReason: 'adjudication_conflict',
+      newStage: remediationOutcome.newStage,
+      error: message,
+    };
+  }
+
+  return {
+    status: 'error',
+    prUrl: fanoutPrUrl,
+    costUsd: totalCost,
+    durationMs: maxDuration,
+    cyclesCompleted: cycle,
+    newStage: remediationOutcome.newStage,
+    error: remediationOutcome.error,
+  };
+}
+
+async function runAdjudicationIfEnabled(input: {
+  externalId: string;
+  product: Product;
+  prUrl: string;
+  codeRepo: CodeRepo;
+  githubToken: string;
+  runtime: IAgentRuntime;
+  runGit?: RunGit;
+  runGh?: RunGh;
+  fanoutResult: ReviewerFanoutResult;
+  totalCost: number;
+  maxDuration: number;
+  externalFindingsBody?: string;
+  fetchFn?: FetchFn;
+  loopConfig: ReviewLoopConfig;
+}): Promise<AdjudicationPassOutcome> {
+  if (!input.loopConfig.adjudicationEnabled) {
+    return { status: 'skipped' };
+  }
+  return runAdjudicationPass(input);
+}
+
 /**
  * After a failed remediation pass the item may still be in `remediation`, which
  * has no STAGE_TO_SPECIALIST mapping. Best-effort return to `code-review` so the
@@ -471,7 +706,57 @@ async function runRemediationPass(input: {
   totalCost: number;
   maxDuration: number;
   externalFindingsBody?: string;
+  loopConfig: ReviewLoopConfig;
+  fetchFn?: FetchFn;
 }): Promise<RemediationPassOutcome> {
+  let totalCost = input.totalCost;
+  let maxDuration = input.maxDuration;
+
+  const adjudication = await runAdjudicationIfEnabled({
+    externalId: input.externalId,
+    product: input.product,
+    prUrl: input.prUrl,
+    codeRepo: input.codeRepo,
+    githubToken: input.githubToken,
+    runtime: input.runtime,
+    runGit: input.runGit,
+    runGh: input.runGh,
+    fanoutResult: input.fanoutResult,
+    totalCost,
+    maxDuration,
+    externalFindingsBody: input.externalFindingsBody,
+    fetchFn: input.fetchFn,
+    loopConfig: input.loopConfig,
+  });
+
+  if (adjudication.status === 'human_required') {
+    return {
+      status: 'error',
+      totalCost: adjudication.totalCost,
+      maxDuration: adjudication.maxDuration,
+      newStage: 'code-review',
+      error: `adjudication_conflict: ${adjudication.message}`,
+    };
+  }
+
+  if (adjudication.status === 'error') {
+    return {
+      status: 'error',
+      totalCost: adjudication.totalCost,
+      maxDuration: adjudication.maxDuration,
+      newStage: 'code-review',
+      error: adjudication.error,
+    };
+  }
+
+  if (adjudication.status === 'auto_remediate') {
+    totalCost = adjudication.totalCost;
+    maxDuration = adjudication.maxDuration;
+  }
+
+  const adjudicationPlan =
+    adjudication.status === 'auto_remediate' ? adjudication.unifiedPlan : undefined;
+
   let remediationWorkspace = '';
   try {
     const provisioned = await provisionReviewerWorkspace(
@@ -510,19 +795,7 @@ async function runRemediationPass(input: {
       };
     }
 
-    const findingsByKind = new Map<ReviewerKind, string>();
-    if (input.externalFindingsBody) {
-      findingsByKind.set(
-        'code',
-        ['## External review blockers', '', input.externalFindingsBody].join('\n'),
-      );
-    } else {
-      for (const r of input.fanoutResult.reviewerResults) {
-        if (r.commentBody) {
-          findingsByKind.set(r.kind, r.commentBody);
-        }
-      }
-    }
+    const findingsByKind = buildFindingsByKind(input.fanoutResult, input.externalFindingsBody);
 
     const params = buildRemediationParams(
       input.externalId,
@@ -530,30 +803,44 @@ async function runRemediationPass(input: {
       remediationWorkspace,
       input.prUrl,
       findingsByKind,
-    );
-    const session = await input.runtime.spawn(params);
-    const agentResult = await session.wait();
-
-    const remediationResult = await handleRemediationResult(
-      input.externalId,
-      agentResult,
-      remediationWorkspace,
-      input.prUrl,
-      input.githubToken,
-      input.codeRepo,
-      input.runGit,
-      input.runGh,
+      adjudicationPlan,
     );
 
-    const totalCost = input.totalCost + remediationResult.costUsd;
-    const maxDuration = Math.max(input.maxDuration, remediationResult.durationMs);
+    let remediationResult: RemediationResult | undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const session = await input.runtime.spawn(params);
+      const agentResult = await session.wait();
 
-    if (remediationResult.status !== 'done') {
+      remediationResult = await handleRemediationResult(
+        input.externalId,
+        agentResult,
+        remediationWorkspace,
+        input.prUrl,
+        input.githubToken,
+        input.codeRepo,
+        input.runGit,
+        input.runGh,
+      );
+
+      totalCost += remediationResult.costUsd;
+      maxDuration = Math.max(maxDuration, remediationResult.durationMs);
+
+      if (remediationResult.status === 'done') {
+        break;
+      }
+
+      if (attempt === 0) {
+        await recoverToCodeReviewAfterRemediationFailure(input.externalId, input.transition);
+        continue;
+      }
+    }
+
+    if (!remediationResult || remediationResult.status !== 'done') {
       const newStage = await recoverToCodeReviewAfterRemediationFailure(
         input.externalId,
         input.transition,
       );
-      const baseError = remediationResult.error ?? 'Remediation failed';
+      const baseError = remediationResult?.error ?? 'Remediation failed';
       return {
         status: 'error',
         totalCost,

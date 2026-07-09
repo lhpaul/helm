@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Review adjudicator (ADR-037):** optional `review-adjudicator` specialist runs between reviewer fan-out and `code-remediator`, synthesizing conflicting verdicts into a unified remediation plan. Escalates with `adjudication_conflict` when product or documentation decisions remain (`HUMAN_REQUIRED`). Configured via `specialists.review-adjudicator` and `review.loop.adjudication.enabled` (defaults on when the specialist is present). Backward compatible — products without the specialist keep the legacy direct-to-remediator path.
+- **Review loop stop-rule hardening (ADR-037):** `no_progress` now compares against the best (lowest) CRITICAL/HIGH blocker count seen in the loop run, detecting oscillation when remediation reverts prior fixes. Remediation failures retry once after recovery to `code-review` before the loop returns a terminal error.
+
 - **Review loop remediation recovery (#63):** when a remediation pass fails after the item entered `remediation`, the orchestrator best-effort transitions back to `code-review` (`triggeredBy: specialist:remediation-recovery`) so the item stays re-dispatchable without manual stage repair.
 - **Impl PR synchronize webhook re-dispatch:** GitHub `pull_request` `synchronize` events on `helm/impl/<id>` branches schedule `reviewer-fanout` when the item is in `code-review` (skips silently when a job is already running or the stage differs). Ignores pushes from `helm-bot` so remediation commits do not retrigger the loop. New `pull_request_synchronized` normalized event (includes `senderLogin`); shared `scheduleItemDispatch` helper in `apps/api/src/services/dispatch-scheduler.ts`.
 

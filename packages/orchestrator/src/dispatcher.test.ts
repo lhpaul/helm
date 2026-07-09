@@ -1819,7 +1819,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
 
     expect(result.status).toBe('error');
     expect(result.error).toContain('push remediation patches');
-    expect(transition).toHaveBeenCalledTimes(2);
+    expect(transition).toHaveBeenCalledTimes(3);
     expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'remediation' }));
     expect(transition).toHaveBeenCalledWith(
       expect.objectContaining({

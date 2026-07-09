@@ -72,16 +72,26 @@ export function buildRemediationParams(
   workspacePath: string,
   prUrl: string,
   findingsByKind: Map<ReviewerKind, string>,
+  adjudicationPlan?: string,
 ): SpawnParams {
   const specialistCfg = product.specialists['code-remediator'];
   const defaultBranch = product.code_repos[0]?.default_branch ?? 'main';
 
   const reviewSections: string[] = [];
-  for (const kind of ['code', 'security', 'test'] as const) {
-    const body = findingsByKind.get(kind);
-    if (body) {
-      const label = kind.charAt(0).toUpperCase() + kind.slice(1);
-      reviewSections.push('', `## ${label} Review`, '', body);
+  if (adjudicationPlan?.trim()) {
+    reviewSections.push(
+      '',
+      '## Unified remediation plan (from review-adjudicator)',
+      '',
+      adjudicationPlan.trim(),
+    );
+  } else {
+    for (const kind of ['code', 'security', 'test'] as const) {
+      const body = findingsByKind.get(kind);
+      if (body) {
+        const label = kind.charAt(0).toUpperCase() + kind.slice(1);
+        reviewSections.push('', `## ${label} Review`, '', body);
+      }
     }
   }
 
@@ -100,7 +110,7 @@ export function buildRemediationParams(
     '',
     `To inspect the diff: \`git fetch --depth 1 origin ${defaultBranch}\` then \`git diff origin/${defaultBranch}...HEAD\``,
     '',
-    'The code, security, and test reviews below contain the findings to remediate.',
+    'The unified remediation plan below (when present) or the raw review sections contain the findings to remediate.',
     'A finding may already be fixed if the code-reviewer self-applied it — inspect the current state of the files before changing anything, and treat an already-satisfied finding as a no-op rather than re-applying it.',
     ...reviewSections,
     '',

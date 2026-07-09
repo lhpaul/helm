@@ -30,6 +30,13 @@ vi.mock('../specialists/remediation.js', () => ({
     commitSha: 'sha789',
   }),
 }));
+vi.mock('../specialists/review-adjudicator.js', () => ({
+  buildReviewAdjudicatorParams: vi.fn(),
+  handleReviewAdjudicatorResult: vi.fn(),
+}));
+vi.mock('../specialists/fetch-product-context.js', () => ({
+  fetchSpecForPlan: vi.fn().mockResolvedValue(null),
+}));
 vi.mock('../specialists/code-workspace.js', () => ({
   provisionReviewerWorkspace: vi.fn().mockResolvedValue({ workspacePath: '/tmp/ws' }),
   artifactsDirFor: vi.fn((workspacePath: string) => `${workspacePath}-artifacts`),
@@ -64,6 +71,7 @@ vi.mock('./summary.js', () => ({
 
 import { fanoutReviewers, shouldRemediate } from '../specialists/reviewer-fanout.js';
 import { buildRemediationParams, handleRemediationResult } from '../specialists/remediation.js';
+import { handleReviewAdjudicatorResult } from '../specialists/review-adjudicator.js';
 import { provisionReviewerWorkspace } from '../specialists/code-workspace.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
 import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
@@ -142,6 +150,14 @@ describe('runCodeReviewLoop', () => {
       reason: 'not_configured',
     });
     vi.mocked(fetchHaystackSkipEvidence).mockResolvedValue(null);
+    vi.mocked(handleRemediationResult).mockResolvedValue({
+      status: 'done',
+      costUsd: 0.02,
+      durationMs: 200,
+      commentPosted: true,
+      pushed: true,
+      commitSha: 'sha789',
+    });
   });
 
   afterEach(() => {
@@ -253,7 +269,7 @@ describe('runCodeReviewLoop', () => {
   it('returns error when remediation fails to push patches and recovers to code-review', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
-    vi.mocked(handleRemediationResult).mockResolvedValueOnce({
+    vi.mocked(handleRemediationResult).mockResolvedValue({
       status: 'error',
       costUsd: 0.02,
       durationMs: 200,
@@ -281,7 +297,7 @@ describe('runCodeReviewLoop', () => {
   it('returns augmented error when remediation fails and recovery transition fails', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
-    vi.mocked(handleRemediationResult).mockResolvedValueOnce({
+    vi.mocked(handleRemediationResult).mockResolvedValue({
       status: 'error',
       costUsd: 0.02,
       durationMs: 200,
@@ -289,9 +305,12 @@ describe('runCodeReviewLoop', () => {
       pushed: false,
       error: 'push failed',
     });
-    transition
-      .mockResolvedValueOnce({ currentStage: 'remediation' })
-      .mockRejectedValueOnce(new Error('recovery failed'));
+    transition.mockImplementation(async (input) => {
+      if (input.triggeredBy === 'specialist:remediation-recovery') {
+        throw new Error('recovery failed');
+      }
+      return { currentStage: input.toStage };
+    });
 
     const result = await runLoop();
 
@@ -324,10 +343,15 @@ describe('runCodeReviewLoop', () => {
   it('returns error when transition back to code-review fails after remediation', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
-    transition
-      .mockResolvedValueOnce({ currentStage: 'remediation' })
-      .mockRejectedValueOnce(new Error('back transition boom'))
-      .mockRejectedValueOnce(new Error('recovery also failed'));
+    transition.mockImplementation(async (input) => {
+      if (input.toStage === 'code-review' && input.triggeredBy === 'specialist:remediation') {
+        throw new Error('back transition boom');
+      }
+      if (input.triggeredBy === 'specialist:remediation-recovery') {
+        throw new Error('recovery also failed');
+      }
+      return { currentStage: input.toStage };
+    });
 
     const result = await runLoop();
 
@@ -482,6 +506,7 @@ describe('runCodeReviewLoop', () => {
       '/tmp/ws',
       PR_URL,
       expect.any(Map),
+      undefined,
     );
     const findingsByKind = vi.mocked(buildRemediationParams).mock.calls.at(-1)![4] as Map<
       string,
@@ -497,7 +522,7 @@ describe('runCodeReviewLoop', () => {
       blockers: [{ id: 'ext-1', severity: 'high', blocking: true, summary: 'External blocker' }],
       advisories: [],
     });
-    vi.mocked(handleRemediationResult).mockResolvedValueOnce({
+    vi.mocked(handleRemediationResult).mockResolvedValue({
       status: 'error',
       costUsd: 0.02,
       durationMs: 200,
@@ -547,6 +572,40 @@ describe('runCodeReviewLoop', () => {
         ]),
       }),
     );
+  });
+
+  it('escalates when review-adjudicator requires human input (ADR-037)', async () => {
+    const product: Product = {
+      ...baseProduct,
+      specialists: {
+        ...baseProduct.specialists,
+        'review-adjudicator': { runtime: 'claude_code', model: 'm' },
+      },
+    };
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+      status: 'done',
+      costUsd: 0.01,
+      durationMs: 100,
+      commentPosted: true,
+      parsed: {
+        status: 'HUMAN_REQUIRED',
+        unifiedPlan: '',
+        body: '# Review Adjudication\n\n## Status\nHUMAN_REQUIRED',
+        conflictsSection: '- **product_decision** · Vacancy semantics',
+      },
+    });
+
+    const result = await runLoop(product);
+
+    expect(result).toMatchObject({
+      status: 'error',
+      escalated: true,
+      escalationReason: 'adjudication_conflict',
+    });
+    expect(buildRemediationParams).not.toHaveBeenCalled();
+    expect(postPRComment).toHaveBeenCalled();
   });
 });
 

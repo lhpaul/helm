@@ -76,6 +76,7 @@ import {
   handleReviewAdjudicatorResult,
 } from '../specialists/review-adjudicator.js';
 import { provisionReviewerWorkspace } from '../specialists/code-workspace.js';
+import { fetchSpecForPlan } from '../specialists/fetch-product-context.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
 import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
@@ -701,6 +702,107 @@ describe('runCodeReviewLoop', () => {
       expect.any(Map),
       '- **AUTO** · Add CSRF guard on POST /api/sync',
     );
+  });
+
+  const productWithAdjudicator = (): Product => ({
+    ...baseProduct,
+    specialists: {
+      ...baseProduct.specialists,
+      'review-adjudicator': { runtime: 'claude_code', model: 'm' },
+    },
+  });
+
+  it('skips runAdjudicationPass when review-adjudicator is not configured', async () => {
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+
+    const result = await runLoop();
+
+    expect(result.status).toBe('done');
+    expect(handleReviewAdjudicatorResult).not.toHaveBeenCalled();
+  });
+
+  it('surfaces adjudicator failures from runAdjudicationPass', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(buildReviewAdjudicatorParams).mockReturnValue({
+      specialistId: 'review-adjudicator',
+      prompt: 'adjudicate',
+      workdir: '/tmp/ws',
+      productSlug: 'test',
+      externalId: 'issue_1',
+      permissionMode: 'default',
+      timeoutMs: 1000,
+    });
+    vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+      status: 'error',
+      costUsd: 0,
+      durationMs: 1,
+      commentPosted: false,
+      error: 'Agent failed',
+    });
+
+    const result = await runLoop(productWithAdjudicator());
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Agent failed');
+  });
+
+  it('continues adjudication when fetchSpecForPlan fails with ENOENT', async () => {
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+    vi.mocked(fetchSpecForPlan).mockRejectedValue(
+      Object.assign(new Error('missing spec'), { code: 'ENOENT' }),
+    );
+    vi.mocked(buildReviewAdjudicatorParams).mockReturnValue({
+      specialistId: 'review-adjudicator',
+      prompt: 'adjudicate',
+      workdir: '/tmp/ws',
+      productSlug: 'test',
+      externalId: 'issue_1',
+      permissionMode: 'default',
+      timeoutMs: 1000,
+    });
+    vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+      status: 'done',
+      costUsd: 0,
+      durationMs: 1,
+      commentPosted: true,
+      parsed: {
+        status: 'AUTO_REMEDIATE',
+        unifiedPlan: '- **AUTO** · Fix',
+        body: '# Review Adjudication\n\n## Status\nAUTO_REMEDIATE',
+        conflictsSection: '',
+      },
+    });
+
+    const result = await runLoop(productWithAdjudicator());
+
+    expect(result.status).toBe('done');
+    expect(buildReviewAdjudicatorParams).toHaveBeenCalledWith(
+      'issue_1',
+      expect.anything(),
+      '/tmp/ws',
+      PR_URL,
+      expect.any(Map),
+      { spec: undefined },
+    );
+  });
+
+  it('fails runAdjudicationPass when fetchSpecForPlan throws a non-ENOENT error', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(fetchSpecForPlan).mockRejectedValue(new Error('network down'));
+
+    const result = await runLoop(productWithAdjudicator());
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe('Review adjudication failed');
+    expect(handleReviewAdjudicatorResult).not.toHaveBeenCalled();
   });
 });
 

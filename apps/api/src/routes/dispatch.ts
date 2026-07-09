@@ -1,23 +1,10 @@
 import { Hono } from 'hono';
 import { join } from 'node:path';
 import { z } from 'zod';
-import {
-  dispatchStageHandler,
-  checkProductReadiness,
-  resolveSpecialistId,
-} from '@helm/orchestrator';
-import {
-  getProductRegistry,
-  getItemStore,
-  getJobStore,
-  getIssueTrackerAdapter,
-} from '../services/index.js';
-import { transitionItem } from '../services/item-service.js';
-import { createRuntimeForProduct } from '../services/runtime-factory.js';
+import { checkProductReadiness, resolveSpecialistId } from '@helm/orchestrator';
+import { getProductRegistry, getItemStore, getJobStore } from '../services/index.js';
+import { runDispatchJob } from '../services/dispatch-scheduler.js';
 import { validateExternalId } from '../lib/http-errors.js';
-import type { Job } from '../services/job-store.js';
-import type { ItemState } from '../services/types.js';
-import type { Product } from '@helm/shared';
 
 export const dispatchRouter = new Hono();
 
@@ -51,72 +38,6 @@ const BodySchema = z
       });
     }
   });
-
-/**
- * Background function that runs the dispatch job asynchronously.
- * Must never throw — a job must never stay stuck in 'running' status.
- */
-async function runDispatchJob(
-  job: Job,
-  ctx: {
-    product: Product;
-    item: ItemState;
-    workdir: string;
-    dataRoot: string;
-    specialistId: string | undefined;
-    feedback: string | undefined;
-    githubToken: string | undefined;
-    fetchTask:
-      | ((externalId: string) => Promise<{ title: string; body?: string } | null>)
-      | undefined;
-  },
-): Promise<void> {
-  const jobStore = await getJobStore();
-  try {
-    const runtime = createRuntimeForProduct(ctx.product, ctx.item.externalId, ctx.workdir);
-    const result = await dispatchStageHandler(
-      {
-        externalId: ctx.item.externalId,
-        productSlug: ctx.item.productSlug,
-        currentStage: ctx.item.currentStage,
-      },
-      ctx.product,
-      runtime,
-      // transitionItem wraps store.transition with best-effort tracker writeback
-      // (ADR-033). Stage handlers advance the item with agent:* triggers, which
-      // are not tracker-originated, so each advance is mirrored to the tracker.
-      transitionItem,
-      {
-        workdir: ctx.workdir,
-        dataRoot: ctx.dataRoot,
-        specialistId: ctx.specialistId,
-        githubToken: ctx.githubToken,
-        fetchTask: ctx.fetchTask,
-        feedback: ctx.feedback,
-      },
-    );
-
-    const now = new Date().toISOString();
-    await jobStore.updateJob(job.jobId, {
-      // Preserve all three DispatchResult statuses: done, error, cancelled.
-      status: result.status,
-      result,
-      finishedAt: now,
-    });
-  } catch (err) {
-    const now = new Date().toISOString();
-    const message = err instanceof Error ? err.message : String(err);
-    try {
-      await jobStore.updateJob(job.jobId, {
-        status: 'error',
-        error: message,
-        finishedAt: now,
-      });
-    } catch (updateErr) {
-      console.error('[dispatch] Failed to update job after error:', updateErr);
-    }
-  }
-}
 
 dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   const slug = c.req.param('slug');
@@ -174,11 +95,6 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   }
 
   // ── Product-readiness gate (ADR-026) ────────────────────────────────────────
-  // Gate ONLY the spec-writer entry: it reads raw repo docs (README + agent
-  // instructions) and would otherwise invent context. Later stages and the
-  // operator-triggered remediators operate on structured artifacts, not repo
-  // docs, so they bypass the check. Runs before job creation so a non-ready
-  // product returns 422 instead of a 202 that fails downstream.
   const gateMode = product.workflow.readiness_gate;
   const resolvedSpecialist = resolveSpecialistId(item.currentStage, bodyResult.data.specialistId);
   if (gateMode !== 'skip' && resolvedSpecialist === 'spec-writer') {
@@ -192,15 +108,12 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
             422,
           );
         }
-        // warn mode: surface the gaps but proceed with the dispatch.
         console.warn(
           `[dispatch] readiness warnings for ${slug}/${externalId}:`,
           JSON.stringify(readiness.missingContext),
         );
       }
     } catch (err) {
-      // A non-404 fetch/network error is an infrastructure failure, not a client
-      // precondition failure — map it to 502, never a misleading 422.
       if (gateMode === 'required') {
         console.error('[dispatch] readiness check failed:', err);
         return c.json({ error: 'Readiness check failed' }, 502);
@@ -209,12 +122,10 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
     }
   }
 
-  // Determine workdir — sibling of the data/items directory
   const envDataDir = process.env.HELM_DATA_DIR?.trim();
   const dataRoot = envDataDir || join(process.cwd(), 'data');
   const workdir = join(dataRoot, 'worktrees', slug, externalId);
 
-  // Resolve job store and check for concurrency
   let jobStore;
   try {
     jobStore = await getJobStore();
@@ -223,7 +134,6 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
     return c.json({ error: 'Failed to load job store' }, 500);
   }
 
-  // Concurrency guard + job creation (atomic check-and-create via in-memory lock).
   const outcome = await jobStore.createJobIfNoRunning({
     productSlug: slug,
     externalId,
@@ -240,25 +150,6 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   }
   const { job } = outcome;
 
-  // Build fetchTask: best-effort wrapper around the configured issue tracker
-  // adapter (GitHub Projects or Linear, based on product.yaml). On any error
-  // (adapter init, network, item not found) it returns null so the spec-writer
-  // falls back to writing without a ## Task section.
-  const fetchTask = async (
-    taskExternalId: string,
-  ): Promise<{ title: string; body?: string } | null> => {
-    try {
-      const adapter = await getIssueTrackerAdapter();
-      const trackerItem = await adapter.getItem(taskExternalId);
-      if (!trackerItem) return null;
-      return { title: trackerItem.title, body: trackerItem.body };
-    } catch (err) {
-      console.error(`[dispatch] fetchTask failed for externalId=${taskExternalId}:`, err);
-      return null;
-    }
-  };
-
-  // Fire and forget — returns 202 immediately
   void runDispatchJob(job, {
     product,
     item,
@@ -267,7 +158,6 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
     specialistId: bodyResult.data.specialistId,
     feedback: bodyResult.data.feedback,
     githubToken: process.env.GITHUB_TOKEN?.trim(),
-    fetchTask,
   });
 
   return c.json({ jobId: job.jobId, status: 'running' }, 202);

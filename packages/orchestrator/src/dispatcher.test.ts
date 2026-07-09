@@ -1797,7 +1797,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     expect(findingsByKind.get('test')).toContain('no edge-case coverage');
   });
 
-  it('gate active + remediation error: one transition (to remediation), status error', async () => {
+  it('gate active + remediation error: transitions to remediation then recovers to code-review', async () => {
     const runtime = new MockAgentRuntime({ messages: [] });
     vi.mocked(shouldRemediate).mockReturnValueOnce(true);
     vi.mocked(handleRemediationResult).mockResolvedValue({
@@ -1819,12 +1819,15 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
 
     expect(result.status).toBe('error');
     expect(result.error).toContain('push remediation patches');
-    // Only the transition INTO remediation happened — no return transition.
-    expect(transition).toHaveBeenCalledTimes(1);
+    expect(transition).toHaveBeenCalledTimes(2);
     expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'remediation' }));
-    expect(result.newStage).toBe('remediation');
-    // Teardown still runs on the error path: workspace + sibling artifacts dir
-    // (both match the helm-review-issue_1- prefix) are removed.
+    expect(transition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toStage: 'code-review',
+        triggeredBy: 'specialist:remediation-recovery',
+      }),
+    );
+    expect(result.newStage).toBe('code-review');
     expect(await listReviewWorkspaces()).toHaveLength(0);
   });
 

@@ -15,15 +15,23 @@ const {
   mockCreate,
   mockTransition,
   mockList,
+  mockGet,
   mockSetSubStage,
   mockEnsureSubStages,
+  mockScheduleItemDispatch,
 } = vi.hoisted(() => ({
   mockParseWebhook: vi.fn(),
   mockCreate: vi.fn(),
   mockTransition: vi.fn(),
   mockList: vi.fn(),
+  mockGet: vi.fn(),
   mockSetSubStage: vi.fn(),
   mockEnsureSubStages: vi.fn(),
+  mockScheduleItemDispatch: vi.fn(),
+}));
+
+vi.mock('../services/dispatch-scheduler.js', () => ({
+  scheduleItemDispatch: mockScheduleItemDispatch,
 }));
 
 vi.mock('../services/index.js', async (importOriginal) => {
@@ -35,9 +43,12 @@ vi.mock('../services/index.js', async (importOriginal) => {
     getIssueTrackerAdapter: vi
       .fn()
       .mockResolvedValue({ setSubStage: mockSetSubStage, ensureSubStages: mockEnsureSubStages }),
-    getItemStore: vi
-      .fn()
-      .mockResolvedValue({ create: mockCreate, transition: mockTransition, list: mockList }),
+    getItemStore: vi.fn().mockResolvedValue({
+      create: mockCreate,
+      transition: mockTransition,
+      list: mockList,
+      get: mockGet,
+    }),
     getProductConfig: vi.fn().mockResolvedValue({
       product: { slug: 'test-app', name: 'Test' },
       issue_tracker: {
@@ -110,6 +121,8 @@ describe('POST /api/webhooks/github', () => {
     // a successful writeback can be asserted; clearAllMocks wiped the impls.
     mockEnsureSubStages.mockResolvedValue(undefined);
     mockSetSubStage.mockResolvedValue(undefined);
+    mockScheduleItemDispatch.mockResolvedValue({ scheduled: true, jobId: 'job-sync-1' });
+    mockGet.mockResolvedValue(null);
     vi.mocked(getIssueTrackerAdapter).mockResolvedValue({
       setSubStage: mockSetSubStage,
       ensureSubStages: mockEnsureSubStages,
@@ -426,6 +439,50 @@ describe('POST /api/webhooks/github', () => {
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(500);
+    });
+
+    // ── Impl PR synchronize (helm/impl/ → re-dispatch reviewer-fanout) ─────
+
+    it('schedules reviewer-fanout when helm/impl/ PR syncs and item is in code-review', async () => {
+      const body = mergedPrPayload('helm/impl/LEA-192', { action: 'synchronize', merged: false });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-192',
+        triggeredBy: 'webhook:impl-pr-sync',
+      });
+      expect(mockTransition).not.toHaveBeenCalled();
+    });
+
+    it('skips dispatch when impl PR syncs but item is not in code-review', async () => {
+      const body = mergedPrPayload('helm/impl/LEA-192', { action: 'synchronize', merged: false });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'remediation',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ignores synchronize on non-impl branches', async () => {
+      const body = mergedPrPayload('feature/foo', { action: 'synchronize', merged: false });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
     });
 
     // ── Non-actionable PR actions ─────────────────────────────────────────────

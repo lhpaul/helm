@@ -97,6 +97,9 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
       if (action === 'closed' && pr.merged === true) {
         return { type: 'pull_request_merged', headRef: pr.head.ref, timestamp };
       }
+      if (action === 'synchronize') {
+        return { type: 'pull_request_synchronized', headRef: pr.head.ref, timestamp };
+      }
       return { type: 'unknown', raw: rawEvent };
     }
 

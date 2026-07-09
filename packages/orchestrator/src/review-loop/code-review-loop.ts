@@ -436,6 +436,27 @@ type RemediationPassOutcome =
       error: string;
     };
 
+/**
+ * After a failed remediation pass the item may still be in `remediation`, which
+ * has no STAGE_TO_SPECIALIST mapping. Best-effort return to `code-review` so the
+ * operator (or webhook re-dispatch) can retry without manual stage repair.
+ */
+async function recoverToCodeReviewAfterRemediationFailure(
+  externalId: string,
+  transition: ItemTransitionFn,
+): Promise<'code-review' | 'remediation'> {
+  try {
+    await transition({
+      externalId,
+      toStage: 'code-review',
+      triggeredBy: 'specialist:remediation-recovery',
+    });
+    return 'code-review';
+  } catch {
+    return 'remediation';
+  }
+}
+
 async function runRemediationPass(input: {
   externalId: string;
   product: Product;
@@ -528,11 +549,15 @@ async function runRemediationPass(input: {
     const maxDuration = Math.max(input.maxDuration, remediationResult.durationMs);
 
     if (remediationResult.status !== 'done') {
+      const newStage = await recoverToCodeReviewAfterRemediationFailure(
+        input.externalId,
+        input.transition,
+      );
       return {
         status: 'error',
         totalCost,
         maxDuration,
-        newStage: 'remediation',
+        newStage,
         error: remediationResult.error,
       };
     }
@@ -544,12 +569,20 @@ async function runRemediationPass(input: {
         triggeredBy: 'specialist:remediation',
       });
     } catch (err) {
+      const newStage = await recoverToCodeReviewAfterRemediationFailure(
+        input.externalId,
+        input.transition,
+      );
+      const baseError = `Failed to transition back to code-review: ${err instanceof Error ? err.message : String(err)}`;
       return {
         status: 'error',
         totalCost,
         maxDuration,
-        newStage: 'remediation',
-        error: `Failed to transition back to code-review: ${err instanceof Error ? err.message : String(err)}`,
+        newStage,
+        error:
+          newStage === 'remediation'
+            ? `${baseError} (remediation-recovery also failed)`
+            : baseError,
       };
     }
 

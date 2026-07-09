@@ -250,7 +250,7 @@ describe('runCodeReviewLoop', () => {
     expect(result.error).toContain('Failed to transition to remediation');
   });
 
-  it('returns error when remediation fails to push patches', async () => {
+  it('returns error when remediation fails to push patches and recovers to code-review', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
     vi.mocked(handleRemediationResult).mockResolvedValueOnce({
@@ -267,9 +267,15 @@ describe('runCodeReviewLoop', () => {
     expect(result).toMatchObject({
       status: 'error',
       cyclesCompleted: 1,
-      newStage: 'remediation',
+      newStage: 'code-review',
       error: 'push failed',
     });
+    expect(transition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toStage: 'code-review',
+        triggeredBy: 'specialist:remediation-recovery',
+      }),
+    );
   });
 
   it('returns error when reviewer workspace provisioning fails', async () => {
@@ -294,7 +300,8 @@ describe('runCodeReviewLoop', () => {
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
     transition
       .mockResolvedValueOnce({ currentStage: 'remediation' })
-      .mockRejectedValueOnce(new Error('back transition boom'));
+      .mockRejectedValueOnce(new Error('back transition boom'))
+      .mockRejectedValueOnce(new Error('recovery also failed'));
 
     const result = await runLoop();
 
@@ -304,7 +311,8 @@ describe('runCodeReviewLoop', () => {
       newStage: 'remediation',
     });
     expect(result.error).toContain('Failed to transition back to code-review');
-    expect(transition).toHaveBeenCalledTimes(2);
+    expect(result.error).toContain('remediation-recovery also failed');
+    expect(transition).toHaveBeenCalledTimes(3);
   });
 
   it('returns error when fan-out errored after remediation completes', async () => {
@@ -477,7 +485,7 @@ describe('runCodeReviewLoop', () => {
     expect(result).toMatchObject({
       status: 'error',
       cyclesCompleted: 1,
-      newStage: 'remediation',
+      newStage: 'code-review',
       error: 'external remediation failed',
     });
   });

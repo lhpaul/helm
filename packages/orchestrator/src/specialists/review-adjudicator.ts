@@ -11,6 +11,7 @@ import { postPRComment } from './pr-helpers.js';
 import { sanitizeToken } from './git-helpers.js';
 import type { RunGh } from './git-helpers.js';
 import { buildExtraHintsSection } from './extra-hints.js';
+import { isEnoentError } from '../lib/fs-errors.js';
 import {
   ADJUDICATION_MD_FORMAT,
   parseAdjudicationBody,
@@ -126,8 +127,7 @@ export async function handleReviewAdjudicatorResult(
   try {
     body = await readFile(artifactFileFor(workspacePath, 'review-adjudicator'), 'utf-8');
   } catch (err) {
-    const code = err && typeof err === 'object' && 'code' in err ? err.code : undefined;
-    if (code !== 'ENOENT') {
+    if (!isEnoentError(err)) {
       throw err;
     }
     body = [

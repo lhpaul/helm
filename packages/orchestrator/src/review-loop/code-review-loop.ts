@@ -44,6 +44,7 @@ import {
   nextNoProgressStreak,
   type StopRuleEscalationReason,
 } from './stop-rule.js';
+import { isEnoentError } from '../lib/fs-errors.js';
 
 export type CodeReviewLoopResult = {
   status: 'done' | 'error';
@@ -546,7 +547,10 @@ async function runAdjudicationPass(input: {
           input.githubToken,
           input.fetchFn ?? fetch,
         )) ?? undefined;
-    } catch {
+    } catch (err) {
+      if (!isEnoentError(err)) {
+        throw err;
+      }
       spec = undefined;
     }
 

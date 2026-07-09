@@ -121,6 +121,20 @@ describe('buildRemediationParams', () => {
     expect(params.prompt).toContain('## Security Review');
   });
 
+  it('prefers unified adjudication plan over raw reviewer sections (ADR-037)', () => {
+    const params = buildRemediationParams(
+      'HLM-42',
+      product,
+      '/tmp/ws',
+      PR_URL,
+      findingsByKind(),
+      '- **AUTO** · Add CSRF guard on POST /api/sync',
+    );
+    expect(params.prompt).toContain('Unified remediation plan (from review-adjudicator)');
+    expect(params.prompt).toContain('Add CSRF guard on POST /api/sync');
+    expect(params.prompt).not.toContain('## Security Review');
+  });
+
   it('uses bypassPermissions, REMEDIATION_TIMEOUT_MS, and the remediation model', () => {
     const params = buildRemediationParams('HLM-42', product, '/tmp/ws', PR_URL, findingsByKind());
     expect(params.permissionMode).toBe('bypassPermissions');

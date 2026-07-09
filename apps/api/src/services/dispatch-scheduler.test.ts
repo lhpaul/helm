@@ -245,4 +245,57 @@ describe('scheduleItemDispatch', () => {
       expect(mockUpdateJob).toHaveBeenCalled();
     });
   });
+
+  it('returns conflict when a dispatch job is already running', async () => {
+    vi.mocked(getProductRegistry).mockResolvedValue([baseProduct]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'code-review',
+      }),
+    } as never);
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      conflict: true,
+      runningJobId: 'job-running',
+    });
+
+    await expect(
+      scheduleItemDispatch({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        triggeredBy: 'test',
+      }),
+    ).resolves.toEqual({
+      scheduled: false,
+      reason: 'A dispatch job is already running for this item',
+      runningJobId: 'job-running',
+    });
+  });
+});
+
+describe('runDispatchJob failure handling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetIssueTrackerAdapter.mockResolvedValue({ getItem: mockGetItem });
+  });
+
+  it('still completes when jobStore.updateJob fails in the error branch', async () => {
+    vi.mocked(dispatchStageHandler).mockRejectedValue(new Error('dispatch failed'));
+    mockUpdateJob.mockRejectedValueOnce(new Error('job store unavailable'));
+
+    await expect(
+      runDispatchJob({ jobId: 'job-1' } as never, {
+        product: { product: { slug: 'test' } } as never,
+        item: { externalId: 'LEA-1', productSlug: 'test', currentStage: 'code-review' } as never,
+        workdir: '/tmp/ws',
+        dataRoot: '/tmp/data',
+        specialistId: undefined,
+        feedback: undefined,
+        githubToken: undefined,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(mockUpdateJob).toHaveBeenCalled();
+  });
 });

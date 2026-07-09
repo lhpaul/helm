@@ -88,12 +88,16 @@ async function post(
 /** Builds a real pull_request webhook payload (parsed by the pure parseGitHubWebhook). */
 function mergedPrPayload(
   headRef: string,
-  opts: { action?: string; merged?: boolean } = {},
+  opts: { action?: string; merged?: boolean; senderLogin?: string } = {},
 ): string {
-  return JSON.stringify({
+  const payload: Record<string, unknown> = {
     action: opts.action ?? 'closed',
     pull_request: { merged: opts.merged ?? true, head: { ref: headRef } },
-  });
+  };
+  if (opts.senderLogin) {
+    payload.sender = { login: opts.senderLogin };
+  }
+  return JSON.stringify(payload);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -478,6 +482,19 @@ describe('POST /api/webhooks/github', () => {
 
     it('ignores synchronize on non-impl branches', async () => {
       const body = mergedPrPayload('feature/foo', { action: 'synchronize', merged: false });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ignores synchronize when push is from helm-bot (orchestrator remediation)', async () => {
+      const body = mergedPrPayload('helm/impl/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+        senderLogin: 'helm-bot',
+      });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);

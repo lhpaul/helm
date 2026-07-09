@@ -10,7 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Review loop remediation recovery (#63):** when a remediation pass fails after the item entered `remediation`, the orchestrator best-effort transitions back to `code-review` (`triggeredBy: specialist:remediation-recovery`) so the item stays re-dispatchable without manual stage repair.
-- **Impl PR synchronize webhook re-dispatch:** GitHub `pull_request` `synchronize` events on `helm/impl/<id>` branches schedule `reviewer-fanout` when the item is in `code-review` (skips silently when a job is already running or the stage differs). New `pull_request_synchronized` normalized event; shared `scheduleItemDispatch` helper in `apps/api/src/services/dispatch-scheduler.ts`.
+- **Impl PR synchronize webhook re-dispatch:** GitHub `pull_request` `synchronize` events on `helm/impl/<id>` branches schedule `reviewer-fanout` when the item is in `code-review` (skips silently when a job is already running or the stage differs). Ignores pushes from `helm-bot` so remediation commits do not retrigger the loop. New `pull_request_synchronized` normalized event (includes `senderLogin`); shared `scheduleItemDispatch` helper in `apps/api/src/services/dispatch-scheduler.ts`.
+
+### Fixed
+
+- **Remediation recovery error reporting:** when remediation fails and the recovery transition back to `code-review` also fails, the loop error now includes `(remediation-recovery also failed)` (consistent with the post-success transition path).
 
 - **Haystack external review adapter (ADR-036, #53):** replaces the `not_implemented` stub in `runExternalReviewIfConfigured` with `HaystackExternalReviewAdapter`, wrapping `haystack triage --json` (poll-retry on transient `status` values) and optional `haystack pr-status --json`. Ports blocking vs advisory category rules from `haystack-reviewer.sh` (`Logic error`/`Critical` blocking; `Major` advisory unless `major_is_blocking: true`; `Rules violation` and other style categories advisory; unknown categories safe-fail to blocking). Normalized findings use stable ledger ids — provider-native id when present, else canonical `(path, category, line)` signature, never summary-hash. Returns `clean` | `needs_fixes` | `escalate` (`pending_timeout`/`timeout`) | `skipped`. Respects `review.external.haystack` config from product.yaml. Unit tests use fixture JSON under `packages/orchestrator/src/external-review/haystack/__fixtures__/`.
 

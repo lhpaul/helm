@@ -110,7 +110,23 @@ describe('parseGitHubWebhook', () => {
       expect(result).toEqual({
         type: 'pull_request_synchronized',
         headRef: 'helm/impl/LEA-192',
+        senderLogin: null,
         timestamp: expect.any(String),
+      });
+    });
+
+    it('pull_request action:synchronize includes senderLogin when sender is present', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'synchronize',
+          pull_request: { merged: false, head: { ref: 'helm/impl/LEA-192' } },
+          sender: { login: 'human-dev' },
+        }),
+      );
+      expect(result).toMatchObject({
+        type: 'pull_request_synchronized',
+        headRef: 'helm/impl/LEA-192',
+        senderLogin: 'human-dev',
       });
     });
 
@@ -124,6 +140,7 @@ describe('parseGitHubWebhook', () => {
       expect(result).toMatchObject({
         type: 'pull_request_synchronized',
         headRef: 'feature/foo',
+        senderLogin: null,
       });
     });
 

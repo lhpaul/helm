@@ -62,7 +62,13 @@ export type NormalizedEvent =
    * New commits were pushed to an open pull request (action: synchronize).
    * headRef is the PR source branch (e.g. `helm/impl/LEA-192`).
    */
-  | { type: 'pull_request_synchronized'; headRef: string; timestamp: string }
+  | {
+      type: 'pull_request_synchronized';
+      headRef: string;
+      /** GitHub `sender.login` when present — used to ignore orchestrator bot pushes. */
+      senderLogin: string | null;
+      timestamp: string;
+    }
   /**
    * A GitHub release was published (release event, action: 'published').
    * Repo-level and tracker-agnostic — like pull_request_merged, the webhook

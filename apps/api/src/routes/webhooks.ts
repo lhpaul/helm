@@ -38,6 +38,13 @@ const ARTIFACT_TRIGGERED_BY_MAP: Record<ArtifactBranchKind, string> = {
   impl: 'webhook:code-repo',
 };
 
+/** GitHub logins that push via Helm orchestration — ignore their PR synchronize webhooks. */
+const ORCHESTRATOR_SENDER_LOGINS = new Set(['helm-bot']);
+
+function isOrchestratorSender(login: string | null): boolean {
+  return login !== null && ORCHESTRATOR_SENDER_LOGINS.has(login);
+}
+
 export const webhooksRouter = new Hono();
 
 webhooksRouter.post('/webhooks/github', async (c) => {
@@ -157,30 +164,36 @@ webhooksRouter.post('/webhooks/github', async (c) => {
   } else if (event.type === 'comment_added') {
     console.info(`[webhooks/github] comment_added on ${event.externalId} — no action in v0`);
   } else if (event.type === 'pull_request_synchronized') {
-    const parsed = parseArtifactBranch(event.headRef);
-    if (parsed?.kind === 'impl') {
-      try {
-        const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
-        const item = await itemStore.get(parsed.externalId);
-        if (item?.currentStage === 'code-review') {
-          const outcome = await scheduleItemDispatch({
-            productSlug: config.product.slug,
-            externalId: parsed.externalId,
-            triggeredBy: 'webhook:impl-pr-sync',
-          });
-          if (!outcome.scheduled) {
+    if (isOrchestratorSender(event.senderLogin)) {
+      console.info(
+        `[webhooks/github] impl PR sync ignored — orchestrator sender '${event.senderLogin}'`,
+      );
+    } else {
+      const parsed = parseArtifactBranch(event.headRef);
+      if (parsed?.kind === 'impl') {
+        try {
+          const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
+          const item = await itemStore.get(parsed.externalId);
+          if (item?.currentStage === 'code-review') {
+            const outcome = await scheduleItemDispatch({
+              productSlug: config.product.slug,
+              externalId: parsed.externalId,
+              triggeredBy: 'webhook:impl-pr-sync',
+            });
+            if (!outcome.scheduled) {
+              console.info(
+                `[webhooks/github] impl PR sync for ${parsed.externalId} — dispatch skipped: ${outcome.reason}`,
+              );
+            }
+          } else {
             console.info(
-              `[webhooks/github] impl PR sync for ${parsed.externalId} — dispatch skipped: ${outcome.reason}`,
+              `[webhooks/github] impl PR sync for ${parsed.externalId} ignored — stage '${item?.currentStage ?? 'missing'}' (expected code-review)`,
             );
           }
-        } else {
-          console.info(
-            `[webhooks/github] impl PR sync for ${parsed.externalId} ignored — stage '${item?.currentStage ?? 'missing'}' (expected code-review)`,
-          );
+        } catch (err) {
+          console.error('[webhooks/github] Failed to schedule impl PR sync dispatch:', err);
+          return c.json({ error: 'Internal server error' }, 500);
         }
-      } catch (err) {
-        console.error('[webhooks/github] Failed to schedule impl PR sync dispatch:', err);
-        return c.json({ error: 'Internal server error' }, 500);
       }
     }
   } else if (event.type === 'pull_request_merged') {

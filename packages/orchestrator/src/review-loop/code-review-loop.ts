@@ -553,12 +553,16 @@ async function runRemediationPass(input: {
         input.externalId,
         input.transition,
       );
+      const baseError = remediationResult.error ?? 'Remediation failed';
       return {
         status: 'error',
         totalCost,
         maxDuration,
         newStage,
-        error: remediationResult.error,
+        error:
+          newStage === 'remediation'
+            ? `${baseError} (remediation-recovery also failed)`
+            : baseError,
       };
     }
 

@@ -278,6 +278,32 @@ describe('runCodeReviewLoop', () => {
     );
   });
 
+  it('returns augmented error when remediation fails and recovery transition fails', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(handleRemediationResult).mockResolvedValueOnce({
+      status: 'error',
+      costUsd: 0.02,
+      durationMs: 200,
+      commentPosted: false,
+      pushed: false,
+      error: 'push failed',
+    });
+    transition
+      .mockResolvedValueOnce({ currentStage: 'remediation' })
+      .mockRejectedValueOnce(new Error('recovery failed'));
+
+    const result = await runLoop();
+
+    expect(result).toMatchObject({
+      status: 'error',
+      cyclesCompleted: 1,
+      newStage: 'remediation',
+    });
+    expect(result.error).toContain('push failed');
+    expect(result.error).toContain('remediation-recovery also failed');
+  });
+
   it('returns error when reviewer workspace provisioning fails', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());

@@ -32,6 +32,7 @@ const PullRequestWebhookSchema = z.object({
     merged: z.boolean(),
     head: z.object({ ref: z.string() }),
   }),
+  sender: z.object({ login: z.string() }).optional(),
 });
 
 // No .strict() — GitHub adds fields to release objects without notice.
@@ -98,7 +99,12 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
         return { type: 'pull_request_merged', headRef: pr.head.ref, timestamp };
       }
       if (action === 'synchronize') {
-        return { type: 'pull_request_synchronized', headRef: pr.head.ref, timestamp };
+        return {
+          type: 'pull_request_synchronized',
+          headRef: pr.head.ref,
+          senderLogin: parsed.data.sender?.login ?? null,
+          timestamp,
+        };
       }
       return { type: 'unknown', raw: rawEvent };
     }

@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { GitHubNotFoundError, LinearNotFoundError } from '@helm/adapters';
 import { dispatchStageHandler, resolveSpecialistId } from '@helm/orchestrator';
 import type { Product } from '@helm/shared';
 import { createRuntimeForProduct } from './runtime-factory.js';
@@ -39,8 +40,11 @@ export async function runDispatchJob(
         if (!trackerItem) return null;
         return { title: trackerItem.title, body: trackerItem.body };
       } catch (err) {
+        if (err instanceof GitHubNotFoundError || err instanceof LinearNotFoundError) {
+          return null;
+        }
         console.error(`[dispatch] fetchTask failed for externalId=${taskExternalId}:`, err);
-        return null;
+        throw err;
       }
     };
 
@@ -144,6 +148,11 @@ export async function scheduleItemDispatch(input: {
     specialistId: input.specialistId,
     feedback: undefined,
     githubToken: process.env.GITHUB_TOKEN?.trim(),
+  }).catch((err) => {
+    console.error(
+      `[dispatch-scheduler] runDispatchJob failed for ${input.productSlug}/${input.externalId}:`,
+      err,
+    );
   });
 
   return { scheduled: true, jobId: outcome.job.jobId };

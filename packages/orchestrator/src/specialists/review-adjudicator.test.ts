@@ -48,6 +48,25 @@ describe('buildReviewAdjudicatorParams', () => {
     expect(params.permissionMode).toBe('default');
   });
 
+  it('does not duplicate external blockers when they are embedded in code findings', () => {
+    const externalBody = '- **HIGH**: Missing guard';
+    const findings = new Map([
+      ['code', ['## External review blockers', '', externalBody].join('\n')] as const,
+    ]);
+
+    const params = buildReviewAdjudicatorParams(
+      'LEA-192',
+      product,
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      findings,
+    );
+
+    const matches = params.prompt.match(/## External review blockers/g) ?? [];
+    expect(matches).toHaveLength(1);
+    expect(params.prompt).toContain(externalBody);
+  });
+
   it('throws when review-adjudicator is not configured', () => {
     const { 'review-adjudicator': _reviewAdjudicator, ...specialists } = product.specialists;
     void _reviewAdjudicator;

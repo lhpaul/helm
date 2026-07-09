@@ -557,10 +557,7 @@ async function runAdjudicationPass(input: {
       workspacePath,
       input.prUrl,
       findingsByKind,
-      {
-        externalFindingsBody: input.externalFindingsBody,
-        spec,
-      },
+      { spec },
     );
     const session = await input.runtime.spawn(params);
     const agentResult = await session.wait();
@@ -602,11 +599,12 @@ async function runAdjudicationPass(input: {
       unifiedPlan: adjudicationResult.parsed.unifiedPlan,
     };
   } catch (err) {
+    console.error('[code-review-loop] Review adjudication failed:', err);
     return {
       status: 'error',
       totalCost: input.totalCost,
       maxDuration: input.maxDuration,
-      error: `Review adjudication failed: ${err instanceof Error ? err.message : String(err)}`,
+      error: 'Review adjudication failed',
     };
   } finally {
     if (workspacePath) {

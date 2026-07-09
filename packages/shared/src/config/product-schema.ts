@@ -215,7 +215,20 @@ export const ProductSchema = z
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    if (
+      data.review?.loop?.adjudication?.enabled === true &&
+      !data.specialists['review-adjudicator']
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['review', 'loop', 'adjudication', 'enabled'],
+        message:
+          'review-adjudicator specialist must be configured when loop adjudication is enabled',
+      });
+    }
+  });
 
 // ── Exported types ────────────────────────────────────────────────────────────
 

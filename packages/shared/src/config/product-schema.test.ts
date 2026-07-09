@@ -393,6 +393,24 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     }
   });
 
+  it('rejects adjudication enabled without review-adjudicator specialist', () => {
+    const result = ProductSchema.safeParse(
+      withReview({ loop: { adjudication: { enabled: true } } }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts adjudication enabled when review-adjudicator is configured', () => {
+    const result = ProductSchema.safeParse({
+      ...makeRawProduct({
+        ...KEBAB_SPECIALISTS,
+        'review-adjudicator': { runtime: 'claude_code', model: 'claude-sonnet-4-6' },
+      }),
+      review: { loop: { adjudication: { enabled: true } } },
+    });
+    expect(result.success).toBe(true);
+  });
+
   it('rejects unknown external providers', () => {
     const result = ProductSchema.safeParse(withReview({ external: { provider: 'coderabbit' } }));
     expect(result.success).toBe(false);

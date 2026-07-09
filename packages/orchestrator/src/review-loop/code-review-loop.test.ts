@@ -71,7 +71,10 @@ vi.mock('./summary.js', () => ({
 
 import { fanoutReviewers, shouldRemediate } from '../specialists/reviewer-fanout.js';
 import { buildRemediationParams, handleRemediationResult } from '../specialists/remediation.js';
-import { handleReviewAdjudicatorResult } from '../specialists/review-adjudicator.js';
+import {
+  buildReviewAdjudicatorParams,
+  handleReviewAdjudicatorResult,
+} from '../specialists/review-adjudicator.js';
 import { provisionReviewerWorkspace } from '../specialists/code-workspace.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
 import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
@@ -606,6 +609,53 @@ describe('runCodeReviewLoop', () => {
     });
     expect(buildRemediationParams).not.toHaveBeenCalled();
     expect(postPRComment).toHaveBeenCalled();
+  });
+
+  it('passes unified adjudication plan to code-remediator on AUTO_REMEDIATE (ADR-037)', async () => {
+    const product: Product = {
+      ...baseProduct,
+      specialists: {
+        ...baseProduct.specialists,
+        'review-adjudicator': { runtime: 'claude_code', model: 'm' },
+      },
+    };
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+    vi.mocked(buildReviewAdjudicatorParams).mockReturnValue({
+      specialistId: 'review-adjudicator',
+      prompt: 'adjudicate',
+      workdir: '/tmp/ws',
+      productSlug: 'test',
+      externalId: 'issue_1',
+      permissionMode: 'default',
+      timeoutMs: 1000,
+    });
+    vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+      status: 'done',
+      costUsd: 0.01,
+      durationMs: 100,
+      commentPosted: true,
+      parsed: {
+        status: 'AUTO_REMEDIATE',
+        unifiedPlan: '- **AUTO** · Add CSRF guard on POST /api/sync',
+        body: '# Review Adjudication\n\n## Status\nAUTO_REMEDIATE',
+        conflictsSection: '',
+      },
+    });
+
+    const result = await runLoop(product);
+
+    expect(result.status).toBe('done');
+    expect(buildRemediationParams).toHaveBeenCalledWith(
+      'issue_1',
+      product,
+      '/tmp/ws',
+      PR_URL,
+      expect.any(Map),
+      '- **AUTO** · Add CSRF guard on POST /api/sync',
+    );
   });
 });
 

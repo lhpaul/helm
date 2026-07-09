@@ -34,7 +34,7 @@ export function buildReviewAdjudicatorParams(
   workspacePath: string,
   prUrl: string,
   findingsByKind: Map<ReviewerKind, string>,
-  options: { externalFindingsBody?: string; spec?: string } = {},
+  options: { spec?: string } = {},
 ): SpawnParams {
   const specialistCfg = product.specialists['review-adjudicator'];
   if (!specialistCfg) {
@@ -50,10 +50,6 @@ export function buildReviewAdjudicatorParams(
       const label = kind.charAt(0).toUpperCase() + kind.slice(1);
       reviewSections.push('', `## ${label} Review`, '', body);
     }
-  }
-
-  if (options.externalFindingsBody) {
-    reviewSections.push('', '## External review blockers', '', options.externalFindingsBody);
   }
 
   const specSection = options.spec ? ['', '## Spec', '', options.spec, ''].join('\n') : '';
@@ -129,7 +125,11 @@ export async function handleReviewAdjudicatorResult(
   let body: string;
   try {
     body = await readFile(artifactFileFor(workspacePath, 'review-adjudicator'), 'utf-8');
-  } catch {
+  } catch (err) {
+    const code = err && typeof err === 'object' && 'code' in err ? err.code : undefined;
+    if (code !== 'ENOENT') {
+      throw err;
+    }
     body = [
       `# Review Adjudication: ${externalId}`,
       '',

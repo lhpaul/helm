@@ -1,13 +1,17 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { readGitHubTokenFromEnv } from './github-token.js';
 
 describe('readGitHubTokenFromEnv', () => {
-  const saved = process.env.GITHUB_TOKEN;
+  let savedToken: string | undefined;
+
+  beforeEach(() => {
+    savedToken = process.env.GITHUB_TOKEN;
+  });
 
   afterEach(() => {
-    if (saved === undefined) delete process.env.GITHUB_TOKEN;
-    else process.env.GITHUB_TOKEN = saved;
+    if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = savedToken;
   });
 
   it('returns undefined when GITHUB_TOKEN is unset', () => {

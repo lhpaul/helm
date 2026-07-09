@@ -51,6 +51,21 @@ AUTO_REMEDIATE — aligned reviewers, no open conflicts
     });
   });
 
+  it('extracts unified plan sections containing the letter Z without truncating', () => {
+    const body = `# Review Adjudication: LEA-192
+
+## Unified remediation plan
+- **AUTO** · Normalize timezone offsets (UTC+0) for zero-balance vouchers
+
+## Status
+AUTO_REMEDIATE`;
+
+    expect(parseAdjudicationBody(body)).toMatchObject({
+      status: 'AUTO_REMEDIATE',
+      unifiedPlan: '- **AUTO** · Normalize timezone offsets (UTC+0) for zero-balance vouchers',
+    });
+  });
+
   it('defaults to HUMAN_REQUIRED when status is missing', () => {
     expect(
       parseAdjudicationBody('# Review Adjudication: X\n\n## Summary\nIncomplete'),

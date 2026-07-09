@@ -1,17 +1,20 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { GitHubNotFoundError, LinearNotFoundError } from '@helm/adapters';
 
-const { mockGetItem, mockGetIssueTrackerAdapter, mockUpdateJob } = vi.hoisted(() => ({
-  mockGetItem: vi.fn(),
-  mockGetIssueTrackerAdapter: vi.fn(),
-  mockUpdateJob: vi.fn(),
-}));
+const { mockGetItem, mockGetIssueTrackerAdapter, mockUpdateJob, mockCreateJobIfNoRunning } =
+  vi.hoisted(() => ({
+    mockGetItem: vi.fn(),
+    mockGetIssueTrackerAdapter: vi.fn(),
+    mockUpdateJob: vi.fn(),
+    mockCreateJobIfNoRunning: vi.fn(),
+  }));
 
 vi.mock('./index.js', () => ({
   getIssueTrackerAdapter: (...args: unknown[]) => mockGetIssueTrackerAdapter(...args),
-  getJobStore: vi
-    .fn()
-    .mockResolvedValue({ updateJob: mockUpdateJob, createJobIfNoRunning: vi.fn() }),
+  getJobStore: vi.fn().mockResolvedValue({
+    updateJob: mockUpdateJob,
+    createJobIfNoRunning: mockCreateJobIfNoRunning,
+  }),
   getProductRegistry: vi.fn(),
   getItemStore: vi.fn(),
 }));
@@ -109,6 +112,62 @@ describe('runDispatchJob fetchTask', () => {
   });
 });
 
+describe('runDispatchJob lifecycle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetIssueTrackerAdapter.mockResolvedValue({ getItem: mockGetItem });
+  });
+
+  it('records a done job when dispatchStageHandler succeeds', async () => {
+    vi.mocked(dispatchStageHandler).mockResolvedValue({
+      status: 'done',
+      prUrl: 'https://x/pull/1',
+    } as never);
+
+    await runDispatchJob({ jobId: 'job-1' } as never, {
+      product: { product: { slug: 'test' } } as never,
+      item: { externalId: 'LEA-1', productSlug: 'test', currentStage: 'code-review' } as never,
+      workdir: '/tmp/ws',
+      dataRoot: '/tmp/data',
+      specialistId: undefined,
+      feedback: undefined,
+      githubToken: undefined,
+    });
+
+    expect(mockUpdateJob).toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({
+        status: 'done',
+        result: expect.objectContaining({ status: 'done' }),
+        finishedAt: expect.any(String),
+      }),
+    );
+  });
+
+  it('records an error job when dispatchStageHandler throws', async () => {
+    vi.mocked(dispatchStageHandler).mockRejectedValue(new Error('dispatch failed'));
+
+    await runDispatchJob({ jobId: 'job-1' } as never, {
+      product: { product: { slug: 'test' } } as never,
+      item: { externalId: 'LEA-1', productSlug: 'test', currentStage: 'code-review' } as never,
+      workdir: '/tmp/ws',
+      dataRoot: '/tmp/data',
+      specialistId: undefined,
+      feedback: undefined,
+      githubToken: undefined,
+    });
+
+    expect(mockUpdateJob).toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({
+        status: 'error',
+        error: 'dispatch failed',
+        finishedAt: expect.any(String),
+      }),
+    );
+  });
+});
+
 describe('scheduleItemDispatch', () => {
   beforeEach(() => {
     vi.mocked(resolveSpecialistId).mockReturnValue('reviewer-fanout');
@@ -159,6 +218,31 @@ describe('scheduleItemDispatch', () => {
     ).resolves.toEqual({
       scheduled: false,
       reason: 'No specialist mapped for the current stage',
+    });
+  });
+
+  it('schedules a dispatch job when preconditions are met', async () => {
+    vi.mocked(getProductRegistry).mockResolvedValue([baseProduct]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'code-review',
+      }),
+    } as never);
+    mockCreateJobIfNoRunning.mockResolvedValue({ job: { jobId: 'job-99' } });
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+
+    await expect(
+      scheduleItemDispatch({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        triggeredBy: 'test',
+      }),
+    ).resolves.toEqual({ scheduled: true, jobId: 'job-99' });
+
+    await vi.waitFor(() => {
+      expect(mockUpdateJob).toHaveBeenCalled();
     });
   });
 });

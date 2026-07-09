@@ -297,6 +297,51 @@ describe('runCodeReviewLoop', () => {
     );
   });
 
+  it('succeeds when remediation succeeds on retry without redundant code-review transition', async () => {
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+    vi.mocked(handleRemediationResult)
+      .mockResolvedValueOnce({
+        status: 'error',
+        costUsd: 0.02,
+        durationMs: 200,
+        commentPosted: false,
+        pushed: false,
+        error: 'push failed',
+      })
+      .mockResolvedValueOnce({
+        status: 'done',
+        costUsd: 0.02,
+        durationMs: 200,
+        commentPosted: true,
+        pushed: true,
+        commitSha: 'sha789',
+      });
+    transition.mockImplementation(async (input) => {
+      if (input.toStage === 'code-review' && input.triggeredBy === 'specialist:remediation') {
+        throw new Error('self-transition not allowed');
+      }
+      return { currentStage: input.toStage };
+    });
+
+    const result = await runLoop();
+
+    expect(result.status).toBe('done');
+    expect(transition).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        toStage: 'code-review',
+        triggeredBy: 'specialist:remediation',
+      }),
+    );
+    expect(transition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        triggeredBy: 'specialist:remediation-recovery',
+      }),
+    );
+  });
+
   it('returns augmented error when remediation fails and recovery transition fails', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());

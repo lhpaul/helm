@@ -5,6 +5,7 @@ import type { Product } from '@helm/shared';
 import { createRuntimeForProduct } from './runtime-factory.js';
 import { transitionItem } from './item-service.js';
 import { getIssueTrackerAdapter, getJobStore, getProductRegistry, getItemStore } from './index.js';
+import { readGitHubTokenFromEnv } from '../lib/github-token.js';
 import type { Job } from './job-store.js';
 import type { ItemState } from './types.js';
 
@@ -152,7 +153,7 @@ export async function scheduleItemDispatch(input: {
     dataRoot,
     specialistId: input.specialistId,
     feedback: undefined,
-    githubToken: process.env.GITHUB_TOKEN?.trim(),
+    githubToken: readGitHubTokenFromEnv(),
   }).catch((err) => {
     logErrorMessage('dispatch-scheduler runDispatchJob', err);
   });

@@ -33,7 +33,6 @@ import {
   type HaystackSkipEvidence,
 } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
-import type { FetchFn } from '../specialists/fetch-product-context.js';
 import { resolveReviewLoopConfig, type ReviewLoopConfig } from './config.js';
 import { formatReviewLoopEscalationComment } from './escalation-comment.js';
 import { evaluateExternalReviewStopRule } from './external-stop-rule.js';
@@ -808,6 +807,7 @@ async function runRemediationPass(input: {
     );
 
     let remediationResult: RemediationResult | undefined;
+    let returnedToCodeReviewDuringRetry = false;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const session = await input.runtime.spawn(params);
       const agentResult = await session.wait();
@@ -831,7 +831,11 @@ async function runRemediationPass(input: {
       }
 
       if (attempt === 0) {
-        await recoverToCodeReviewAfterRemediationFailure(input.externalId, input.transition);
+        const recoveredStage = await recoverToCodeReviewAfterRemediationFailure(
+          input.externalId,
+          input.transition,
+        );
+        returnedToCodeReviewDuringRetry = recoveredStage === 'code-review';
         continue;
       }
     }
@@ -854,28 +858,30 @@ async function runRemediationPass(input: {
       };
     }
 
-    try {
-      await input.transition({
-        externalId: input.externalId,
-        toStage: 'code-review',
-        triggeredBy: 'specialist:remediation',
-      });
-    } catch (err) {
-      const newStage = await recoverToCodeReviewAfterRemediationFailure(
-        input.externalId,
-        input.transition,
-      );
-      const baseError = `Failed to transition back to code-review: ${err instanceof Error ? err.message : String(err)}`;
-      return {
-        status: 'error',
-        totalCost,
-        maxDuration,
-        newStage,
-        error:
-          newStage === 'remediation'
-            ? `${baseError} (remediation-recovery also failed)`
-            : baseError,
-      };
+    if (!returnedToCodeReviewDuringRetry) {
+      try {
+        await input.transition({
+          externalId: input.externalId,
+          toStage: 'code-review',
+          triggeredBy: 'specialist:remediation',
+        });
+      } catch (err) {
+        const newStage = await recoverToCodeReviewAfterRemediationFailure(
+          input.externalId,
+          input.transition,
+        );
+        const baseError = `Failed to transition back to code-review: ${err instanceof Error ? err.message : String(err)}`;
+        return {
+          status: 'error',
+          totalCost,
+          maxDuration,
+          newStage,
+          error:
+            newStage === 'remediation'
+              ? `${baseError} (remediation-recovery also failed)`
+              : baseError,
+        };
+      }
     }
 
     if (input.fanoutResult.status === 'error') {

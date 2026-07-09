@@ -61,7 +61,7 @@ export function parseAdjudicationBody(body: string): ParsedAdjudication {
 }
 
 function extractSection(body: string, heading: string): string {
-  const re = new RegExp(`^##\\s+${escapeRegExp(heading)}\\s*$\\n([\\s\\S]*?)(?=^##\\s+|\\Z)`, 'im');
+  const re = new RegExp(`^##\\s+${escapeRegExp(heading)}\\s*$\\n([\\s\\S]*?)(?=^##\\s+|$)`, 'im');
   const match = body.match(re);
   return match?.[1]?.trim() ?? '';
 }

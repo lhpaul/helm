@@ -99,7 +99,7 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   const gateMode = product.workflow.readiness_gate;
   const resolvedSpecialist = resolveSpecialistId(item.currentStage, bodyResult.data.specialistId);
   if (gateMode !== 'skip' && resolvedSpecialist === 'spec-writer') {
-    const githubToken = process.env.GITHUB_TOKEN?.trim();
+    const githubToken = readGitHubTokenFromEnv();
     try {
       const readiness = await checkProductReadiness(product, githubToken);
       if (!readiness.ready) {
@@ -156,7 +156,7 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
     item,
     workdir,
     dataRoot,
-    specialistId: bodyResult.data.specialistId,
+    specialistId: resolvedSpecialist,
     feedback: bodyResult.data.feedback,
     githubToken: readGitHubTokenFromEnv(),
   });

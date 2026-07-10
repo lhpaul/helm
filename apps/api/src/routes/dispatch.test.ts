@@ -261,6 +261,28 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     }
   });
 
+  it('passes trimmed GitHub token and resolved specialist to runDispatchJob', async () => {
+    process.env.GITHUB_TOKEN = '  test-token-with-whitespace  ';
+    const runDispatchJobSpy = vi
+      .spyOn(dispatchScheduler, 'runDispatchJob')
+      .mockResolvedValue(undefined);
+
+    try {
+      const res = await dispatch('test-product', 'issue_1');
+      expect(res.status).toBe(202);
+
+      const ctxArg = runDispatchJobSpy.mock.calls[0]![1] as {
+        githubToken?: string;
+        specialistId?: string;
+      };
+      expect(ctxArg.githubToken).toBe('test-token-with-whitespace');
+      expect(ctxArg.specialistId).toBe('spec-writer');
+    } finally {
+      runDispatchJobSpy.mockRestore();
+      delete process.env.GITHUB_TOKEN;
+    }
+  });
+
   it('runs the dispatch job in background and calls store.transition', async () => {
     const res = await dispatch('test-product', 'issue_1');
     expect(res.status).toBe(202);

@@ -170,6 +170,9 @@ describe('runDispatchJob lifecycle', () => {
 
 describe('scheduleItemDispatch', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetIssueTrackerAdapter.mockResolvedValue({ getItem: mockGetItem });
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
     vi.mocked(resolveSpecialistId).mockReturnValue('reviewer-fanout');
   });
 
@@ -244,6 +247,33 @@ describe('scheduleItemDispatch', () => {
     await vi.waitFor(() => {
       expect(mockUpdateJob).toHaveBeenCalled();
     });
+  });
+
+  it('passes the resolved specialist to runDispatchJob when specialistId is omitted', async () => {
+    vi.mocked(getProductRegistry).mockResolvedValue([baseProduct]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'code-review',
+      }),
+    } as never);
+    mockCreateJobIfNoRunning.mockResolvedValue({ job: { jobId: 'job-99' } });
+
+    await scheduleItemDispatch({
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      triggeredBy: 'test',
+    });
+
+    await vi.waitFor(() => {
+      expect(dispatchStageHandler).toHaveBeenCalled();
+    });
+
+    const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+      specialistId?: string;
+    };
+    expect(options.specialistId).toBe('reviewer-fanout');
   });
 
   it('returns conflict when a dispatch job is already running', async () => {

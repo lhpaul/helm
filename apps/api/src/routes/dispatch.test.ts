@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MockAgentRuntime } from '@helm/orchestrator';
 import { app } from '../app.js';
 import { _resetForTests } from '../services/index.js';
+import * as dispatchScheduler from '../services/dispatch-scheduler.js';
 import type { Product } from '@helm/shared';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -231,6 +232,33 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
       },
       { timeout: 5000 },
     );
+  });
+
+  it('enqueues runDispatchJob in the background when returning 202', async () => {
+    const runDispatchJobSpy = vi
+      .spyOn(dispatchScheduler, 'runDispatchJob')
+      .mockResolvedValue(undefined);
+
+    try {
+      const res = await dispatch('test-product', 'issue_1');
+      expect(res.status).toBe(202);
+      const body = (await res.json()) as { jobId: string; status: string };
+      expect(body.status).toBe('running');
+
+      expect(runDispatchJobSpy).toHaveBeenCalledTimes(1);
+      const [jobArg, ctxArg] = runDispatchJobSpy.mock.calls[0]!;
+      expect(jobArg).toMatchObject({ jobId: body.jobId, status: 'running' });
+      expect(ctxArg).toMatchObject({
+        item: { externalId: 'issue_1', productSlug: 'test-product' },
+      });
+
+      const { getJobStore } = await import('../services/index.js');
+      const jobStore = await getJobStore();
+      const job = await jobStore.getJob(body.jobId);
+      expect(job?.status).toBe('running');
+    } finally {
+      runDispatchJobSpy.mockRestore();
+    }
   });
 
   it('runs the dispatch job in background and calls store.transition', async () => {

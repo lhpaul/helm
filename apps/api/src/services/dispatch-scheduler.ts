@@ -9,9 +9,13 @@ import { readGitHubTokenFromEnv } from '../lib/github-token.js';
 import type { Job } from './job-store.js';
 import type { ItemState } from './types.js';
 
-function logErrorMessage(scope: string, err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
-  console.error(`[${scope}] ${message}`);
+function logErrorMetadata(scope: string, err: unknown): void {
+  const name = err instanceof Error ? err.name : 'Error';
+  const code =
+    err !== null && typeof err === 'object' && 'code' in err
+      ? String((err as NodeJS.ErrnoException).code)
+      : 'none';
+  console.error(`[${scope}] errorType=${name} errorCode=${code}`);
 }
 
 export type ScheduleItemDispatchResult =
@@ -49,7 +53,7 @@ export async function runDispatchJob(
         if (err instanceof GitHubNotFoundError || err instanceof LinearNotFoundError) {
           return null;
         }
-        logErrorMessage('dispatch fetchTask', err);
+        logErrorMetadata('dispatch fetchTask', err);
         throw err;
       }
     };
@@ -89,7 +93,7 @@ export async function runDispatchJob(
         finishedAt: now,
       });
     } catch (updateErr) {
-      logErrorMessage('dispatch job update', updateErr);
+      logErrorMetadata('dispatch job update', updateErr);
     }
   }
 }
@@ -151,11 +155,11 @@ export async function scheduleItemDispatch(input: {
     item,
     workdir,
     dataRoot,
-    specialistId: input.specialistId,
+    specialistId: resolvedSpecialist,
     feedback: undefined,
     githubToken: readGitHubTokenFromEnv(),
   }).catch((err) => {
-    logErrorMessage('dispatch-scheduler runDispatchJob', err);
+    logErrorMetadata('dispatch-scheduler runDispatchJob', err);
   });
 
   return { scheduled: true, jobId: outcome.job.jobId };

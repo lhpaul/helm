@@ -20,7 +20,7 @@ function logErrorMetadata(scope: string, err: unknown): void {
 
 export type ScheduleItemDispatchResult =
   | { scheduled: true; jobId: string }
-  | { scheduled: false; reason: string; runningJobId?: string };
+  | { scheduled: false; reason: string };
 
 /**
  * Runs a dispatch job asynchronously. Must never throw — a job must never stay
@@ -139,10 +139,12 @@ export async function scheduleItemDispatch(input: {
     specialistId: input.specialistId ?? 'auto',
   });
   if ('conflict' in outcome) {
+    console.info(
+      `[dispatch-scheduler] dispatch skipped — job already running (${outcome.runningJobId})`,
+    );
     return {
       scheduled: false,
       reason: 'A dispatch job is already running for this item',
-      runningJobId: outcome.runningJobId,
     };
   }
 

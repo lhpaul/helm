@@ -299,7 +299,6 @@ describe('scheduleItemDispatch', () => {
     ).resolves.toEqual({
       scheduled: false,
       reason: 'A dispatch job is already running for this item',
-      runningJobId: 'job-running',
     });
   });
 });

@@ -5,6 +5,7 @@ import { checkProductReadiness, resolveSpecialistId } from '@helm/orchestrator';
 import { getProductRegistry, getItemStore, getJobStore } from '../services/index.js';
 import { runDispatchJob } from '../services/dispatch-scheduler.js';
 import { validateExternalId } from '../lib/http-errors.js';
+import { readGitHubTokenFromEnv } from '../lib/github-token.js';
 
 export const dispatchRouter = new Hono();
 
@@ -157,7 +158,7 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
     dataRoot,
     specialistId: bodyResult.data.specialistId,
     feedback: bodyResult.data.feedback,
-    githubToken: process.env.GITHUB_TOKEN?.trim(),
+    githubToken: readGitHubTokenFromEnv(),
   });
 
   return c.json({ jobId: job.jobId, status: 'running' }, 202);

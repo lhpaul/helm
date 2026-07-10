@@ -1,10 +1,18 @@
 import type { ReviewerResult } from '../specialists/reviewer-fanout.js';
+import {
+  countGateFindings,
+  DEFAULT_REMEDIATE_SEVERITY,
+  type RemediateSeverity,
+} from './remediate-gate.js';
 
-/** Sum of CRITICAL + HIGH findings across reviewer results (ADR-036 stop-rule signal). */
-export function countBlockingFindings(results: ReviewerResult[]): number {
+/** Sum of gate-severity findings across reviewer results (ADR-036 stop-rule signal). */
+export function countBlockingFindings(
+  results: ReviewerResult[],
+  severity: RemediateSeverity = DEFAULT_REMEDIATE_SEVERITY,
+): number {
   return results.reduce((sum, r) => {
     if (!r.findings) return sum;
-    return sum + r.findings.critical + r.findings.high;
+    return sum + countGateFindings(r.findings, severity);
   }, 0);
 }
 

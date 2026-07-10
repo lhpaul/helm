@@ -280,11 +280,14 @@ export async function runCodeReviewLoop(
         };
       }
 
-      if (!shouldRemediate(fanoutResult.reviewerResults)) {
+      if (!shouldRemediate(fanoutResult.reviewerResults, loopConfig.remediateSeverity)) {
         break;
       }
 
-      const blockerCount = countBlockingFindings(fanoutResult.reviewerResults);
+      const blockerCount = countBlockingFindings(
+        fanoutResult.reviewerResults,
+        loopConfig.remediateSeverity,
+      );
       noProgressStreak = nextNoProgressStreak(bestBlockerCount, blockerCount, noProgressStreak);
       if (bestBlockerCount === null || blockerCount < bestBlockerCount) {
         bestBlockerCount = blockerCount;

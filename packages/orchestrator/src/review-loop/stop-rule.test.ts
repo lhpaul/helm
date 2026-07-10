@@ -45,6 +45,7 @@ describe('resolveReviewLoopConfig', () => {
       maxCycles: 5,
       noProgressCycles: 2,
       adjudicationEnabled: false,
+      remediateSeverity: 'critical_high',
     });
   });
 
@@ -78,6 +79,7 @@ describe('resolveReviewLoopConfig', () => {
       maxCycles: 3,
       noProgressCycles: 4,
       adjudicationEnabled: false,
+      remediateSeverity: 'critical_high',
     });
   });
 });

@@ -26,6 +26,7 @@ import { postPRComment } from './pr-helpers.js';
 import { sanitizeToken } from './git-helpers.js';
 import type { RunGit, RunGh } from './git-helpers.js';
 import { buildExtraHintsSection } from './extra-hints.js';
+import { resolveReviewLoopConfig } from '../review-loop/config.js';
 
 // ── Timeout ───────────────────────────────────────────────────────────────────
 
@@ -96,6 +97,9 @@ export function buildRemediationParams(
   }
 
   const hintsSection = buildExtraHintsSection(specialistCfg.extra_hints);
+  const remediateSeverity = resolveReviewLoopConfig(product).remediateSeverity;
+  const taskSeverityLabel =
+    remediateSeverity === 'medium_and_above' ? 'CRITICAL, HIGH, and MEDIUM' : 'CRITICAL and HIGH';
 
   // The remediator writes its summary to a SIBLING artifacts directory, OUTSIDE
   // the git clone (ADR-025), so it can never be staged onto the impl branch.
@@ -115,9 +119,11 @@ export function buildRemediationParams(
     ...reviewSections,
     '',
     ...(hintsSection ? [hintsSection] : []),
-    '**Your task — remediate CRITICAL and HIGH findings:**',
-    '- Apply mechanical, low-risk fixes to the files in the working directory that resolve the CRITICAL and HIGH findings.',
-    '- You MAY also address MEDIUM findings if the fix is mechanical and low-risk; the gate fired on CRITICAL/HIGH only.',
+    `**Your task — remediate ${taskSeverityLabel} findings:**`,
+    `- Apply mechanical, low-risk fixes to the files in the working directory that resolve the ${taskSeverityLabel} findings.`,
+    remediateSeverity === 'medium_and_above'
+      ? '- MEDIUM findings in the plan are in scope — do not defer them unless they require a product decision or ambiguous spec change.'
+      : '- You MAY also address MEDIUM findings if the fix is mechanical and low-risk; the gate fired on CRITICAL/HIGH only.',
     '- For findings that require design changes or human judgment (non-mechanical), DO NOT modify files. Document them as "deferred" in your summary so a human can decide.',
     '',
     '## Output',

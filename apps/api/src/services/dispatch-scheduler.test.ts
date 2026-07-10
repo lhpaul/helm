@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { GitHubNotFoundError, LinearNotFoundError } from '@helm/adapters';
 
 const { mockGetItem, mockGetIssueTrackerAdapter, mockUpdateJob, mockCreateJobIfNoRunning } =
@@ -171,9 +171,14 @@ describe('runDispatchJob lifecycle', () => {
 describe('scheduleItemDispatch', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.GITHUB_TOKEN = 'test-github-token';
     mockGetIssueTrackerAdapter.mockResolvedValue({ getItem: mockGetItem });
     vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
     vi.mocked(resolveSpecialistId).mockReturnValue('reviewer-fanout');
+  });
+
+  afterEach(() => {
+    delete process.env.GITHUB_TOKEN;
   });
 
   it('returns a generic reason when the product is missing', async () => {
@@ -185,7 +190,7 @@ describe('scheduleItemDispatch', () => {
         externalId: 'LEA-1',
         triggeredBy: 'test',
       }),
-    ).resolves.toEqual({ scheduled: false, reason: 'Product not found' });
+    ).resolves.toEqual({ scheduled: false, reason: 'Unable to schedule dispatch' });
   });
 
   it('returns a generic reason when the item is missing', async () => {
@@ -198,7 +203,7 @@ describe('scheduleItemDispatch', () => {
         externalId: 'LEA-1',
         triggeredBy: 'test',
       }),
-    ).resolves.toEqual({ scheduled: false, reason: 'Item not found' });
+    ).resolves.toEqual({ scheduled: false, reason: 'Unable to schedule dispatch' });
   });
 
   it('returns a generic reason when no specialist maps to the stage', async () => {
@@ -220,8 +225,33 @@ describe('scheduleItemDispatch', () => {
       }),
     ).resolves.toEqual({
       scheduled: false,
-      reason: 'No specialist mapped for the current stage',
+      reason: 'Unable to schedule dispatch',
     });
+  });
+
+  it('returns a generic reason when GITHUB_TOKEN is not configured', async () => {
+    delete process.env.GITHUB_TOKEN;
+    vi.mocked(getProductRegistry).mockResolvedValue([baseProduct]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'code-review',
+      }),
+    } as never);
+
+    await expect(
+      scheduleItemDispatch({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        triggeredBy: 'test',
+      }),
+    ).resolves.toEqual({
+      scheduled: false,
+      reason: 'Unable to schedule dispatch',
+    });
+
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
   });
 
   it('schedules a dispatch job when preconditions are met', async () => {
@@ -298,7 +328,7 @@ describe('scheduleItemDispatch', () => {
       }),
     ).resolves.toEqual({
       scheduled: false,
-      reason: 'A dispatch job is already running for this item',
+      reason: 'Unable to schedule dispatch',
     });
   });
 });

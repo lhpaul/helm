@@ -143,4 +143,43 @@ describe('handleReviewAdjudicatorResult', () => {
       ),
     ).rejects.toMatchObject({ code: 'EACCES' });
   });
+
+  it('redacts the GitHub token when postPRComment fails', async () => {
+    const githubToken = 'ghp_super_secret_token_value';
+    vi.mocked(readFile).mockResolvedValue(
+      [
+        '# Review Adjudication: LEA-192',
+        '',
+        '## Status',
+        'AUTO_REMEDIATE',
+        '',
+        '## Unified remediation plan',
+        'Apply the fix.',
+      ].join('\n'),
+    );
+    vi.mocked(postPRComment).mockRejectedValue(
+      new Error(`401 Bad credentials for token ${githubToken}`),
+    );
+
+    const result = await handleReviewAdjudicatorResult(
+      'LEA-192',
+      {
+        status: 'done',
+        totalCostUsd: 0,
+        durationMs: 1,
+        messages: [],
+      },
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      githubToken,
+    );
+
+    expect(result).toMatchObject({
+      status: 'error',
+      commentPosted: false,
+      parsed: { status: 'AUTO_REMEDIATE' },
+    });
+    expect(result.error).toContain('Failed to post adjudication comment');
+    expect(result.error).not.toContain(githubToken);
+  });
 });

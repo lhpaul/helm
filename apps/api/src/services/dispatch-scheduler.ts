@@ -9,6 +9,8 @@ import { readGitHubTokenFromEnv } from '../lib/github-token.js';
 import type { Job } from './job-store.js';
 import type { ItemState } from './types.js';
 
+const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
+
 function logErrorMetadata(scope: string, err: unknown): void {
   const name = err instanceof Error ? err.name : 'Error';
   const code =
@@ -111,21 +113,34 @@ export async function scheduleItemDispatch(input: {
   const products = await getProductRegistry();
   const product = products.find((p) => p.product.slug === input.productSlug);
   if (!product) {
-    return { scheduled: false, reason: 'Product not found' };
+    console.info(`[dispatch-scheduler] skip: product not found (${input.productSlug})`);
+    return { scheduled: false, reason: DISPATCH_UNAVAILABLE };
   }
 
   const store = await getItemStore();
   const item = await store.get(input.externalId);
   if (!item || item.productSlug !== input.productSlug) {
-    return { scheduled: false, reason: 'Item not found' };
+    console.info(
+      `[dispatch-scheduler] skip: item not found (${input.productSlug}/${input.externalId})`,
+    );
+    return { scheduled: false, reason: DISPATCH_UNAVAILABLE };
   }
 
   const resolvedSpecialist = resolveSpecialistId(item.currentStage, input.specialistId);
   if (!resolvedSpecialist) {
+    console.info(
+      `[dispatch-scheduler] skip: no specialist for stage '${item.currentStage}' (${input.productSlug}/${input.externalId})`,
+    );
     return {
       scheduled: false,
-      reason: 'No specialist mapped for the current stage',
+      reason: DISPATCH_UNAVAILABLE,
     };
+  }
+
+  const githubToken = readGitHubTokenFromEnv();
+  if (!githubToken) {
+    console.error('[dispatch-scheduler] GITHUB_TOKEN is not configured — dispatch skipped');
+    return { scheduled: false, reason: DISPATCH_UNAVAILABLE };
   }
 
   const envDataDir = process.env.HELM_DATA_DIR?.trim();
@@ -144,7 +159,7 @@ export async function scheduleItemDispatch(input: {
     );
     return {
       scheduled: false,
-      reason: 'A dispatch job is already running for this item',
+      reason: DISPATCH_UNAVAILABLE,
     };
   }
 
@@ -159,7 +174,7 @@ export async function scheduleItemDispatch(input: {
     dataRoot,
     specialistId: resolvedSpecialist,
     feedback: undefined,
-    githubToken: readGitHubTokenFromEnv(),
+    githubToken,
   }).catch((err) => {
     logErrorMetadata('dispatch-scheduler runDispatchJob', err);
   });

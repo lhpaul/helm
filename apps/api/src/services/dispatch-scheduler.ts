@@ -8,8 +8,13 @@ import { getIssueTrackerAdapter, getJobStore, getProductRegistry, getItemStore }
 import { readGitHubTokenFromEnv } from '../lib/github-token.js';
 import type { Job } from './job-store.js';
 import type { ItemState } from './types.js';
+import { EXTERNAL_ID_REGEX } from './types.js';
 
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
+
+function isSafeWorkdirSegment(value: string): boolean {
+  return EXTERNAL_ID_REGEX.test(value) && value !== '.' && value !== '..';
+}
 
 function logErrorMetadata(scope: string, err: unknown): void {
   const name = err instanceof Error ? err.name : 'Error';
@@ -110,6 +115,11 @@ export async function scheduleItemDispatch(input: {
   specialistId?: string;
   triggeredBy: string;
 }): Promise<ScheduleItemDispatchResult> {
+  if (!isSafeWorkdirSegment(input.externalId) || !isSafeWorkdirSegment(input.productSlug)) {
+    console.info('[dispatch-scheduler] skip: unsafe path segment in dispatch request');
+    return { scheduled: false, reason: DISPATCH_UNAVAILABLE };
+  }
+
   const products = await getProductRegistry();
   const product = products.find((p) => p.product.slug === input.productSlug);
   if (!product) {

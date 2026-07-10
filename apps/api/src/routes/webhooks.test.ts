@@ -502,7 +502,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
     });
 
-    it('returns mapped error when impl PR sync dispatch throws', async () => {
+    it('returns 200 when impl PR sync dispatch throws (avoids GitHub webhook retries)', async () => {
       const body = mergedPrPayload('helm/impl/LEA-192', { action: 'synchronize', merged: false });
       mockGet.mockResolvedValue({
         externalId: 'LEA-192',
@@ -513,9 +513,7 @@ describe('POST /api/webhooks/github', () => {
       mockScheduleItemDispatch.mockRejectedValue(new Error('scheduler unavailable'));
 
       const res = await post(body, 'pull_request');
-      expect(res.status).toBe(500);
-      const json = (await res.json()) as { error: string };
-      expect(json.error).toBe('Internal server error');
+      expect(res.status).toBe(200);
     });
 
     // ── Non-actionable PR actions ─────────────────────────────────────────────

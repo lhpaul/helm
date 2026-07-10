@@ -17,7 +17,6 @@ import {
 import { createItem, transitionItem } from '../services/item-service.js';
 import { scheduleItemDispatch } from '../services/dispatch-scheduler.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
-import { mapErrorToResponse } from '../lib/http-errors.js';
 
 // ── Artifact branch routing ───────────────────────────────────────────────────
 
@@ -196,8 +195,6 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             '[webhooks/github] Failed to schedule impl PR sync dispatch:',
             err instanceof Error ? err.message : String(err),
           );
-          const mapped = mapErrorToResponse(err);
-          return c.json(mapped.body, mapped.status);
         }
       }
     }

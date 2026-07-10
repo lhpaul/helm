@@ -229,6 +229,18 @@ describe('scheduleItemDispatch', () => {
     });
   });
 
+  it('returns a generic reason when path segments are unsafe', async () => {
+    await expect(
+      scheduleItemDispatch({
+        productSlug: '../escape',
+        externalId: 'LEA-1',
+        triggeredBy: 'test',
+      }),
+    ).resolves.toEqual({ scheduled: false, reason: 'Unable to schedule dispatch' });
+
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+  });
+
   it('returns a generic reason when GITHUB_TOKEN is not configured', async () => {
     delete process.env.GITHUB_TOKEN;
     vi.mocked(getProductRegistry).mockResolvedValue([baseProduct]);

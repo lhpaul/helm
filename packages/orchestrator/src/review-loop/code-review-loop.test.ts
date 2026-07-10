@@ -5,7 +5,11 @@ import type { Product } from '@helm/shared';
 import type { ItemTransitionFn } from '../specialists/spec-writer.js';
 import type { RunGit } from '../specialists/git-helpers.js';
 import { MockAgentRuntime } from '../runtimes/mock.js';
-import { runCodeReviewLoop, formatExternalBlockersForRemediation } from './code-review-loop.js';
+import {
+  runCodeReviewLoop,
+  formatExternalBlockersForRemediation,
+  buildFindingsByKind,
+} from './code-review-loop.js';
 
 vi.mock('../specialists/reviewer-fanout.js', () => ({
   fanoutReviewers: vi.fn(),
@@ -29,6 +33,13 @@ vi.mock('../specialists/remediation.js', () => ({
     pushed: true,
     commitSha: 'sha789',
   }),
+}));
+vi.mock('../specialists/review-adjudicator.js', () => ({
+  buildReviewAdjudicatorParams: vi.fn(),
+  handleReviewAdjudicatorResult: vi.fn(),
+}));
+vi.mock('../specialists/fetch-product-context.js', () => ({
+  fetchSpecForPlan: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('../specialists/code-workspace.js', () => ({
   provisionReviewerWorkspace: vi.fn().mockResolvedValue({ workspacePath: '/tmp/ws' }),
@@ -64,7 +75,12 @@ vi.mock('./summary.js', () => ({
 
 import { fanoutReviewers, shouldRemediate } from '../specialists/reviewer-fanout.js';
 import { buildRemediationParams, handleRemediationResult } from '../specialists/remediation.js';
+import {
+  buildReviewAdjudicatorParams,
+  handleReviewAdjudicatorResult,
+} from '../specialists/review-adjudicator.js';
 import { provisionReviewerWorkspace } from '../specialists/code-workspace.js';
+import { fetchSpecForPlan } from '../specialists/fetch-product-context.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
 import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
@@ -142,6 +158,14 @@ describe('runCodeReviewLoop', () => {
       reason: 'not_configured',
     });
     vi.mocked(fetchHaystackSkipEvidence).mockResolvedValue(null);
+    vi.mocked(handleRemediationResult).mockResolvedValue({
+      status: 'done',
+      costUsd: 0.02,
+      durationMs: 200,
+      commentPosted: true,
+      pushed: true,
+      commitSha: 'sha789',
+    });
   });
 
   afterEach(() => {
@@ -250,10 +274,10 @@ describe('runCodeReviewLoop', () => {
     expect(result.error).toContain('Failed to transition to remediation');
   });
 
-  it('returns error when remediation fails to push patches', async () => {
+  it('returns error when remediation fails to push patches and recovers to code-review', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
-    vi.mocked(handleRemediationResult).mockResolvedValueOnce({
+    vi.mocked(handleRemediationResult).mockResolvedValue({
       status: 'error',
       costUsd: 0.02,
       durationMs: 200,
@@ -267,9 +291,89 @@ describe('runCodeReviewLoop', () => {
     expect(result).toMatchObject({
       status: 'error',
       cyclesCompleted: 1,
-      newStage: 'remediation',
+      newStage: 'code-review',
       error: 'push failed',
     });
+    expect(transition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toStage: 'code-review',
+        triggeredBy: 'specialist:remediation-recovery',
+      }),
+    );
+  });
+
+  it('succeeds when remediation succeeds on retry without redundant code-review transition', async () => {
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+    vi.mocked(handleRemediationResult)
+      .mockResolvedValueOnce({
+        status: 'error',
+        costUsd: 0.02,
+        durationMs: 200,
+        commentPosted: false,
+        pushed: false,
+        error: 'push failed',
+      })
+      .mockResolvedValueOnce({
+        status: 'done',
+        costUsd: 0.02,
+        durationMs: 200,
+        commentPosted: true,
+        pushed: true,
+        commitSha: 'sha789',
+      });
+    transition.mockImplementation(async (input) => {
+      if (input.toStage === 'code-review' && input.triggeredBy === 'specialist:remediation') {
+        throw new Error('self-transition not allowed');
+      }
+      return { currentStage: input.toStage };
+    });
+
+    const result = await runLoop();
+
+    expect(result.status).toBe('done');
+    expect(transition).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        toStage: 'code-review',
+        triggeredBy: 'specialist:remediation',
+      }),
+    );
+    expect(transition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        triggeredBy: 'specialist:remediation-recovery',
+      }),
+    );
+  });
+
+  it('returns augmented error when remediation fails and recovery transition fails', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(handleRemediationResult).mockResolvedValue({
+      status: 'error',
+      costUsd: 0.02,
+      durationMs: 200,
+      commentPosted: false,
+      pushed: false,
+      error: 'push failed',
+    });
+    transition.mockImplementation(async (input) => {
+      if (input.triggeredBy === 'specialist:remediation-recovery') {
+        throw new Error('recovery failed');
+      }
+      return { currentStage: input.toStage };
+    });
+
+    const result = await runLoop();
+
+    expect(result).toMatchObject({
+      status: 'error',
+      cyclesCompleted: 1,
+      newStage: 'remediation',
+    });
+    expect(result.error).toContain('push failed');
+    expect(result.error).toContain('remediation-recovery also failed');
   });
 
   it('returns error when reviewer workspace provisioning fails', async () => {
@@ -292,9 +396,15 @@ describe('runCodeReviewLoop', () => {
   it('returns error when transition back to code-review fails after remediation', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
-    transition
-      .mockResolvedValueOnce({ currentStage: 'remediation' })
-      .mockRejectedValueOnce(new Error('back transition boom'));
+    transition.mockImplementation(async (input) => {
+      if (input.toStage === 'code-review' && input.triggeredBy === 'specialist:remediation') {
+        throw new Error('back transition boom');
+      }
+      if (input.triggeredBy === 'specialist:remediation-recovery') {
+        throw new Error('recovery also failed');
+      }
+      return { currentStage: input.toStage };
+    });
 
     const result = await runLoop();
 
@@ -304,7 +414,8 @@ describe('runCodeReviewLoop', () => {
       newStage: 'remediation',
     });
     expect(result.error).toContain('Failed to transition back to code-review');
-    expect(transition).toHaveBeenCalledTimes(2);
+    expect(result.error).toContain('remediation-recovery also failed');
+    expect(transition).toHaveBeenCalledTimes(3);
   });
 
   it('returns error when fan-out errored after remediation completes', async () => {
@@ -421,6 +532,33 @@ describe('runCodeReviewLoop', () => {
   });
 
   it('remediates external needs_fixes and re-runs internal fanout instead of returning done', async () => {
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(
+        makeFanout({
+          reviewerResults: [
+            {
+              kind: 'code',
+              status: 'done',
+              costUsd: 0.01,
+              durationMs: 50,
+              commentPosted: true,
+              findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+              commentBody: 'fix this',
+            },
+            {
+              kind: 'security',
+              status: 'done',
+              costUsd: 0.01,
+              durationMs: 50,
+              commentPosted: true,
+              findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+              commentBody: 'SQL injection risk',
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+
     vi.mocked(runExternalReviewIfConfigured)
       .mockResolvedValueOnce({
         status: 'needs_fixes',
@@ -448,6 +586,7 @@ describe('runCodeReviewLoop', () => {
       '/tmp/ws',
       PR_URL,
       expect.any(Map),
+      undefined,
     );
     const findingsByKind = vi.mocked(buildRemediationParams).mock.calls.at(-1)![4] as Map<
       string,
@@ -455,6 +594,8 @@ describe('runCodeReviewLoop', () => {
     >;
     expect(findingsByKind.get('code')).toContain('External blocker');
     expect(findingsByKind.get('code')).toContain('src/a.ts');
+    expect(findingsByKind.get('code')).toContain('fix this');
+    expect(findingsByKind.get('security')).toBe('SQL injection risk');
   });
 
   it('returns error when external needs_fixes remediation fails', async () => {
@@ -463,7 +604,7 @@ describe('runCodeReviewLoop', () => {
       blockers: [{ id: 'ext-1', severity: 'high', blocking: true, summary: 'External blocker' }],
       advisories: [],
     });
-    vi.mocked(handleRemediationResult).mockResolvedValueOnce({
+    vi.mocked(handleRemediationResult).mockResolvedValue({
       status: 'error',
       costUsd: 0.02,
       durationMs: 200,
@@ -477,7 +618,7 @@ describe('runCodeReviewLoop', () => {
     expect(result).toMatchObject({
       status: 'error',
       cyclesCompleted: 1,
-      newStage: 'remediation',
+      newStage: 'code-review',
       error: 'external remediation failed',
     });
   });
@@ -513,6 +654,253 @@ describe('runCodeReviewLoop', () => {
         ]),
       }),
     );
+  });
+
+  it('escalates when review-adjudicator requires human input (ADR-037)', async () => {
+    const product: Product = {
+      ...baseProduct,
+      specialists: {
+        ...baseProduct.specialists,
+        'review-adjudicator': { runtime: 'claude_code', model: 'm' },
+      },
+    };
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+      status: 'done',
+      costUsd: 0.01,
+      durationMs: 100,
+      commentPosted: true,
+      parsed: {
+        status: 'HUMAN_REQUIRED',
+        unifiedPlan: '',
+        body: '# Review Adjudication\n\n## Status\nHUMAN_REQUIRED',
+        conflictsSection: '- **product_decision** · Vacancy semantics',
+      },
+    });
+
+    const result = await runLoop(product);
+
+    expect(result).toMatchObject({
+      status: 'error',
+      escalated: true,
+      escalationReason: 'adjudication_conflict',
+    });
+    expect(buildRemediationParams).not.toHaveBeenCalled();
+    expect(postPRComment).toHaveBeenCalled();
+  });
+
+  it('passes unified adjudication plan to code-remediator on AUTO_REMEDIATE (ADR-037)', async () => {
+    const product: Product = {
+      ...baseProduct,
+      specialists: {
+        ...baseProduct.specialists,
+        'review-adjudicator': { runtime: 'claude_code', model: 'm' },
+      },
+    };
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+    vi.mocked(buildReviewAdjudicatorParams).mockReturnValue({
+      specialistId: 'review-adjudicator',
+      prompt: 'adjudicate',
+      workdir: '/tmp/ws',
+      productSlug: 'test',
+      externalId: 'issue_1',
+      permissionMode: 'default',
+      timeoutMs: 1000,
+    });
+    vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+      status: 'done',
+      costUsd: 0.01,
+      durationMs: 100,
+      commentPosted: true,
+      parsed: {
+        status: 'AUTO_REMEDIATE',
+        unifiedPlan: '- **AUTO** · Add CSRF guard on POST /api/sync',
+        body: '# Review Adjudication\n\n## Status\nAUTO_REMEDIATE',
+        conflictsSection: '',
+      },
+    });
+
+    const result = await runLoop(product);
+
+    expect(result.status).toBe('done');
+    expect(buildRemediationParams).toHaveBeenCalledWith(
+      'issue_1',
+      product,
+      '/tmp/ws',
+      PR_URL,
+      expect.any(Map),
+      '- **AUTO** · Add CSRF guard on POST /api/sync',
+    );
+  });
+
+  const productWithAdjudicator = (): Product => ({
+    ...baseProduct,
+    specialists: {
+      ...baseProduct.specialists,
+      'review-adjudicator': { runtime: 'claude_code', model: 'm' },
+    },
+  });
+
+  it('skips runAdjudicationPass when review-adjudicator is not configured', async () => {
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+
+    const result = await runLoop();
+
+    expect(result.status).toBe('done');
+    expect(handleReviewAdjudicatorResult).not.toHaveBeenCalled();
+  });
+
+  it('surfaces adjudicator failures from runAdjudicationPass', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(buildReviewAdjudicatorParams).mockReturnValue({
+      specialistId: 'review-adjudicator',
+      prompt: 'adjudicate',
+      workdir: '/tmp/ws',
+      productSlug: 'test',
+      externalId: 'issue_1',
+      permissionMode: 'default',
+      timeoutMs: 1000,
+    });
+    vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+      status: 'error',
+      costUsd: 0,
+      durationMs: 1,
+      commentPosted: false,
+      error: 'Agent failed',
+    });
+
+    const result = await runLoop(productWithAdjudicator());
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Agent failed');
+  });
+
+  it('continues adjudication when fetchSpecForPlan fails with ENOENT', async () => {
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+    vi.mocked(fetchSpecForPlan).mockRejectedValue(
+      Object.assign(new Error('missing spec'), { code: 'ENOENT' }),
+    );
+    vi.mocked(buildReviewAdjudicatorParams).mockReturnValue({
+      specialistId: 'review-adjudicator',
+      prompt: 'adjudicate',
+      workdir: '/tmp/ws',
+      productSlug: 'test',
+      externalId: 'issue_1',
+      permissionMode: 'default',
+      timeoutMs: 1000,
+    });
+    vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+      status: 'done',
+      costUsd: 0,
+      durationMs: 1,
+      commentPosted: true,
+      parsed: {
+        status: 'AUTO_REMEDIATE',
+        unifiedPlan: '- **AUTO** · Fix',
+        body: '# Review Adjudication\n\n## Status\nAUTO_REMEDIATE',
+        conflictsSection: '',
+      },
+    });
+
+    const result = await runLoop(productWithAdjudicator());
+
+    expect(result.status).toBe('done');
+    expect(buildReviewAdjudicatorParams).toHaveBeenCalledWith(
+      'issue_1',
+      expect.anything(),
+      '/tmp/ws',
+      PR_URL,
+      expect.any(Map),
+      { spec: undefined },
+    );
+  });
+
+  it('fails runAdjudicationPass when fetchSpecForPlan throws a non-ENOENT error', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(fetchSpecForPlan).mockRejectedValue(new Error('network down'));
+
+    const result = await runLoop(productWithAdjudicator());
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe('Review adjudication failed');
+    expect(handleReviewAdjudicatorResult).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildFindingsByKind', () => {
+  it('merges external blockers into code findings without dropping other reviewer kinds', () => {
+    const fanout = makeFanout({
+      reviewerResults: [
+        {
+          kind: 'code',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 50,
+          commentPosted: true,
+          findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+          commentBody: 'code issue',
+        },
+        {
+          kind: 'security',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 50,
+          commentPosted: true,
+          findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+          commentBody: 'security issue',
+        },
+        {
+          kind: 'test',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 50,
+          commentPosted: true,
+          findings: { critical: 0, high: 0, medium: 1, low: 0, info: 0 },
+          commentBody: 'missing test',
+        },
+      ],
+    });
+
+    const findingsByKind = buildFindingsByKind(fanout, 'external blocker text');
+
+    expect(findingsByKind.get('security')).toBe('security issue');
+    expect(findingsByKind.get('test')).toBe('missing test');
+    expect(findingsByKind.get('code')).toContain('code issue');
+    expect(findingsByKind.get('code')).toContain('## External review blockers');
+    expect(findingsByKind.get('code')).toContain('external blocker text');
+  });
+
+  it('uses external blockers alone when code reviewer posted no comment', () => {
+    const fanout = makeFanout({
+      reviewerResults: [
+        {
+          kind: 'security',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 50,
+          commentPosted: true,
+          findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+          commentBody: 'security only',
+        },
+      ],
+    });
+
+    const findingsByKind = buildFindingsByKind(fanout, 'haystack blocker');
+
+    expect(findingsByKind.get('security')).toBe('security only');
+    expect(findingsByKind.get('code')).toBe('## External review blockers\n\nhaystack blocker');
   });
 });
 

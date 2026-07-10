@@ -15,15 +15,23 @@ const {
   mockCreate,
   mockTransition,
   mockList,
+  mockGet,
   mockSetSubStage,
   mockEnsureSubStages,
+  mockScheduleItemDispatch,
 } = vi.hoisted(() => ({
   mockParseWebhook: vi.fn(),
   mockCreate: vi.fn(),
   mockTransition: vi.fn(),
   mockList: vi.fn(),
+  mockGet: vi.fn(),
   mockSetSubStage: vi.fn(),
   mockEnsureSubStages: vi.fn(),
+  mockScheduleItemDispatch: vi.fn(),
+}));
+
+vi.mock('../services/dispatch-scheduler.js', () => ({
+  scheduleItemDispatch: mockScheduleItemDispatch,
 }));
 
 vi.mock('../services/index.js', async (importOriginal) => {
@@ -35,9 +43,12 @@ vi.mock('../services/index.js', async (importOriginal) => {
     getIssueTrackerAdapter: vi
       .fn()
       .mockResolvedValue({ setSubStage: mockSetSubStage, ensureSubStages: mockEnsureSubStages }),
-    getItemStore: vi
-      .fn()
-      .mockResolvedValue({ create: mockCreate, transition: mockTransition, list: mockList }),
+    getItemStore: vi.fn().mockResolvedValue({
+      create: mockCreate,
+      transition: mockTransition,
+      list: mockList,
+      get: mockGet,
+    }),
     getProductConfig: vi.fn().mockResolvedValue({
       product: { slug: 'test-app', name: 'Test' },
       issue_tracker: {
@@ -77,12 +88,16 @@ async function post(
 /** Builds a real pull_request webhook payload (parsed by the pure parseGitHubWebhook). */
 function mergedPrPayload(
   headRef: string,
-  opts: { action?: string; merged?: boolean } = {},
+  opts: { action?: string; merged?: boolean; senderLogin?: string } = {},
 ): string {
-  return JSON.stringify({
+  const payload: Record<string, unknown> = {
     action: opts.action ?? 'closed',
     pull_request: { merged: opts.merged ?? true, head: { ref: headRef } },
-  });
+  };
+  if (opts.senderLogin) {
+    payload.sender = { login: opts.senderLogin };
+  }
+  return JSON.stringify(payload);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -110,6 +125,8 @@ describe('POST /api/webhooks/github', () => {
     // a successful writeback can be asserted; clearAllMocks wiped the impls.
     mockEnsureSubStages.mockResolvedValue(undefined);
     mockSetSubStage.mockResolvedValue(undefined);
+    mockScheduleItemDispatch.mockResolvedValue({ scheduled: true, jobId: 'job-sync-1' });
+    mockGet.mockResolvedValue(null);
     vi.mocked(getIssueTrackerAdapter).mockResolvedValue({
       setSubStage: mockSetSubStage,
       ensureSubStages: mockEnsureSubStages,
@@ -426,6 +443,77 @@ describe('POST /api/webhooks/github', () => {
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(500);
+    });
+
+    // ── Impl PR synchronize (helm/impl/ → re-dispatch reviewer-fanout) ─────
+
+    it('schedules reviewer-fanout when helm/impl/ PR syncs and item is in code-review', async () => {
+      const body = mergedPrPayload('helm/impl/LEA-192', { action: 'synchronize', merged: false });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-192',
+        triggeredBy: 'webhook:impl-pr-sync',
+      });
+      expect(mockTransition).not.toHaveBeenCalled();
+    });
+
+    it('skips dispatch when impl PR syncs but item is not in code-review', async () => {
+      const body = mergedPrPayload('helm/impl/LEA-192', { action: 'synchronize', merged: false });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'remediation',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ignores synchronize on non-impl branches', async () => {
+      const body = mergedPrPayload('feature/foo', { action: 'synchronize', merged: false });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ignores synchronize when push is from helm-bot (orchestrator remediation)', async () => {
+      const body = mergedPrPayload('helm/impl/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+        senderLogin: 'helm-bot',
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('returns 200 when impl PR sync dispatch throws (avoids GitHub webhook retries)', async () => {
+      const body = mergedPrPayload('helm/impl/LEA-192', { action: 'synchronize', merged: false });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      mockScheduleItemDispatch.mockRejectedValue(new Error('scheduler unavailable'));
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
     });
 
     // ── Non-actionable PR actions ─────────────────────────────────────────────

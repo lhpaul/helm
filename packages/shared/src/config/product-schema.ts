@@ -78,6 +78,8 @@ const SpecialistsSchema = z
     // coherent kebab-case family. The legacy `remediation` key is detected in
     // product-parser with an actionable migration message (mirrors ADR-022).
     'code-remediator': SpecialistSchema,
+    /** Optional — when configured, runs before remediation in the review loop (ADR-037). */
+    'review-adjudicator': SpecialistSchema.optional(),
   })
   .strict()
   // H1 constraint: the dispatcher creates ONE runtime per product (selected from
@@ -194,6 +196,12 @@ export const ProductSchema = z
         loop: z
           .object({
             max_cycles: z.number().int().positive().default(5),
+            adjudication: z
+              .object({
+                enabled: z.boolean().default(true),
+              })
+              .strict()
+              .optional(),
             stop_rule: z
               .object({
                 no_progress_cycles: z.number().int().positive().default(2),
@@ -207,7 +215,20 @@ export const ProductSchema = z
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    if (
+      data.review?.loop?.adjudication?.enabled === true &&
+      !data.specialists['review-adjudicator']
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['review', 'loop', 'adjudication', 'enabled'],
+        message:
+          'review-adjudicator specialist must be configured when loop adjudication is enabled',
+      });
+    }
+  });
 
 // ── Exported types ────────────────────────────────────────────────────────────
 

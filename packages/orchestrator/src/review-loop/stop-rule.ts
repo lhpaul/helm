@@ -11,6 +11,7 @@ export function countBlockingFindings(results: ReviewerResult[]): number {
 export type StopRuleEscalationReason =
   | 'max_cycles'
   | 'no_progress'
+  | 'adjudication_conflict'
   | 'external_escalate'
   | 'external_skip_evidence'
   | 'external_repeated_skip';
@@ -39,15 +40,20 @@ export function evaluateStopRule(input: {
 }
 
 /**
- * Updates the no-progress streak after comparing blocker counts between cycles.
- * Streak increments when the count did not decrease; resets when it did.
+ * Updates the no-progress streak after comparing against the best (lowest) blocker
+ * count seen so far in this loop run (ADR-037). Detects oscillation when blockers
+ * drop then rise again (e.g. remediation reverts a prior fix).
  */
 export function nextNoProgressStreak(
-  priorBlockerCount: number | null,
+  bestBlockerCount: number | null,
   currentBlockerCount: number,
   priorStreak: number,
 ): number {
-  if (priorBlockerCount === null) return 0;
-  if (currentBlockerCount < priorBlockerCount) return 0;
+  if (bestBlockerCount === null) {
+    return 0;
+  }
+  if (currentBlockerCount < bestBlockerCount) {
+    return 0;
+  }
   return priorStreak + 1;
 }

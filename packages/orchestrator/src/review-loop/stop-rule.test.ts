@@ -44,19 +44,40 @@ describe('resolveReviewLoopConfig', () => {
     expect(resolveReviewLoopConfig(baseProduct)).toEqual({
       maxCycles: 5,
       noProgressCycles: 2,
+      adjudicationEnabled: false,
     });
+  });
+
+  it('enables adjudication when review-adjudicator specialist is configured', () => {
+    const product: Product = {
+      ...baseProduct,
+      specialists: {
+        ...baseProduct.specialists,
+        'review-adjudicator': { runtime: 'claude_code', model: 'm' },
+      },
+    };
+    expect(resolveReviewLoopConfig(product).adjudicationEnabled).toBe(true);
   });
 
   it('reads review.loop overrides', () => {
     const product: Product = {
       ...baseProduct,
       review: {
-        loop: { max_cycles: 3, stop_rule: { no_progress_cycles: 4 } },
+        loop: {
+          max_cycles: 3,
+          adjudication: { enabled: false },
+          stop_rule: { no_progress_cycles: 4 },
+        },
+      },
+      specialists: {
+        ...baseProduct.specialists,
+        'review-adjudicator': { runtime: 'claude_code', model: 'm' },
       },
     };
     expect(resolveReviewLoopConfig(product)).toEqual({
       maxCycles: 3,
       noProgressCycles: 4,
+      adjudicationEnabled: false,
     });
   });
 });
@@ -84,10 +105,12 @@ describe('stop rule helpers', () => {
     ).toEqual({ escalate: true, reason: 'no_progress' });
   });
 
-  it('tracks no-progress streak only when blockers do not decrease', () => {
+  it('tracks no-progress streak against best-so-far blockers (ADR-037)', () => {
     expect(nextNoProgressStreak(null, 3, 0)).toBe(0);
     expect(nextNoProgressStreak(3, 3, 0)).toBe(1);
     expect(nextNoProgressStreak(3, 2, 1)).toBe(0);
     expect(nextNoProgressStreak(2, 4, 1)).toBe(2);
+    // Oscillation: improved to 0, then regressed to 2
+    expect(nextNoProgressStreak(0, 2, 0)).toBe(1);
   });
 });

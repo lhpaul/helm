@@ -494,19 +494,22 @@ function buildFindingsByKind(
   externalFindingsBody?: string,
 ): Map<ReviewerKind, string> {
   const findingsByKind = new Map<ReviewerKind, string>();
-  if (externalFindingsBody) {
-    findingsByKind.set(
-      'code',
-      ['## External review blockers', '', externalFindingsBody].join('\n'),
-    );
-    return findingsByKind;
-  }
 
   for (const r of fanoutResult.reviewerResults) {
     if (r.commentBody) {
       findingsByKind.set(r.kind, r.commentBody);
     }
   }
+
+  if (externalFindingsBody) {
+    const externalSection = ['## External review blockers', '', externalFindingsBody].join('\n');
+    const existingCode = findingsByKind.get('code');
+    findingsByKind.set(
+      'code',
+      existingCode ? `${existingCode}\n\n${externalSection}` : externalSection,
+    );
+  }
+
   return findingsByKind;
 }
 
@@ -906,3 +909,5 @@ async function runRemediationPass(input: {
     );
   }
 }
+
+export { buildFindingsByKind };

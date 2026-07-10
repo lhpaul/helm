@@ -5,7 +5,11 @@ import type { Product } from '@helm/shared';
 import type { ItemTransitionFn } from '../specialists/spec-writer.js';
 import type { RunGit } from '../specialists/git-helpers.js';
 import { MockAgentRuntime } from '../runtimes/mock.js';
-import { runCodeReviewLoop, formatExternalBlockersForRemediation } from './code-review-loop.js';
+import {
+  runCodeReviewLoop,
+  formatExternalBlockersForRemediation,
+  buildFindingsByKind,
+} from './code-review-loop.js';
 
 vi.mock('../specialists/reviewer-fanout.js', () => ({
   fanoutReviewers: vi.fn(),
@@ -528,6 +532,33 @@ describe('runCodeReviewLoop', () => {
   });
 
   it('remediates external needs_fixes and re-runs internal fanout instead of returning done', async () => {
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(
+        makeFanout({
+          reviewerResults: [
+            {
+              kind: 'code',
+              status: 'done',
+              costUsd: 0.01,
+              durationMs: 50,
+              commentPosted: true,
+              findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+              commentBody: 'fix this',
+            },
+            {
+              kind: 'security',
+              status: 'done',
+              costUsd: 0.01,
+              durationMs: 50,
+              commentPosted: true,
+              findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+              commentBody: 'SQL injection risk',
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+
     vi.mocked(runExternalReviewIfConfigured)
       .mockResolvedValueOnce({
         status: 'needs_fixes',
@@ -563,6 +594,8 @@ describe('runCodeReviewLoop', () => {
     >;
     expect(findingsByKind.get('code')).toContain('External blocker');
     expect(findingsByKind.get('code')).toContain('src/a.ts');
+    expect(findingsByKind.get('code')).toContain('fix this');
+    expect(findingsByKind.get('security')).toBe('SQL injection risk');
   });
 
   it('returns error when external needs_fixes remediation fails', async () => {
@@ -803,6 +836,71 @@ describe('runCodeReviewLoop', () => {
     expect(result.status).toBe('error');
     expect(result.error).toBe('Review adjudication failed');
     expect(handleReviewAdjudicatorResult).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildFindingsByKind', () => {
+  it('merges external blockers into code findings without dropping other reviewer kinds', () => {
+    const fanout = makeFanout({
+      reviewerResults: [
+        {
+          kind: 'code',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 50,
+          commentPosted: true,
+          findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+          commentBody: 'code issue',
+        },
+        {
+          kind: 'security',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 50,
+          commentPosted: true,
+          findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+          commentBody: 'security issue',
+        },
+        {
+          kind: 'test',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 50,
+          commentPosted: true,
+          findings: { critical: 0, high: 0, medium: 1, low: 0, info: 0 },
+          commentBody: 'missing test',
+        },
+      ],
+    });
+
+    const findingsByKind = buildFindingsByKind(fanout, 'external blocker text');
+
+    expect(findingsByKind.get('security')).toBe('security issue');
+    expect(findingsByKind.get('test')).toBe('missing test');
+    expect(findingsByKind.get('code')).toContain('code issue');
+    expect(findingsByKind.get('code')).toContain('## External review blockers');
+    expect(findingsByKind.get('code')).toContain('external blocker text');
+  });
+
+  it('uses external blockers alone when code reviewer posted no comment', () => {
+    const fanout = makeFanout({
+      reviewerResults: [
+        {
+          kind: 'security',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 50,
+          commentPosted: true,
+          findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+          commentBody: 'security only',
+        },
+      ],
+    });
+
+    const findingsByKind = buildFindingsByKind(fanout, 'haystack blocker');
+
+    expect(findingsByKind.get('security')).toBe('security only');
+    expect(findingsByKind.get('code')).toBe('## External review blockers\n\nhaystack blocker');
   });
 });
 

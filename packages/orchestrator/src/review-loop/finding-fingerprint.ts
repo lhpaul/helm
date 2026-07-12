@@ -125,6 +125,38 @@ export function countStickyRemaining(
 }
 
 /**
+ * Per-source sticky tracker. Internal fan-out fingerprints and external
+ * NormalizedFinding.id values live in different identifier spaces — never
+ * share one baseline across both (ADR-038).
+ */
+export type StickyLane = {
+  baseline: Set<string> | null;
+  bestRemaining: number | null;
+};
+
+export function createStickyLane(): StickyLane {
+  return { baseline: null, bestRemaining: null };
+}
+
+/**
+ * Observes the current fingerprint set for one lane and returns stickyRemaining.
+ * Initializes the baseline on first observation.
+ */
+export function observeStickyLane(lane: StickyLane, current: ReadonlySet<string>): number {
+  if (lane.baseline === null) {
+    lane.baseline = new Set(current);
+  }
+  return countStickyRemaining(lane.baseline, current);
+}
+
+/** Records a new best sticky-remaining value when improved. */
+export function recordStickyImprovement(lane: StickyLane, stickyRemaining: number): void {
+  if (lane.bestRemaining === null || stickyRemaining < lane.bestRemaining) {
+    lane.bestRemaining = stickyRemaining;
+  }
+}
+
+/**
  * Stable fingerprint for a finding title.
  * Prefer theme ids and repo paths over verbatim wording so cycle-to-cycle
  * rewrites of the same gap do not look like "new" progress.

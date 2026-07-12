@@ -3,8 +3,11 @@ import type { ReviewerResult } from '../specialists/reviewer-fanout.js';
 import {
   collectGateFindingFingerprints,
   countStickyRemaining,
+  createStickyLane,
   fingerprintFindingTitle,
+  observeStickyLane,
   parseFindingFingerprints,
+  recordStickyImprovement,
 } from './finding-fingerprint.js';
 
 describe('fingerprintFindingTitle', () => {
@@ -63,5 +66,22 @@ describe('sticky remaining', () => {
     ];
     const fps = collectGateFindingFingerprints(results, 'medium_and_above');
     expect([...fps].some((fp) => fp.includes('tenant-isolation'))).toBe(true);
+  });
+
+  it('tracks sticky remaining per lane without sharing baselines', () => {
+    const internal = createStickyLane();
+    const external = createStickyLane();
+
+    expect(observeStickyLane(internal, new Set(['theme|a', 'theme|b']))).toBe(2);
+    recordStickyImprovement(internal, 2);
+    expect(observeStickyLane(internal, new Set(['theme|a']))).toBe(1);
+    recordStickyImprovement(internal, 1);
+    expect(internal.bestRemaining).toBe(1);
+
+    // External ids must not be compared against the internal baseline.
+    expect(observeStickyLane(external, new Set(['hs-finding-1']))).toBe(1);
+    recordStickyImprovement(external, 1);
+    expect(external.baseline).not.toEqual(internal.baseline);
+    expect(observeStickyLane(external, new Set(['hs-finding-2']))).toBe(0);
   });
 });

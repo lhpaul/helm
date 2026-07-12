@@ -44,7 +44,12 @@ import {
   nextNoProgressStreak,
   type StopRuleEscalationReason,
 } from './stop-rule.js';
-import { collectGateFindingFingerprints, countStickyRemaining } from './finding-fingerprint.js';
+import {
+  collectGateFindingFingerprints,
+  createStickyLane,
+  observeStickyLane,
+  recordStickyImprovement,
+} from './finding-fingerprint.js';
 import { isEnoentError } from '../lib/fs-errors.js';
 
 export type CodeReviewLoopResult = {
@@ -257,8 +262,9 @@ export async function runCodeReviewLoop(
   let cycle = 1;
   let noProgressStreak = 0;
   let bestBlockerCount: number | null = null;
-  let stickyBaseline: Set<string> | null = null;
-  let bestStickyRemaining: number | null = null;
+  // Separate lanes: internal title fingerprints ≠ external NormalizedFinding.id.
+  const internalSticky = createStickyLane();
+  const externalSticky = createStickyLane();
   let lastFanout: ReviewerFanoutResult | null = null;
   let ranRemediation = false;
 
@@ -300,23 +306,18 @@ export async function runCodeReviewLoop(
         fanoutResult.reviewerResults,
         loopConfig.remediateSeverity,
       );
-      if (stickyBaseline === null) {
-        stickyBaseline = currentFingerprints;
-      }
-      const stickyRemaining = countStickyRemaining(stickyBaseline, currentFingerprints);
+      const stickyRemaining = observeStickyLane(internalSticky, currentFingerprints);
       noProgressStreak = nextNoProgressStreak(
         bestBlockerCount,
         blockerCount,
         noProgressStreak,
-        bestStickyRemaining,
+        internalSticky.bestRemaining,
         stickyRemaining,
       );
       if (bestBlockerCount === null || blockerCount < bestBlockerCount) {
         bestBlockerCount = blockerCount;
       }
-      if (bestStickyRemaining === null || stickyRemaining < bestStickyRemaining) {
-        bestStickyRemaining = stickyRemaining;
-      }
+      recordStickyImprovement(internalSticky, stickyRemaining);
 
       const stop = evaluateStopRule({
         cycle,
@@ -397,23 +398,18 @@ export async function runCodeReviewLoop(
     if (external.status === 'needs_fixes') {
       const blockerCount = external.blockers.length;
       const currentFingerprints = new Set(external.blockers.map((finding) => finding.id));
-      if (stickyBaseline === null) {
-        stickyBaseline = currentFingerprints;
-      }
-      const stickyRemaining = countStickyRemaining(stickyBaseline, currentFingerprints);
+      const stickyRemaining = observeStickyLane(externalSticky, currentFingerprints);
       noProgressStreak = nextNoProgressStreak(
         bestBlockerCount,
         blockerCount,
         noProgressStreak,
-        bestStickyRemaining,
+        externalSticky.bestRemaining,
         stickyRemaining,
       );
       if (bestBlockerCount === null || blockerCount < bestBlockerCount) {
         bestBlockerCount = blockerCount;
       }
-      if (bestStickyRemaining === null || stickyRemaining < bestStickyRemaining) {
-        bestStickyRemaining = stickyRemaining;
-      }
+      recordStickyImprovement(externalSticky, stickyRemaining);
 
       const stop = evaluateStopRule({
         cycle,

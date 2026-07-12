@@ -49,18 +49,31 @@ export function evaluateStopRule(input: {
 
 /**
  * Updates the no-progress streak after comparing against the best (lowest) blocker
- * count seen so far in this loop run (ADR-037). Detects oscillation when blockers
- * drop then rise again (e.g. remediation reverts a prior fix).
+ * signals seen so far in this loop run (ADR-037 + sticky fingerprints).
+ *
+ * Progress is either:
+ * - fewer gate-severity findings by count, or
+ * - fewer unresolved sticky fingerprints from the baseline set
+ *   (detects finding churn where count stays flat but titles rewrite).
  */
 export function nextNoProgressStreak(
   bestBlockerCount: number | null,
   currentBlockerCount: number,
   priorStreak: number,
+  bestStickyRemaining: number | null = null,
+  currentStickyRemaining: number | null = null,
 ): number {
   if (bestBlockerCount === null) {
     return 0;
   }
   if (currentBlockerCount < bestBlockerCount) {
+    return 0;
+  }
+  if (
+    bestStickyRemaining !== null &&
+    currentStickyRemaining !== null &&
+    currentStickyRemaining < bestStickyRemaining
+  ) {
     return 0;
   }
   return priorStreak + 1;

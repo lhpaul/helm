@@ -148,6 +148,13 @@ describe('buildRemediationParams', () => {
     expect(REMEDIATION_TIMEOUT_MS).toBeLessThan(20 * 60 * 1_000);
   });
 
+  it('requires an Applied/Deferred checklist for every AUTO or gate finding', () => {
+    const params = buildRemediationParams('HLM-42', product, '/tmp/ws', PR_URL, findingsByKind());
+    expect(params.prompt).toContain('## Checklist (required)');
+    expect(params.prompt).toContain('verifiable source diff');
+    expect(params.prompt).toContain('sticky/repeated findings');
+  });
+
   it('injects ## Hints section with the remediation specialist’s extra_hints', () => {
     const p = makeProduct();
     p.specialists['code-remediator'].extra_hints = [

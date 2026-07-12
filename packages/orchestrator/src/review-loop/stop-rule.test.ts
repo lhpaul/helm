@@ -45,6 +45,7 @@ describe('resolveReviewLoopConfig', () => {
       maxCycles: 5,
       noProgressCycles: 2,
       adjudicationEnabled: false,
+      remediateSeverity: 'critical_high',
     });
   });
 
@@ -78,6 +79,7 @@ describe('resolveReviewLoopConfig', () => {
       maxCycles: 3,
       noProgressCycles: 4,
       adjudicationEnabled: false,
+      remediateSeverity: 'critical_high',
     });
   });
 });
@@ -112,5 +114,10 @@ describe('stop rule helpers', () => {
     expect(nextNoProgressStreak(2, 4, 1)).toBe(2);
     // Oscillation: improved to 0, then regressed to 2
     expect(nextNoProgressStreak(0, 2, 0)).toBe(1);
+  });
+
+  it('resets streak when sticky remaining drops even if blocker count is flat', () => {
+    expect(nextNoProgressStreak(3, 3, 2, 2, 1)).toBe(0);
+    expect(nextNoProgressStreak(3, 3, 2, 2, 2)).toBe(3);
   });
 });

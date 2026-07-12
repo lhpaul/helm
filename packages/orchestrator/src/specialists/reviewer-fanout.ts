@@ -33,6 +33,11 @@ import { postPRComment } from './pr-helpers.js';
 import { sanitizeToken } from './git-helpers.js';
 import type { RunGit, RunGh } from './git-helpers.js';
 import { buildExtraHintsSection } from './extra-hints.js';
+import {
+  DEFAULT_REMEDIATE_SEVERITY,
+  shouldRemediateForSeverity,
+  type RemediateSeverity,
+} from '../review-loop/remediate-gate.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -151,20 +156,17 @@ export function parseFindings(reviewBody: string): Findings {
 }
 
 /**
- * Remediation gate: returns true iff ANY reviewer (code, security, or test)
- * surfaced at least one CRITICAL or HIGH finding.
+ * Remediation gate: returns true iff ANY reviewer surfaced findings at or above
+ * the configured severity threshold (default CRITICAL/HIGH per ADR-036).
  *
- * The code-reviewer still gets the first chance to self-apply its mechanical
- * fixes in-flow (ADR-018). But when it doesn't (it writes only a summary with no
- * source edits), its CRITICAL/HIGH findings used to pass through review unfixed
- * because they never reached the remediator. As of ADR-025 the remediator is the
- * unified safety net behind all three reviewers, so code-reviewer findings gate
- * remediation too. MEDIUM/LOW/INFO are commented but do not gate.
+ * Use `medium_and_above` via `review.loop.remediate_severity` when MEDIUM findings
+ * should trigger the bounded remediate loop (ADR-037 revisit).
  */
-export function shouldRemediate(results: ReviewerResult[]): boolean {
-  return results.some(
-    (r) => r.findings !== undefined && (r.findings.critical > 0 || r.findings.high > 0),
-  );
+export function shouldRemediate(
+  results: ReviewerResult[],
+  severity: RemediateSeverity = DEFAULT_REMEDIATE_SEVERITY,
+): boolean {
+  return shouldRemediateForSeverity(results, severity);
 }
 
 // ── buildReviewerParams ───────────────────────────────────────────────────────

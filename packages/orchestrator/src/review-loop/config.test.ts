@@ -54,6 +54,18 @@ describe('resolveReviewLoopConfig (ADR-036/037)', () => {
     );
     expect(resolveReviewLoopConfig(product).adjudicationEnabled).toBe(false);
   });
+
+  it('defaults remediate_severity to critical_high', () => {
+    const product = ProductSchema.parse(makeRawProduct());
+    expect(resolveReviewLoopConfig(product).remediateSeverity).toBe('critical_high');
+  });
+
+  it('reads remediate_severity from product.yaml', () => {
+    const product = ProductSchema.parse(
+      makeRawProduct({ review: { loop: { remediate_severity: 'medium_and_above' } } }),
+    );
+    expect(resolveReviewLoopConfig(product).remediateSeverity).toBe('medium_and_above');
+  });
 });
 
 describe('ProductSchema adjudication invariants (validate-runtime-config-invariants)', () => {

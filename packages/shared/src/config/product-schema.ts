@@ -208,6 +208,10 @@ export const ProductSchema = z
               })
               .strict()
               .optional(),
+            /** Minimum internal finding severity that triggers remediation (ADR-036 revisit). */
+            remediate_severity: z
+              .enum(['critical_high', 'medium_and_above'])
+              .default('critical_high'),
           })
           .strict()
           .optional(),

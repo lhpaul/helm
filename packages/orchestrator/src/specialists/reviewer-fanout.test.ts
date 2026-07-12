@@ -1002,6 +1002,9 @@ describe('shouldRemediate', () => {
 
   it('false when code only has MEDIUM/LOW/INFO findings', () => {
     expect(shouldRemediate([make('code', { ...zero, medium: 2, low: 1, info: 3 })])).toBe(false);
+    expect(
+      shouldRemediate([make('code', { ...zero, medium: 2, low: 1, info: 3 })], 'medium_and_above'),
+    ).toBe(true);
   });
 
   it('false when sec/test only have MEDIUM/LOW/INFO', () => {

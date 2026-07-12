@@ -44,6 +44,12 @@ import {
   nextNoProgressStreak,
   type StopRuleEscalationReason,
 } from './stop-rule.js';
+import {
+  collectGateFindingFingerprints,
+  createStickyLane,
+  observeStickyLane,
+  recordStickyImprovement,
+} from './finding-fingerprint.js';
 import { isEnoentError } from '../lib/fs-errors.js';
 
 export type CodeReviewLoopResult = {
@@ -73,12 +79,17 @@ export type RunCodeReviewLoopParams = {
   fetchFn?: FetchFn;
 };
 
-function escalationMessage(reason: StopRuleEscalationReason, cyclesCompleted: number): string {
+function escalationMessage(
+  reason: StopRuleEscalationReason,
+  cyclesCompleted: number,
+  noProgressCycles?: number,
+): string {
   if (reason === 'max_cycles') {
     return `Review loop escalated: reached max_cycles (${cyclesCompleted}) with CRITICAL/HIGH findings still open`;
   }
   if (reason === 'no_progress') {
-    return `Review loop escalated: no progress on blocking findings for ${cyclesCompleted} consecutive remediation cycle(s)`;
+    const threshold = noProgressCycles === undefined ? cyclesCompleted : noProgressCycles;
+    return `Review loop escalated: no progress on blocking findings for ${threshold} consecutive remediation cycle(s) (${cyclesCompleted} cycle(s) completed)`;
   }
   if (reason === 'adjudication_conflict') {
     return `Review loop escalated: review-adjudicator requires human product or documentation decisions (${cyclesCompleted} cycle(s) completed)`;
@@ -251,6 +262,9 @@ export async function runCodeReviewLoop(
   let cycle = 1;
   let noProgressStreak = 0;
   let bestBlockerCount: number | null = null;
+  // Separate lanes: internal title fingerprints ≠ external NormalizedFinding.id.
+  const internalSticky = createStickyLane();
+  const externalSticky = createStickyLane();
   let lastFanout: ReviewerFanoutResult | null = null;
   let ranRemediation = false;
 
@@ -280,15 +294,30 @@ export async function runCodeReviewLoop(
         };
       }
 
-      if (!shouldRemediate(fanoutResult.reviewerResults)) {
+      if (!shouldRemediate(fanoutResult.reviewerResults, loopConfig.remediateSeverity)) {
         break;
       }
 
-      const blockerCount = countBlockingFindings(fanoutResult.reviewerResults);
-      noProgressStreak = nextNoProgressStreak(bestBlockerCount, blockerCount, noProgressStreak);
+      const blockerCount = countBlockingFindings(
+        fanoutResult.reviewerResults,
+        loopConfig.remediateSeverity,
+      );
+      const currentFingerprints = collectGateFindingFingerprints(
+        fanoutResult.reviewerResults,
+        loopConfig.remediateSeverity,
+      );
+      const stickyRemaining = observeStickyLane(internalSticky, currentFingerprints);
+      noProgressStreak = nextNoProgressStreak(
+        bestBlockerCount,
+        blockerCount,
+        noProgressStreak,
+        internalSticky.bestRemaining,
+        stickyRemaining,
+      );
       if (bestBlockerCount === null || blockerCount < bestBlockerCount) {
         bestBlockerCount = blockerCount;
       }
+      recordStickyImprovement(internalSticky, stickyRemaining);
 
       const stop = evaluateStopRule({
         cycle,
@@ -305,7 +334,7 @@ export async function runCodeReviewLoop(
           cyclesCompleted: cycle,
           escalated: true,
           escalationReason: stop.reason,
-          error: escalationMessage(stop.reason, cycle),
+          error: escalationMessage(stop.reason, cycle, loopConfig.noProgressCycles),
         };
       }
 
@@ -368,10 +397,19 @@ export async function runCodeReviewLoop(
 
     if (external.status === 'needs_fixes') {
       const blockerCount = external.blockers.length;
-      noProgressStreak = nextNoProgressStreak(bestBlockerCount, blockerCount, noProgressStreak);
+      const currentFingerprints = new Set(external.blockers.map((finding) => finding.id));
+      const stickyRemaining = observeStickyLane(externalSticky, currentFingerprints);
+      noProgressStreak = nextNoProgressStreak(
+        bestBlockerCount,
+        blockerCount,
+        noProgressStreak,
+        externalSticky.bestRemaining,
+        stickyRemaining,
+      );
       if (bestBlockerCount === null || blockerCount < bestBlockerCount) {
         bestBlockerCount = blockerCount;
       }
+      recordStickyImprovement(externalSticky, stickyRemaining);
 
       const stop = evaluateStopRule({
         cycle,
@@ -388,7 +426,7 @@ export async function runCodeReviewLoop(
           cyclesCompleted: cycle,
           escalated: true,
           escalationReason: stop.reason,
-          error: escalationMessage(stop.reason, cycle),
+          error: escalationMessage(stop.reason, cycle, loopConfig.noProgressCycles),
         };
       }
 

@@ -29,6 +29,20 @@ Leé estos antes de tomar decisiones técnicas:
 - `/Users/lhpaul/Git/ai-dev-framework-template` — template del que Helm hereda Spec → Plan → Code, REVIEW.md, branch naming, CHANGELOG. Leer su `AGENTS.md` para entender la filosofía protocol-first.
 - `/Users/lhpaul/Git/Helm/helm-knowledge` — knowledge repo del propio Helm: `.helm/product.yaml`, specs, plans, ADRs, retrospectivas.
 
+## Backlog oficial (GitHub Project #3)
+
+El backlog canónico de Helm es https://github.com/users/lhpaul/projects/3
+(configurado en `helm-knowledge/.helm/product.yaml`).
+
+Al crear issues de framework desde una sesión o retro, **siempre** añádelos al
+proyecto (no basta con `gh issue create`):
+
+```bash
+./scripts/create-helm-backlog-issue.sh --title "…" --body "…" --type Workflow --label review-loop
+```
+
+Runbook: `helm-knowledge/operations/helm-backlog.md`.
+
 ## Configuración local
 
 Las variables de entorno del server API viven en `apps/api/.env` (no en la raíz).

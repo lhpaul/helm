@@ -12,16 +12,17 @@ Persona objetivo: CTO de startup chica que sostiene calidad con poco equipo + ag
 
 Los documentos de diseño viven fuera del repo en:
 
-`/Users/lhpaul/Documents/Emprendimientos/Helm/`
+`/Users/lhpaul/Documents/LH/Negocios/Proyectos/Helm/`
 
 Leé estos antes de tomar decisiones técnicas:
 
 - `00-VISION.md` — visión del producto
 - `01-DIAGNOSTICO.md` — análisis cruzado de agent-hq, ai-dev-framework-template, Zeki UX Lab
 - `02-ARQUITECTURA.md` — componentes, modelo de dominio, máquina de estados, capas de persistencia
-- `04-ROADMAP.md` — 18 sesiones en ~9 semanas a MVP
 - `05-V0-SCOPE.md` — scope exacto de v0: qué entra, qué no, decisiones cerradas
 - `06-SETUP.md` — credenciales y software requeridos
+- `agent-comms/ROADMAP.md` — **estado vivo** y pending (el plan Session-1 está archivado)
+- `04-ROADMAP.md` — pointer al roadmap vivo + archive note
 
 ## Repositorios relacionados (referencias)
 
@@ -91,7 +92,7 @@ No centralizamos en root para no necesitar dotenv-cli overhead.
 - Frontend: React 18 + Tailwind + Vite.
 - Monorepo: pnpm workspaces + Turborepo.
 - Persistencia: GitHub Projects/Linear (workflow) + knowledge repo (artefactos) + filesystem `data/` (operativo).
-- Runtime de agentes (v0): solo Claude Code spawn. Abstracción `AgentRuntimeAdapter` lista para agregar runtimes en v1+.
+- Runtime de agentes: Claude Code (default) + Codex CLI (ADR-021/028). Abstracción `AgentRuntimeAdapter` para más runtimes.
 
 ## Decisiones cerradas
 

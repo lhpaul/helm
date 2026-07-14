@@ -1,12 +1,41 @@
 #!/usr/bin/env bash
-# Resolves op:// references from .env.template via 1Password CLI and writes apps/api/.env.
-# Local paths and optional overrides come from .env.local (see .env.local.example).
+# Resolves op:// references from a product env file via 1Password CLI
+# and writes apps/api/.env.
+#
+# Usage:
+#   pnpm sync-env -- leasity-tenants
+#   pnpm sync-env -- helm
 set -euo pipefail
 
 API_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TEMPLATE="${API_DIR}/.env.template"
-LOCAL="${API_DIR}/.env.local"
 OUTPUT="${API_DIR}/.env"
+# pnpm may forward a bare "--" before the product name.
+PRODUCT="${1:-}"
+if [[ "$PRODUCT" == "--" ]]; then
+  PRODUCT="${2:-}"
+fi
+
+usage() {
+  echo "Usage: pnpm sync-env -- <product>" >&2
+  echo "  product: leasity-tenants | helm" >&2
+  echo "  Reads apps/api/.env.<product> and writes apps/api/.env" >&2
+}
+
+if [[ -z "$PRODUCT" ]]; then
+  usage
+  exit 1
+fi
+
+case "$PRODUCT" in
+  leasity-tenants | helm) ;;
+  *)
+    echo "Error: unknown product '${PRODUCT}'" >&2
+    usage
+    exit 1
+    ;;
+esac
+
+INPUT="${API_DIR}/.env.${PRODUCT}"
 
 if ! command -v op >/dev/null 2>&1; then
   echo "Error: 1Password CLI (op) not found." >&2
@@ -19,41 +48,36 @@ if ! op account list >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ ! -f "$TEMPLATE" ]]; then
-  echo "Error: Missing ${TEMPLATE}" >&2
+if [[ ! -f "$INPUT" ]]; then
+  echo "Error: Missing ${INPUT}" >&2
+  echo "  Copy the '${PRODUCT}' block from .env.example into that file and set your paths." >&2
   exit 1
 fi
 
-if [[ ! -f "$LOCAL" ]]; then
-  echo "Warning: ${LOCAL} not found." >&2
-  echo "  Copy .env.local.example → .env.local and set HELM_KNOWLEDGE_REPO_PATH / HELM_DATA_DIR." >&2
-fi
+op inject -i "$INPUT" -o "$OUTPUT" --force
 
-COMBINED="$(mktemp)"
-trap 'rm -f "$COMBINED"' EXIT
-
-{
-  cat "$TEMPLATE"
-  if [[ -f "$LOCAL" ]]; then
-    printf '\n# --- local overrides (.env.local) ---\n'
-    cat "$LOCAL"
-  fi
-} >"$COMBINED"
-
-op inject -i "$COMBINED" -o "$OUTPUT" --force
-
-UNRESOLVED="$(grep -E '^(LINEAR_API_KEY|GITHUB_WEBHOOK_SECRET|GITHUB_TOKEN)=op://' "$OUTPUT" || true)"
+UNRESOLVED="$(grep -E '^[A-Z0-9_]+=op://' "$OUTPUT" || true)"
 if [[ -n "$UNRESOLVED" ]]; then
-  echo "Error: Some op:// references were not resolved:" >&2
+  echo "Error: Some secret references were not resolved:" >&2
   echo "$UNRESOLVED" >&2
   exit 1
 fi
 
 if ! grep -qE '^HELM_KNOWLEDGE_REPO_PATH=.+$' "$OUTPUT"; then
   echo "Error: HELM_KNOWLEDGE_REPO_PATH is missing or empty in ${OUTPUT}." >&2
-  echo "  Set it in .env.local before running sync-env." >&2
   exit 1
 fi
 
-echo "Wrote ${OUTPUT}"
+if ! grep -qE '^HELM_DATA_DIR=.+$' "$OUTPUT"; then
+  echo "Error: HELM_DATA_DIR is missing or empty in ${OUTPUT}." >&2
+  exit 1
+fi
+
+if ! grep -qE '^GITHUB_TOKEN=.+$' "$OUTPUT"; then
+  echo "Error: GITHUB_TOKEN is missing or empty in ${OUTPUT}." >&2
+  exit 1
+fi
+
+echo "Product: ${PRODUCT}"
+echo "Wrote ${OUTPUT} from ${INPUT}"
 echo "Restart the API (pnpm dev) if it is already running."

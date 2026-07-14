@@ -51,37 +51,45 @@ Bun lee `.env` del directorio de trabajo del proceso — que es `apps/api/` cuan
 
 ### Secrets con 1Password (recomendado)
 
-Los secretos viven en 1Password; referencias `op://` en `apps/api/.env.template`.
-Paths locales y `GITHUB_TOKEN` van en `apps/api/.env.local` (gitignored).
+Un solo doc (`.env.example`) + un archivo de input por Product. `sync-env` inyecta secretos y escribe `.env`.
 
 ```bash
-cp apps/api/.env.local.example apps/api/.env.local
-# Editar .env.local: HELM_KNOWLEDGE_REPO_PATH, HELM_DATA_DIR, GITHUB_TOKEN
-
-pnpm sync-env   # op inject → apps/api/.env (correr tras rotar secrets o cambiar .env.local)
+# Create apps/api/.env.leasity-tenants or .env.helm from the blocks in .env.example
+pnpm sync-env -- leasity-tenants   # Arriendo Fácil (Linear)
+# pnpm sync-env -- helm            # Helm self-dogfood (GitHub Projects)
 pnpm dev
 ```
 
 Requisitos: [1Password CLI](https://developer.1password.com/docs/cli/get-started/) (`op`) y sesión activa (`op signin`).
 
-| Archivo              | Commitear | Contenido                           |
-| -------------------- | --------- | ----------------------------------- |
-| `.env.template`      | sí        | Referencias `op://` a secretos      |
-| `.env.local.example` | sí        | Plantilla de paths locales          |
-| `.env.local`         | no        | Tus paths + token GitHub            |
-| `.env`               | no        | Generado por `sync-env`; lo lee Bun |
+| Archivo                | Commitear | Contenido                            |
+| ---------------------- | --------- | ------------------------------------ |
+| `.env.example`         | sí        | Doc: variables + cómo usar 1Password |
+| `.env.leasity-tenants` | no        | Input sync-env para Arriendo Fácil   |
+| `.env.helm`            | no        | Input sync-env para Helm-the-product |
+| `.env`                 | no        | Generado por `sync-env`; lo lee Bun  |
+
+**1Password layout**
+
+| Ref                                                  | Uso                              |
+| ---------------------------------------------------- | -------------------------------- |
+| `op://Helm/helm/github-token`                        | PAT GitHub (Projects + repo API) |
+| `op://Leasity/leasity-tenants/linear-api-key`        | Linear LEA (solo Product AF)     |
+| `op://Leasity/leasity-tenants/github-webhook-secret` | Webhook GitHub → Helm (AF)       |
+
+Helm-the-product usa **GitHub Projects**, no Linear — no hay Linear API key en el vault `Helm`.
 
 ### Variables
 
-| Variable                   | Dónde definirla | Descripción                                                                                                                            |
-| -------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `HELM_KNOWLEDGE_REPO_PATH` | `.env.local`    | Path absoluto al knowledge repo del Product activo (donde vive `.helm/product.yaml`). Ejemplo: `/Users/lhpaul/Git/Helm/helm-knowledge` |
-| `HELM_DATA_DIR`            | `.env.local`    | Path absoluto a `data/` operativo (default: `apps/api/data`)                                                                           |
-| `GITHUB_TOKEN`             | `.env.local`    | PAT GitHub o salida de `gh auth token`                                                                                                 |
-| `LINEAR_API_KEY`           | `.env.template` | PAT Linear (resuelto por 1Password)                                                                                                    |
-| `GITHUB_WEBHOOK_SECRET`    | `.env.template` | Secret del webhook GitHub (resuelto por 1Password)                                                                                     |
+| Variable                   | Descripción                                                                   |
+| -------------------------- | ----------------------------------------------------------------------------- |
+| `HELM_KNOWLEDGE_REPO_PATH` | Path absoluto al knowledge repo del Product (donde vive `.helm/product.yaml`) |
+| `HELM_DATA_DIR`            | Path absoluto a `data/` operativo                                             |
+| `GITHUB_TOKEN`             | PAT GitHub                                                                    |
+| `LINEAR_API_KEY`           | Solo Arriendo Fácil (`issue_tracker.provider: linear`)                        |
+| `GITHUB_WEBHOOK_SECRET`    | Secret del webhook GitHub hacia Helm                                          |
 
-Setup manual sin 1Password: copiar `apps/api/.env.example`, crear `.env` a mano con todos los valores en claro (no recomendado para secretos).
+Setup manual sin 1Password: escribir `.env` a mano con valores en claro (no recomendado para secretos).
 
 Si en el futuro `apps/web` necesita variables de entorno, irán en `apps/web/.env.example` / `apps/web/.env` por separado.
 No centralizamos en root para no necesitar dotenv-cli overhead.

@@ -8,7 +8,7 @@
   "packageManager": "pnpm@11.5.0",
   "scripts": {
     "dev": "turbo run dev",
-    "sync-env": "pnpm --filter @helm/api sync-env",
+    "sync-env": "bash apps/api/scripts/sync-env-from-1password.sh",
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",

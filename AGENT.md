@@ -12,22 +12,37 @@ Persona objetivo: CTO de startup chica que sostiene calidad con poco equipo + ag
 
 Los documentos de diseño viven fuera del repo en:
 
-`/Users/lhpaul/Documents/Emprendimientos/Helm/`
+`/Users/lhpaul/Documents/LH/Negocios/Proyectos/Helm/`
 
 Leé estos antes de tomar decisiones técnicas:
 
 - `00-VISION.md` — visión del producto
 - `01-DIAGNOSTICO.md` — análisis cruzado de agent-hq, ai-dev-framework-template, Zeki UX Lab
 - `02-ARQUITECTURA.md` — componentes, modelo de dominio, máquina de estados, capas de persistencia
-- `04-ROADMAP.md` — 18 sesiones en ~9 semanas a MVP
 - `05-V0-SCOPE.md` — scope exacto de v0: qué entra, qué no, decisiones cerradas
 - `06-SETUP.md` — credenciales y software requeridos
+- `agent-comms/ROADMAP.md` — **estado vivo** y pending (el plan Session-1 está archivado)
+- `04-ROADMAP.md` — pointer al roadmap vivo + archive note
 
 ## Repositorios relacionados (referencias)
 
 - `/Users/lhpaul/Git/MOME/agent-hq` — herramienta existente en MOME. Fuente de patrones técnicos a heredar (orquestador, terminal bridge, fan-out reviewers, cost tracking). Leer su `CLAUDE.md` antes de implementar cualquier patrón que ya esté resuelto ahí.
 - `/Users/lhpaul/Git/ai-dev-framework-template` — template del que Helm hereda Spec → Plan → Code, REVIEW.md, branch naming, CHANGELOG. Leer su `AGENTS.md` para entender la filosofía protocol-first.
 - `/Users/lhpaul/Git/Helm/helm-knowledge` — knowledge repo del propio Helm: `.helm/product.yaml`, specs, plans, ADRs, retrospectivas.
+
+## Backlog oficial (GitHub Project #3)
+
+El backlog canónico de Helm es https://github.com/users/lhpaul/projects/3
+(configurado en `helm-knowledge/.helm/product.yaml`).
+
+Al crear issues de framework desde una sesión o retro, **siempre** añádelos al
+proyecto (no basta con `gh issue create`):
+
+```bash
+./scripts/create-helm-backlog-issue.sh --title "…" --body "…" --type Workflow --label review-loop
+```
+
+Runbook: `helm-knowledge/operations/helm-backlog.md`.
 
 ## Configuración local
 
@@ -36,37 +51,45 @@ Bun lee `.env` del directorio de trabajo del proceso — que es `apps/api/` cuan
 
 ### Secrets con 1Password (recomendado)
 
-Los secretos viven en 1Password; referencias `op://` en `apps/api/.env.template`.
-Paths locales y `GITHUB_TOKEN` van en `apps/api/.env.local` (gitignored).
+Un solo doc (`.env.example`) + un archivo de input por Product. `sync-env` inyecta secretos y escribe `.env`.
 
 ```bash
-cp apps/api/.env.local.example apps/api/.env.local
-# Editar .env.local: HELM_KNOWLEDGE_REPO_PATH, HELM_DATA_DIR, GITHUB_TOKEN
-
-pnpm sync-env   # op inject → apps/api/.env (correr tras rotar secrets o cambiar .env.local)
+# Create apps/api/.env.leasity-tenants or .env.helm from the blocks in .env.example
+pnpm sync-env -- leasity-tenants   # Arriendo Fácil (Linear)
+# pnpm sync-env -- helm            # Helm self-dogfood (GitHub Projects)
 pnpm dev
 ```
 
 Requisitos: [1Password CLI](https://developer.1password.com/docs/cli/get-started/) (`op`) y sesión activa (`op signin`).
 
-| Archivo              | Commitear | Contenido                           |
-| -------------------- | --------- | ----------------------------------- |
-| `.env.template`      | sí        | Referencias `op://` a secretos      |
-| `.env.local.example` | sí        | Plantilla de paths locales          |
-| `.env.local`         | no        | Tus paths + token GitHub            |
-| `.env`               | no        | Generado por `sync-env`; lo lee Bun |
+| Archivo                | Commitear | Contenido                            |
+| ---------------------- | --------- | ------------------------------------ |
+| `.env.example`         | sí        | Doc: variables + cómo usar 1Password |
+| `.env.leasity-tenants` | no        | Input sync-env para Arriendo Fácil   |
+| `.env.helm`            | no        | Input sync-env para Helm-the-product |
+| `.env`                 | no        | Generado por `sync-env`; lo lee Bun  |
+
+**1Password layout**
+
+| Ref                                                  | Uso                              |
+| ---------------------------------------------------- | -------------------------------- |
+| `op://Helm/helm/github-token`                        | PAT GitHub (Projects + repo API) |
+| `op://Leasity/leasity-tenants/linear-api-key`        | Linear LEA (solo Product AF)     |
+| `op://Leasity/leasity-tenants/github-webhook-secret` | Webhook GitHub → Helm (AF)       |
+
+Helm-the-product usa **GitHub Projects**, no Linear — no hay Linear API key en el vault `Helm`.
 
 ### Variables
 
-| Variable                   | Dónde definirla | Descripción                                                                                                                            |
-| -------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `HELM_KNOWLEDGE_REPO_PATH` | `.env.local`    | Path absoluto al knowledge repo del Product activo (donde vive `.helm/product.yaml`). Ejemplo: `/Users/lhpaul/Git/Helm/helm-knowledge` |
-| `HELM_DATA_DIR`            | `.env.local`    | Path absoluto a `data/` operativo (default: `apps/api/data`)                                                                           |
-| `GITHUB_TOKEN`             | `.env.local`    | PAT GitHub o salida de `gh auth token`                                                                                                 |
-| `LINEAR_API_KEY`           | `.env.template` | PAT Linear (resuelto por 1Password)                                                                                                    |
-| `GITHUB_WEBHOOK_SECRET`    | `.env.template` | Secret del webhook GitHub (resuelto por 1Password)                                                                                     |
+| Variable                   | Descripción                                                                   |
+| -------------------------- | ----------------------------------------------------------------------------- |
+| `HELM_KNOWLEDGE_REPO_PATH` | Path absoluto al knowledge repo del Product (donde vive `.helm/product.yaml`) |
+| `HELM_DATA_DIR`            | Path absoluto a `data/` operativo                                             |
+| `GITHUB_TOKEN`             | PAT GitHub                                                                    |
+| `LINEAR_API_KEY`           | Solo Arriendo Fácil (`issue_tracker.provider: linear`)                        |
+| `GITHUB_WEBHOOK_SECRET`    | Secret del webhook GitHub hacia Helm                                          |
 
-Setup manual sin 1Password: copiar `apps/api/.env.example`, crear `.env` a mano con todos los valores en claro (no recomendado para secretos).
+Setup manual sin 1Password: escribir `.env` a mano con valores en claro (no recomendado para secretos).
 
 Si en el futuro `apps/web` necesita variables de entorno, irán en `apps/web/.env.example` / `apps/web/.env` por separado.
 No centralizamos en root para no necesitar dotenv-cli overhead.
@@ -77,7 +100,7 @@ No centralizamos en root para no necesitar dotenv-cli overhead.
 - Frontend: React 18 + Tailwind + Vite.
 - Monorepo: pnpm workspaces + Turborepo.
 - Persistencia: GitHub Projects/Linear (workflow) + knowledge repo (artefactos) + filesystem `data/` (operativo).
-- Runtime de agentes (v0): solo Claude Code spawn. Abstracción `AgentRuntimeAdapter` lista para agregar runtimes en v1+.
+- Runtime de agentes: Claude Code (default) + Codex CLI (ADR-021/028). Abstracción `AgentRuntimeAdapter` para más runtimes.
 
 ## Decisiones cerradas
 

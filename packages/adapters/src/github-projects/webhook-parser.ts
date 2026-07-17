@@ -21,16 +21,29 @@ const IssuesWebhookSchema = z.object({
 
 const IssueCommentWebhookSchema = z.object({
   action: z.literal('created'),
-  comment: z.object({ body: z.string() }),
-  issue: z.object({ number: z.number().int().positive() }),
+  comment: z.object({
+    body: z.string(),
+    user: z.object({ login: z.string() }).optional(),
+  }),
+  issue: z.object({
+    number: z.number().int().positive(),
+    pull_request: z.unknown().optional(),
+  }),
+  repository: z
+    .object({
+      name: z.string(),
+      owner: z.object({ login: z.string() }),
+    })
+    .optional(),
 });
 
 // No .strict() — GitHub adds fields to pull_request objects without notice.
 const PullRequestWebhookSchema = z.object({
   action: z.string(),
   pull_request: z.object({
+    number: z.number().int().positive().optional(),
     merged: z.boolean(),
-    head: z.object({ ref: z.string() }),
+    head: z.object({ ref: z.string(), sha: z.string().optional() }),
   }),
   sender: z.object({ login: z.string() }).optional(),
 });
@@ -82,6 +95,19 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
     if (eventType === 'issue_comment') {
       const parsed = IssueCommentWebhookSchema.safeParse(payload);
       if (!parsed.success) return { type: 'unknown', raw: rawEvent };
+      if (parsed.data.issue.pull_request !== undefined) {
+        const repo = parsed.data.repository;
+        if (!repo) return { type: 'unknown', raw: rawEvent };
+        return {
+          type: 'pull_request_comment_created',
+          owner: repo.owner.login,
+          repo: repo.name,
+          prNumber: parsed.data.issue.number,
+          body: parsed.data.comment.body,
+          authorLogin: parsed.data.comment.user?.login ?? null,
+          timestamp,
+        };
+      }
       return {
         type: 'comment_added',
         externalId: `issue_${parsed.data.issue.number}`,
@@ -102,6 +128,8 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
         return {
           type: 'pull_request_synchronized',
           headRef: pr.head.ref,
+          prNumber: pr.number,
+          headSha: pr.head.sha,
           senderLogin: parsed.data.sender?.login ?? null,
           timestamp,
         };

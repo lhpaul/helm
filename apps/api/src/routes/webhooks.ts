@@ -17,6 +17,12 @@ import {
 import { createItem, transitionItem } from '../services/item-service.js';
 import { scheduleItemDispatch } from '../services/dispatch-scheduler.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
+import {
+  authorHasWriteAccess,
+  getPrimaryCodeRepo,
+  resolveOpenPrMetadata,
+} from '../services/github-pr.js';
+import { readGitHubTokenFromEnv } from '../lib/github-token.js';
 
 // ── Artifact branch routing ───────────────────────────────────────────────────
 
@@ -43,6 +49,33 @@ const ORCHESTRATOR_SENDER_LOGINS = new Set(['helm-bot']);
 
 function isOrchestratorSender(login: string | null): boolean {
   return login !== null && ORCHESTRATOR_SENDER_LOGINS.has(login);
+}
+
+const PRODUCT_DECISION_MARKER = '<!-- helm:product-decision -->';
+
+type ProductDecisionComment = {
+  conflictKind: string;
+  conflictTitle: string;
+  chosenOption: string;
+};
+
+function fieldFromDecisionBody(body: string, names: string[]): string | null {
+  for (const name of names) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = body.match(new RegExp(`^\\s*(?:[-*]\\s*)?${escaped}\\s*:\\s*(.+?)\\s*$`, 'im'));
+    const value = match?.[1]?.trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+function parseProductDecisionComment(body: string): ProductDecisionComment | null {
+  if (!body.includes(PRODUCT_DECISION_MARKER)) return null;
+  const conflictKind = fieldFromDecisionBody(body, ['Conflict kind', 'conflict_kind']);
+  const conflictTitle = fieldFromDecisionBody(body, ['Conflict title', 'conflict_title']);
+  const chosenOption = fieldFromDecisionBody(body, ['Chosen option', 'chosen_option']);
+  if (!conflictKind || !conflictTitle || !chosenOption) return null;
+  return { conflictKind, conflictTitle, chosenOption };
 }
 
 export const webhooksRouter = new Hono();
@@ -78,14 +111,14 @@ webhooksRouter.post('/webhooks/github', async (c) => {
   const eventType = c.req.header('x-github-event') ?? '';
   let event: NormalizedEvent;
   try {
-    if (eventType === 'pull_request' || eventType === 'release') {
+    if (eventType === 'pull_request' || eventType === 'release' || eventType === 'issue_comment') {
       // Tracker-agnostic — pure parser. The knowledge/code repos are always on
       // GitHub regardless of the issue tracker, so PR merge events (helm/spec/*,
       // helm/plan/*, helm/impl/*) AND release.published events must process for
       // Linear products too (a Linear product still ships via GitHub releases).
       event = parseGitHubWebhook({ eventType, payload: body });
     } else {
-      // issues / issue_comment / projects_v2_item — require the GitHub Projects
+      // issues / projects_v2_item — require the GitHub Projects
       // adapter. For a non-GitHub-Projects product (e.g. Linear) this is the wrong
       // route: issue events arrive via /api/webhooks/linear. Reject that known
       // misroute explicitly with 400 so GitHub does not retry a permanently-
@@ -163,6 +196,85 @@ webhooksRouter.post('/webhooks/github', async (c) => {
     }
   } else if (event.type === 'comment_added') {
     console.info(`[webhooks/github] comment_added on ${event.externalId} — no action in v0`);
+  } else if (event.type === 'pull_request_comment_created') {
+    const decision = parseProductDecisionComment(event.body);
+    if (!decision) {
+      console.info('[webhooks/github] PR comment ignored — no structured Helm decision');
+    } else {
+      try {
+        const [config, itemStore] = await Promise.all([getProductConfig(), getItemStore()]);
+        const repo = getPrimaryCodeRepo(config);
+        if (event.owner !== repo.owner || event.repo !== repo.repo) {
+          console.info('[webhooks/github] PR decision ignored — repository mismatch');
+          return c.json({ processed: true });
+        }
+
+        const githubToken = readGitHubTokenFromEnv();
+        if (!githubToken) {
+          console.error('[webhooks/github] GITHUB_TOKEN is not configured for PR decision');
+          return c.json({ processed: true });
+        }
+
+        if (!event.authorLogin) {
+          console.info('[webhooks/github] PR decision ignored — missing author login');
+          return c.json({ processed: true });
+        }
+        const authorized = await authorHasWriteAccess({
+          product: config,
+          login: event.authorLogin,
+          githubToken,
+        });
+        if (!authorized) {
+          console.info(
+            `[webhooks/github] PR decision ignored — unauthorized author '${event.authorLogin}'`,
+          );
+          return c.json({ processed: true });
+        }
+
+        const pr = await resolveOpenPrMetadata({
+          product: config,
+          prNumber: event.prNumber,
+          githubToken,
+        });
+        if (pr.owner !== event.owner || pr.repo !== event.repo || pr.number !== event.prNumber) {
+          console.info('[webhooks/github] PR decision ignored — PR metadata mismatch');
+          return c.json({ processed: true });
+        }
+
+        const parsed = parseArtifactBranch(pr.headRef);
+        if (parsed?.kind !== 'impl') {
+          console.info('[webhooks/github] PR decision ignored — PR is not an impl branch');
+          return c.json({ processed: true });
+        }
+
+        const item = await itemStore.get(parsed.externalId);
+        if (item?.productSlug !== config.product.slug || item.currentStage !== 'code-review') {
+          console.info(
+            `[webhooks/github] PR decision ignored — item stage '${item?.currentStage ?? 'missing'}'`,
+          );
+          return c.json({ processed: true });
+        }
+
+        const outcome = await scheduleItemDispatch({
+          productSlug: config.product.slug,
+          externalId: parsed.externalId,
+          specialistId: 'reviewer-fanout',
+          targetRevision: pr.headSha,
+          prNumber: pr.number,
+          triggeredBy: 'webhook:pr-decision-comment',
+        });
+        if (!outcome.scheduled) {
+          console.info(
+            `[webhooks/github] PR decision dispatch skipped for ${parsed.externalId}: ${outcome.reason}`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          '[webhooks/github] Failed to process PR decision comment:',
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
   } else if (event.type === 'pull_request_synchronized') {
     if (isOrchestratorSender(event.senderLogin)) {
       console.info(

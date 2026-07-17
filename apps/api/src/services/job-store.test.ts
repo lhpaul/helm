@@ -50,6 +50,13 @@ describe('createJob', () => {
     expect(retrieved?.status).toBe('running');
   });
 
+  it('persists targetRevision when provided', async () => {
+    const job = await store.createJob({ ...BASE_INPUT, targetRevision: 'sha-a' });
+
+    expect(job.targetRevision).toBe('sha-a');
+    await expect(store.getJob(job.jobId)).resolves.toMatchObject({ targetRevision: 'sha-a' });
+  });
+
   it('each call creates a unique job with a new jobId', async () => {
     const job1 = await store.createJob(BASE_INPUT);
     const job2 = await store.createJob(BASE_INPUT);
@@ -182,6 +189,65 @@ describe('getRunningJobForItem', () => {
     });
     const running = await store.getRunningJobForItem('test-product', 'issue_1');
     expect(running).toBeNull();
+  });
+});
+
+describe('createJobIfNoRunning', () => {
+  it('creates a job with targetRevision when no running or duplicate job exists', async () => {
+    const outcome = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+
+    expect(outcome).toMatchObject({ job: { targetRevision: 'sha-a' } });
+  });
+
+  it('dedupes an existing job with the same targetRevision even after it finishes', async () => {
+    const first = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+    if (!('job' in first)) throw new Error('expected job');
+    await store.updateJob(first.job.jobId, {
+      status: 'done',
+      finishedAt: new Date().toISOString(),
+    });
+
+    const second = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+
+    expect(second).toEqual({ duplicate: true, existingJobId: first.job.jobId });
+  });
+
+  it('blocks a newer targetRevision while an older job is running', async () => {
+    const first = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+    if (!('job' in first)) throw new Error('expected job');
+
+    const second = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-b' });
+
+    expect(second).toEqual({
+      conflict: true,
+      runningJobId: first.job.jobId,
+      runningTargetRevision: 'sha-a',
+    });
+  });
+
+  it('allows a newer targetRevision after the older running job finishes', async () => {
+    const first = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+    if (!('job' in first)) throw new Error('expected job');
+    await store.updateJob(first.job.jobId, {
+      status: 'done',
+      finishedAt: new Date().toISOString(),
+    });
+
+    const second = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-b' });
+
+    expect(second).toMatchObject({ job: { targetRevision: 'sha-b' } });
+  });
+
+  it('concurrent duplicate deliveries produce only one same-target job', async () => {
+    const [first, second] = await Promise.all([
+      store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' }),
+      store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' }),
+    ]);
+
+    const created = [first, second].filter((outcome) => 'job' in outcome);
+    expect(created).toHaveLength(1);
+    const jobs = await store.listJobsForItem(BASE_INPUT.productSlug, BASE_INPUT.externalId);
+    expect(jobs.filter((job) => job.targetRevision === 'sha-a')).toHaveLength(1);
   });
 });
 

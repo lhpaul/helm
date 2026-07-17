@@ -65,8 +65,19 @@ export type NormalizedEvent =
   | {
       type: 'pull_request_synchronized';
       headRef: string;
+      prNumber?: number;
+      headSha?: string;
       /** GitHub `sender.login` when present — used to ignore orchestrator bot pushes. */
       senderLogin: string | null;
+      timestamp: string;
+    }
+  | {
+      type: 'pull_request_comment_created';
+      owner: string;
+      repo: string;
+      prNumber: number;
+      body: string;
+      authorLogin: string | null;
       timestamp: string;
     }
   /**

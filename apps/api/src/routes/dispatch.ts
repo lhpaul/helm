@@ -149,6 +149,15 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
       409,
     );
   }
+  if ('duplicate' in outcome) {
+    return c.json(
+      {
+        error: 'An equivalent dispatch job already exists for this item',
+        existingJobId: outcome.existingJobId,
+      },
+      409,
+    );
+  }
   const { job } = outcome;
 
   void runDispatchJob(job, {

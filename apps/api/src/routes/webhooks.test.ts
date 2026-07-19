@@ -19,6 +19,11 @@ const {
   mockSetSubStage,
   mockEnsureSubStages,
   mockScheduleItemDispatch,
+  mockPersistReviewDispatchIntent,
+  mockResolveOpenPrMetadata,
+  mockAuthorHasWriteAccess,
+  mockGetPrimaryCodeRepo,
+  mockListPrIssueComments,
 } = vi.hoisted(() => ({
   mockParseWebhook: vi.fn(),
   mockCreate: vi.fn(),
@@ -28,10 +33,23 @@ const {
   mockSetSubStage: vi.fn(),
   mockEnsureSubStages: vi.fn(),
   mockScheduleItemDispatch: vi.fn(),
+  mockPersistReviewDispatchIntent: vi.fn(),
+  mockResolveOpenPrMetadata: vi.fn(),
+  mockAuthorHasWriteAccess: vi.fn(),
+  mockGetPrimaryCodeRepo: vi.fn(),
+  mockListPrIssueComments: vi.fn(),
 }));
 
 vi.mock('../services/dispatch-scheduler.js', () => ({
   scheduleItemDispatch: mockScheduleItemDispatch,
+  persistReviewDispatchIntent: mockPersistReviewDispatchIntent,
+}));
+
+vi.mock('../services/github-pr.js', () => ({
+  resolveOpenPrMetadata: mockResolveOpenPrMetadata,
+  authorHasWriteAccess: mockAuthorHasWriteAccess,
+  getPrimaryCodeRepo: mockGetPrimaryCodeRepo,
+  listPrIssueComments: mockListPrIssueComments,
 }));
 
 vi.mock('../services/index.js', async (importOriginal) => {
@@ -88,17 +106,82 @@ async function post(
 /** Builds a real pull_request webhook payload (parsed by the pure parseGitHubWebhook). */
 function mergedPrPayload(
   headRef: string,
-  opts: { action?: string; merged?: boolean; senderLogin?: string } = {},
+  opts: {
+    action?: string;
+    merged?: boolean;
+    senderLogin?: string;
+    prNumber?: number;
+    headSha?: string;
+  } = {},
 ): string {
   const payload: Record<string, unknown> = {
     action: opts.action ?? 'closed',
-    pull_request: { merged: opts.merged ?? true, head: { ref: headRef } },
+    pull_request: {
+      number: opts.prNumber ?? 42,
+      merged: opts.merged ?? true,
+      head: { ref: headRef, sha: opts.headSha ?? 'sha-sync-1' },
+    },
   };
   if (opts.senderLogin) {
     payload.sender = { login: opts.senderLogin };
   }
   return JSON.stringify(payload);
 }
+
+function prCommentPayload(
+  body: string,
+  opts: {
+    action?: string;
+    prNumber?: number;
+    owner?: string;
+    repo?: string;
+    authorLogin?: string;
+  } = {},
+): string {
+  return JSON.stringify({
+    action: opts.action ?? 'created',
+    issue: { number: opts.prNumber ?? 42, pull_request: { url: 'https://api.github.com/pr' } },
+    comment: { body, user: { login: opts.authorLogin ?? 'maintainer' } },
+    repository: {
+      name: opts.repo ?? 'test-repo',
+      owner: { login: opts.owner ?? 'test-org' },
+    },
+  });
+}
+
+const MARKDOWN_DECISION = [
+  '<!-- helm:product-decision -->',
+  '- **product_decision** · Pick direction',
+  '- **Chosen option:** Option A',
+].join('\n');
+
+const LEGACY_STRUCTURED_DECISION = [
+  '<!-- helm:product-decision -->',
+  'Conflict kind: product_decision',
+  'Conflict title: Pick direction',
+  'Chosen option: Option A',
+].join('\n');
+
+const SPEC_STRUCTURED_DECISION = [
+  '<!-- helm:product-decision -->',
+  '- **Conflict:** product_decision · Pick direction',
+  '- **Chosen:** Option A',
+].join('\n');
+
+const HUMAN_REQUIRED_ADJUDICATION = [
+  '# Review Adjudication: issue_42',
+  '',
+  '## Conflicts',
+  '- **product_decision** · Pick direction',
+  '  Option A: keep the current review-loop behavior.',
+  '  Option B: change review-loop behavior.',
+  '',
+  '## Unified remediation plan',
+  '- **DEFERRED** · Pick direction — awaiting human decision',
+  '',
+  '## Status',
+  'HUMAN_REQUIRED',
+].join('\n');
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -107,6 +190,7 @@ describe('POST /api/webhooks/github', () => {
     _resetForTests();
     vi.clearAllMocks();
     process.env.GITHUB_WEBHOOK_SECRET = TEST_SECRET;
+    process.env.GITHUB_TOKEN = 'test-github-token';
     // clearAllMocks does not reset implementations, so a per-describe override
     // (e.g. the Linear block) would otherwise leak into later tests. Re-establish
     // the default GitHub Projects config and a working adapter before each test.
@@ -126,6 +210,18 @@ describe('POST /api/webhooks/github', () => {
     mockEnsureSubStages.mockResolvedValue(undefined);
     mockSetSubStage.mockResolvedValue(undefined);
     mockScheduleItemDispatch.mockResolvedValue({ scheduled: true, jobId: 'job-sync-1' });
+    mockPersistReviewDispatchIntent.mockResolvedValue(undefined);
+    mockGetPrimaryCodeRepo.mockReturnValue({ owner: 'test-org', repo: 'test-repo' });
+    mockAuthorHasWriteAccess.mockResolvedValue(true);
+    mockResolveOpenPrMetadata.mockResolvedValue({
+      owner: 'test-org',
+      repo: 'test-repo',
+      number: 42,
+      headRef: 'helm/impl/issue_42',
+      headSha: 'sha-42',
+      htmlUrl: 'https://github.com/test-org/test-repo/pull/42',
+    });
+    mockListPrIssueComments.mockResolvedValue([{ id: 1, body: HUMAN_REQUIRED_ADJUDICATION }]);
     mockGet.mockResolvedValue(null);
     vi.mocked(getIssueTrackerAdapter).mockResolvedValue({
       setSubStage: mockSetSubStage,
@@ -135,6 +231,7 @@ describe('POST /api/webhooks/github', () => {
 
   afterEach(() => {
     delete process.env.GITHUB_WEBHOOK_SECRET;
+    delete process.env.GITHUB_TOKEN;
   });
 
   describe('authentication', () => {
@@ -297,6 +394,218 @@ describe('POST /api/webhooks/github', () => {
     });
   });
 
+  describe('dispatch: pull_request_comment_created', () => {
+    it('schedules reviewer-fanout for an authorized structured decision on the impl PR', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockAuthorHasWriteAccess).toHaveBeenCalledWith(
+        expect.objectContaining({ login: 'maintainer' }),
+      );
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        specialistId: 'reviewer-fanout',
+        targetRevision: 'sha-42',
+        prNumber: 42,
+        triggeredBy: 'webhook:pr-decision-comment',
+      });
+    });
+
+    it('preserves fallback parsing for legacy structured decisions', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(prCommentPayload(LEGACY_STRUCTURED_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          specialistId: 'reviewer-fanout',
+        }),
+      );
+    });
+
+    it('accepts the spec structured decision labels', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(prCommentPayload(SPEC_STRUCTURED_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          specialistId: 'reviewer-fanout',
+        }),
+      );
+    });
+
+    it('ignores structured decisions that do not match the latest adjudication record', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      mockListPrIssueComments.mockResolvedValue([
+        { id: 1, body: HUMAN_REQUIRED_ADJUDICATION },
+        {
+          id: 2,
+          body: [
+            '# Review Adjudication: issue_42',
+            '',
+            '## Conflicts',
+            '- **product_decision** · Different direction',
+            '  Option B: choose another path.',
+            '',
+            '## Status',
+            'HUMAN_REQUIRED',
+          ].join('\n'),
+        },
+      ]);
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('returns 503 when structured decision processing unexpectedly fails', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      mockListPrIssueComments.mockRejectedValue(new Error('GitHub API failed'));
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(503);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('returns 503 when GITHUB_TOKEN is missing for an authorized decision path', async () => {
+      delete process.env.GITHUB_TOKEN;
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(503);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
+    });
+
+    it('persists a pending intent when scheduling rejects after an authorized decision', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      mockScheduleItemDispatch.mockResolvedValue({
+        scheduled: false,
+        reason: 'Unable to schedule dispatch',
+      });
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockPersistReviewDispatchIntent).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        triggeredBy: 'webhook:pr-decision-comment',
+      });
+    });
+
+    it('ignores unmarked PR comments', async () => {
+      const res = await post(prCommentPayload('LGTM'), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockAuthorHasWriteAccess).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ignores malformed marker-bearing comments', async () => {
+      const res = await post(prCommentPayload('<!-- helm:product-decision -->'), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockAuthorHasWriteAccess).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ignores edited marker-bearing comments', async () => {
+      const res = await post(
+        prCommentPayload(MARKDOWN_DECISION, { action: 'edited' }),
+        'issue_comment',
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ignores comments on the wrong repository', async () => {
+      const res = await post(
+        prCommentPayload(MARKDOWN_DECISION, { repo: 'other-repo' }),
+        'issue_comment',
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockAuthorHasWriteAccess).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ignores marker-bearing comments from users without write access', async () => {
+      mockAuthorHasWriteAccess.mockResolvedValue(false);
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ignores structured decisions on the wrong PR head', async () => {
+      mockResolveOpenPrMetadata.mockResolvedValue({
+        owner: 'test-org',
+        repo: 'test-repo',
+        number: 42,
+        headRef: 'helm/impl/issue_99',
+        headSha: 'sha-99',
+        htmlUrl: 'https://github.com/test-org/test-repo/pull/42',
+      });
+      mockGet.mockResolvedValue(null);
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+  });
+
   describe('dispatch: pull_request_merged', () => {
     // Fix 1: pull_request events are parsed by the pure parseGitHubWebhook — the
     // GitHub Projects adapter is NOT consulted. Each test sends a real PR payload.
@@ -448,7 +757,12 @@ describe('POST /api/webhooks/github', () => {
     // ── Impl PR synchronize (helm/impl/ → re-dispatch reviewer-fanout) ─────
 
     it('schedules reviewer-fanout when helm/impl/ PR syncs and item is in code-review', async () => {
-      const body = mergedPrPayload('helm/impl/LEA-192', { action: 'synchronize', merged: false });
+      const body = mergedPrPayload('helm/impl/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+        prNumber: 77,
+        headSha: 'sha-lea-192',
+      });
       mockGet.mockResolvedValue({
         externalId: 'LEA-192',
         productSlug: 'test-app',
@@ -461,6 +775,9 @@ describe('POST /api/webhooks/github', () => {
       expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
         productSlug: 'test-app',
         externalId: 'LEA-192',
+        specialistId: 'reviewer-fanout',
+        targetRevision: 'sha-lea-192',
+        prNumber: 77,
         triggeredBy: 'webhook:impl-pr-sync',
       });
       expect(mockTransition).not.toHaveBeenCalled();

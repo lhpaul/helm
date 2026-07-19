@@ -15,8 +15,18 @@ import {
   getProductConfig,
 } from '../services/index.js';
 import { createItem, transitionItem } from '../services/item-service.js';
-import { scheduleItemDispatch } from '../services/dispatch-scheduler.js';
+import {
+  scheduleItemDispatch,
+  persistReviewDispatchIntent,
+} from '../services/dispatch-scheduler.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
+import {
+  authorHasWriteAccess,
+  getPrimaryCodeRepo,
+  listPrIssueComments,
+  resolveOpenPrMetadata,
+} from '../services/github-pr.js';
+import { readGitHubTokenFromEnv } from '../lib/github-token.js';
 
 // ── Artifact branch routing ───────────────────────────────────────────────────
 
@@ -43,6 +53,167 @@ const ORCHESTRATOR_SENDER_LOGINS = new Set(['helm-bot']);
 
 function isOrchestratorSender(login: string | null): boolean {
   return login !== null && ORCHESTRATOR_SENDER_LOGINS.has(login);
+}
+
+const PRODUCT_DECISION_MARKER = '<!-- helm:product-decision -->';
+
+type ProductDecisionComment = {
+  conflictKind: string;
+  conflictTitle: string;
+  chosenOption: string;
+};
+
+type AdjudicationConflictRecord = ProductDecisionComment & {
+  body: string;
+};
+
+function fieldFromDecisionBody(body: string, names: string[]): string | null {
+  for (const name of names) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = body.match(
+      new RegExp(
+        `^\\s*(?:[-*]\\s*)?(?:\\*\\*)?${escaped}(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?\\s*(.+?)\\s*(?:\\*\\*)?\\s*$`,
+        'im',
+      ),
+    );
+    const value = match?.[1]?.replace(/\*\*$/u, '').trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+function conflictFromDecisionMarkdown(
+  body: string,
+): Pick<ProductDecisionComment, 'conflictKind' | 'conflictTitle'> | null {
+  const match = body.match(/^\s*[-*]\s*\*\*(product_decision|doc_conflict)\*\*\s*·\s*(.+?)\s*$/im);
+  const conflictKind = match?.[1]?.trim();
+  const conflictTitle = match?.[2]?.trim();
+  if (!conflictKind || !conflictTitle) return null;
+  return { conflictKind, conflictTitle };
+}
+
+function conflictFromDecisionField(
+  body: string,
+): Pick<ProductDecisionComment, 'conflictKind' | 'conflictTitle'> | null {
+  const conflict = fieldFromDecisionBody(body, ['Conflict']);
+  const match = conflict?.match(/^(product_decision|doc_conflict)\s*(?:·|-|:)\s*(.+?)$/iu);
+  const conflictKind = match?.[1]?.trim();
+  const conflictTitle = match?.[2]?.trim();
+  if (!conflictKind || !conflictTitle) return null;
+  return { conflictKind, conflictTitle };
+}
+
+function parseProductDecisionComment(body: string): ProductDecisionComment | null {
+  if (!body.includes(PRODUCT_DECISION_MARKER)) return null;
+  const markdownConflict = conflictFromDecisionMarkdown(body);
+  const labeledConflict = conflictFromDecisionField(body);
+  const conflictKind =
+    markdownConflict?.conflictKind ??
+    labeledConflict?.conflictKind ??
+    fieldFromDecisionBody(body, ['Conflict kind', 'conflict_kind']);
+  const conflictTitle =
+    markdownConflict?.conflictTitle ??
+    labeledConflict?.conflictTitle ??
+    fieldFromDecisionBody(body, ['Conflict title', 'conflict_title']);
+  const chosenOption = fieldFromDecisionBody(body, ['Chosen option', 'chosen_option', 'Chosen']);
+  if (!conflictKind || !conflictTitle || !chosenOption) return null;
+  return { conflictKind, conflictTitle, chosenOption };
+}
+
+function normalizeDecisionText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function extractMarkdownSection(body: string, heading: string): string {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = body.match(
+    new RegExp(`(?:^|\\n)##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, 'i'),
+  );
+  return match?.[1]?.trim() ?? '';
+}
+
+function adjudicationExternalId(body: string): string | null {
+  return body.match(/^#\s+Review Adjudication:\s*(.+?)\s*$/im)?.[1]?.trim() ?? null;
+}
+
+function adjudicationStatus(body: string): string | null {
+  return (
+    extractMarkdownSection(body, 'Status').match(/^(AUTO_REMEDIATE|HUMAN_REQUIRED)\b/i)?.[1] ?? null
+  );
+}
+
+function parseAdjudicationConflicts(body: string): AdjudicationConflictRecord[] {
+  const conflicts = extractMarkdownSection(body, 'Conflicts');
+  if (!conflicts) return [];
+
+  const records: AdjudicationConflictRecord[] = [];
+  const lines = conflicts.split(/\r?\n/);
+  let current: {
+    conflictKind: string;
+    conflictTitle: string;
+    lines: string[];
+  } | null = null;
+
+  const flush = () => {
+    if (!current) return;
+    records.push({
+      conflictKind: current.conflictKind,
+      conflictTitle: current.conflictTitle,
+      chosenOption: '',
+      body: current.lines.join('\n'),
+    });
+  };
+
+  for (const line of lines) {
+    const match = line.match(/^\s*-\s*\*\*(product_decision|doc_conflict)\*\*\s*·\s*(.+?)\s*$/i);
+    if (match) {
+      flush();
+      current = {
+        conflictKind: match[1] ?? '',
+        conflictTitle: match[2]?.trim() ?? '',
+        lines: [line],
+      };
+    } else if (current) {
+      current.lines.push(line);
+    }
+  }
+  flush();
+
+  return records;
+}
+
+function productDecisionMatchesAdjudication(
+  decision: ProductDecisionComment,
+  externalId: string,
+  adjudicationBody: string,
+): boolean {
+  if (adjudicationExternalId(adjudicationBody) !== externalId) return false;
+  if (adjudicationStatus(adjudicationBody)?.toUpperCase() !== 'HUMAN_REQUIRED') return false;
+
+  const expectedKind = normalizeDecisionText(decision.conflictKind);
+  const expectedTitle = normalizeDecisionText(decision.conflictTitle);
+  const expectedOption = normalizeDecisionText(decision.chosenOption);
+
+  return parseAdjudicationConflicts(adjudicationBody).some((record) => {
+    return (
+      normalizeDecisionText(record.conflictKind) === expectedKind &&
+      normalizeDecisionText(record.conflictTitle) === expectedTitle &&
+      normalizeDecisionText(record.body).includes(expectedOption)
+    );
+  });
+}
+
+function hasMatchingLatestAdjudication(
+  decision: ProductDecisionComment,
+  externalId: string,
+  commentBodies: string[],
+): boolean {
+  const latestAdjudication = [...commentBodies]
+    .reverse()
+    .find((body) => adjudicationExternalId(body) === externalId);
+  return latestAdjudication
+    ? productDecisionMatchesAdjudication(decision, externalId, latestAdjudication)
+    : false;
 }
 
 export const webhooksRouter = new Hono();
@@ -78,14 +249,14 @@ webhooksRouter.post('/webhooks/github', async (c) => {
   const eventType = c.req.header('x-github-event') ?? '';
   let event: NormalizedEvent;
   try {
-    if (eventType === 'pull_request' || eventType === 'release') {
+    if (eventType === 'pull_request' || eventType === 'release' || eventType === 'issue_comment') {
       // Tracker-agnostic — pure parser. The knowledge/code repos are always on
       // GitHub regardless of the issue tracker, so PR merge events (helm/spec/*,
       // helm/plan/*, helm/impl/*) AND release.published events must process for
       // Linear products too (a Linear product still ships via GitHub releases).
       event = parseGitHubWebhook({ eventType, payload: body });
     } else {
-      // issues / issue_comment / projects_v2_item — require the GitHub Projects
+      // issues / projects_v2_item — require the GitHub Projects
       // adapter. For a non-GitHub-Projects product (e.g. Linear) this is the wrong
       // route: issue events arrive via /api/webhooks/linear. Reject that known
       // misroute explicitly with 400 so GitHub does not retry a permanently-
@@ -163,6 +334,111 @@ webhooksRouter.post('/webhooks/github', async (c) => {
     }
   } else if (event.type === 'comment_added') {
     console.info(`[webhooks/github] comment_added on ${event.externalId} — no action in v0`);
+  } else if (event.type === 'pull_request_comment_created') {
+    const decision = parseProductDecisionComment(event.body);
+    if (!decision) {
+      console.info('[webhooks/github] PR comment ignored — no structured Helm decision');
+    } else {
+      try {
+        const [config, itemStore] = await Promise.all([getProductConfig(), getItemStore()]);
+        const repo = getPrimaryCodeRepo(config);
+        if (event.owner !== repo.owner || event.repo !== repo.repo) {
+          console.info('[webhooks/github] PR decision ignored — repository mismatch');
+          return c.json({ processed: true });
+        }
+
+        const githubToken = readGitHubTokenFromEnv();
+        if (!githubToken) {
+          // Without credentials we cannot authorize or resolve the impl item.
+          // Return 503 so GitHub retries — do not ACK a droppable decision.
+          console.error('[webhooks/github] GITHUB_TOKEN is not configured for PR decision');
+          return c.json({ error: 'GITHUB_TOKEN is not configured' }, 503);
+        }
+
+        if (!event.authorLogin) {
+          console.info('[webhooks/github] PR decision ignored — missing author login');
+          return c.json({ processed: true });
+        }
+        const authorized = await authorHasWriteAccess({
+          product: config,
+          login: event.authorLogin,
+          githubToken,
+        });
+        if (!authorized) {
+          console.info(
+            `[webhooks/github] PR decision ignored — unauthorized author '${event.authorLogin}'`,
+          );
+          return c.json({ processed: true });
+        }
+
+        const pr = await resolveOpenPrMetadata({
+          product: config,
+          prNumber: event.prNumber,
+          githubToken,
+        });
+        if (pr.owner !== event.owner || pr.repo !== event.repo || pr.number !== event.prNumber) {
+          console.info('[webhooks/github] PR decision ignored — PR metadata mismatch');
+          return c.json({ processed: true });
+        }
+
+        const parsed = parseArtifactBranch(pr.headRef);
+        if (parsed?.kind !== 'impl') {
+          console.info('[webhooks/github] PR decision ignored — PR is not an impl branch');
+          return c.json({ processed: true });
+        }
+
+        const item = await itemStore.get(parsed.externalId);
+        if (item?.productSlug !== config.product.slug || item.currentStage !== 'code-review') {
+          console.info(
+            `[webhooks/github] PR decision ignored — item stage '${item?.currentStage ?? 'missing'}'`,
+          );
+          return c.json({ processed: true });
+        }
+
+        const comments = await listPrIssueComments({
+          product: config,
+          prNumber: pr.number,
+          githubToken,
+        });
+        const decisionMatchesRecord = hasMatchingLatestAdjudication(
+          decision,
+          parsed.externalId,
+          comments.map((comment) => comment.body),
+        );
+        if (!decisionMatchesRecord) {
+          console.info('[webhooks/github] PR decision ignored — no matching adjudication record');
+          return c.json({ processed: true });
+        }
+
+        const outcome = await scheduleItemDispatch({
+          productSlug: config.product.slug,
+          externalId: parsed.externalId,
+          specialistId: 'reviewer-fanout',
+          targetRevision: pr.headSha,
+          prNumber: pr.number,
+          triggeredBy: 'webhook:pr-decision-comment',
+        });
+        if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+          await persistReviewDispatchIntent({
+            productSlug: config.product.slug,
+            externalId: parsed.externalId,
+            prNumber: pr.number,
+            targetRevision: pr.headSha,
+            triggeredBy: 'webhook:pr-decision-comment',
+          });
+          console.info(
+            `[webhooks/github] PR decision dispatch deferred for ${parsed.externalId}: ${outcome.reason}`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          '[webhooks/github] Failed to process PR decision comment:',
+          err instanceof Error ? err.message : String(err),
+        );
+        // Transient failure after an authorized decision — ask GitHub to retry.
+        return c.json({ error: 'Temporary failure processing PR decision' }, 503);
+      }
+    }
   } else if (event.type === 'pull_request_synchronized') {
     if (isOrchestratorSender(event.senderLogin)) {
       console.info(
@@ -178,11 +454,23 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             const outcome = await scheduleItemDispatch({
               productSlug: config.product.slug,
               externalId: parsed.externalId,
+              specialistId: 'reviewer-fanout',
+              targetRevision: event.headSha,
+              prNumber: event.prNumber,
               triggeredBy: 'webhook:impl-pr-sync',
             });
-            if (!outcome.scheduled) {
+            if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+              if (event.headSha || event.prNumber !== undefined) {
+                await persistReviewDispatchIntent({
+                  productSlug: config.product.slug,
+                  externalId: parsed.externalId,
+                  prNumber: event.prNumber,
+                  targetRevision: event.headSha,
+                  triggeredBy: 'webhook:impl-pr-sync',
+                });
+              }
               console.info(
-                `[webhooks/github] impl PR sync for ${parsed.externalId} — dispatch skipped: ${outcome.reason}`,
+                `[webhooks/github] impl PR sync for ${parsed.externalId} — dispatch deferred: ${outcome.reason}`,
               );
             }
           } else {

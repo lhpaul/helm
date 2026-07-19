@@ -24,6 +24,11 @@ const BodySchema = z
      * meaningful) when specialistId is spec-remediator or plan-remediator.
      */
     feedback: z.string().min(1).max(10000).optional(),
+    /** Optional git SHA for revision-aware dispatch deduplication. */
+    targetRevision: z
+      .string()
+      .regex(/^[0-9a-f]{7,64}$/i, 'targetRevision must be a git SHA')
+      .optional(),
   })
   .strict()
   .superRefine((data, ctx) => {
@@ -139,12 +144,22 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
     productSlug: slug,
     externalId,
     specialistId: bodyResult.data.specialistId ?? 'auto',
+    targetRevision: bodyResult.data.targetRevision,
   });
   if ('conflict' in outcome) {
     return c.json(
       {
         error: 'A dispatch job is already running for this item',
         runningJobId: outcome.runningJobId,
+      },
+      409,
+    );
+  }
+  if ('duplicate' in outcome) {
+    return c.json(
+      {
+        error: 'An equivalent dispatch job already exists for this item',
+        existingJobId: outcome.existingJobId,
       },
       409,
     );

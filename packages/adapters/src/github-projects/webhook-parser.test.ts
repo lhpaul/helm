@@ -57,9 +57,68 @@ describe('parseGitHubWebhook', () => {
       expect(result).toMatchObject({ type: 'comment_added', externalId: 'issue_5', body: 'LGTM' });
     });
 
+    it('issue_comment.created on a PR → pull_request_comment_created', () => {
+      const result = parseGitHubWebhook(
+        ctx('issue_comment', {
+          action: 'created',
+          comment: { body: '<!-- helm:product-decision -->', user: { login: 'maintainer' } },
+          issue: { number: 42, pull_request: { url: 'https://api.github.com/pr' } },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result).toEqual({
+        type: 'pull_request_comment_created',
+        owner: 'owner',
+        repo: 'repo',
+        prNumber: 42,
+        body: '<!-- helm:product-decision -->',
+        authorLogin: 'maintainer',
+        timestamp: expect.any(String),
+      });
+    });
+
+    it('issue_comment.created free-form on a PR still emits PR comment for route filtering', () => {
+      const result = parseGitHubWebhook(
+        ctx('issue_comment', {
+          action: 'created',
+          comment: { body: 'LGTM' },
+          issue: { number: 42, pull_request: { url: 'https://api.github.com/pr' } },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result).toMatchObject({
+        type: 'pull_request_comment_created',
+        body: 'LGTM',
+        authorLogin: null,
+      });
+    });
+
     it('issue_comment with wrong action → unknown', () => {
       const result = parseGitHubWebhook(
         ctx('issue_comment', { action: 'deleted', comment: { body: 'x' }, issue: { number: 1 } }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('edited PR comment with marker → unknown', () => {
+      const result = parseGitHubWebhook(
+        ctx('issue_comment', {
+          action: 'edited',
+          comment: { body: '<!-- helm:product-decision -->' },
+          issue: { number: 42, pull_request: { url: 'https://api.github.com/pr' } },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('PR comment missing repository metadata → unknown', () => {
+      const result = parseGitHubWebhook(
+        ctx('issue_comment', {
+          action: 'created',
+          comment: { body: '<!-- helm:product-decision -->' },
+          issue: { number: 42, pull_request: { url: 'https://api.github.com/pr' } },
+        }),
       );
       expect(result.type).toBe('unknown');
     });
@@ -104,12 +163,18 @@ describe('parseGitHubWebhook', () => {
       const result = parseGitHubWebhook(
         ctx('pull_request', {
           action: 'synchronize',
-          pull_request: { merged: false, head: { ref: 'helm/impl/LEA-192' } },
+          pull_request: {
+            number: 12,
+            merged: false,
+            head: { ref: 'helm/impl/LEA-192', sha: 'abc123' },
+          },
         }),
       );
       expect(result).toEqual({
         type: 'pull_request_synchronized',
         headRef: 'helm/impl/LEA-192',
+        prNumber: 12,
+        headSha: 'abc123',
         senderLogin: null,
         timestamp: expect.any(String),
       });

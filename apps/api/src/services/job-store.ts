@@ -14,6 +14,7 @@ export type Job = {
   externalId: string;
   specialistId: string;
   status: 'running' | 'done' | 'error' | 'cancelled';
+  targetRevision?: string;
   startedAt: string;
   finishedAt?: string;
   result?: DispatchResult;
@@ -56,6 +57,7 @@ export class JobStore {
     productSlug: string;
     externalId: string;
     specialistId: string;
+    targetRevision?: string;
   }): Promise<Job> {
     const jobId = randomUUID();
     const now = new Date().toISOString();
@@ -65,6 +67,7 @@ export class JobStore {
       externalId: input.externalId,
       specialistId: input.specialistId,
       status: 'running',
+      ...(input.targetRevision ? { targetRevision: input.targetRevision } : {}),
       startedAt: now,
     };
     await mkdir(this.jobsDir, { recursive: true });
@@ -87,7 +90,12 @@ export class JobStore {
     productSlug: string;
     externalId: string;
     specialistId: string;
-  }): Promise<{ job: Job } | { conflict: true; runningJobId: string }> {
+    targetRevision?: string;
+  }): Promise<
+    | { job: Job }
+    | { duplicate: true; existingJobId: string }
+    | { conflict: true; runningJobId: string; runningTargetRevision?: string }
+  > {
     const lockKey = `${input.productSlug}:${input.externalId}`;
 
     // Synchronous check-and-set — safe in single-threaded Bun event loop.
@@ -96,14 +104,34 @@ export class JobStore {
       // the running jobId will be visible on disk within one event-loop tick.
       const jobs = await this.listJobsForItem(input.productSlug, input.externalId);
       const running = jobs.find((j) => j.status === 'running');
-      return { conflict: true, runningJobId: running?.jobId ?? '' };
+      return {
+        conflict: true,
+        runningJobId: running?.jobId ?? '',
+        runningTargetRevision: running?.targetRevision,
+      };
     }
 
     this._inflightKeys.add(lockKey);
     try {
       const jobs = await this.listJobsForItem(input.productSlug, input.externalId);
+      if (input.targetRevision) {
+        // Permanent dedupe only for in-flight or successfully completed work.
+        // error/cancelled revisions must remain retryable after transient failures.
+        const duplicate = jobs.find(
+          (j) =>
+            j.targetRevision === input.targetRevision &&
+            (j.status === 'running' || j.status === 'done'),
+        );
+        if (duplicate) return { duplicate: true, existingJobId: duplicate.jobId };
+      }
       const running = jobs.find((j) => j.status === 'running');
-      if (running) return { conflict: true, runningJobId: running.jobId };
+      if (running) {
+        return {
+          conflict: true,
+          runningJobId: running.jobId,
+          runningTargetRevision: running.targetRevision,
+        };
+      }
       const job = await this.createJob(input);
       return { job };
     } finally {

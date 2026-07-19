@@ -68,9 +68,12 @@ function fieldFromDecisionBody(body: string, names: string[]): string | null {
   for (const name of names) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const match = body.match(
-      new RegExp(`^\\s*(?:[-*]\\s*)?(?:\\*\\*)?${escaped}\\s*:\\s*(?:\\*\\*)?\\s*(.+?)\\s*$`, 'im'),
+      new RegExp(
+        `^\\s*(?:[-*]\\s*)?(?:\\*\\*)?${escaped}(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?\\s*(.+?)\\s*(?:\\*\\*)?\\s*$`,
+        'im',
+      ),
     );
-    const value = match?.[1]?.trim();
+    const value = match?.[1]?.replace(/\*\*$/u, '').trim();
     if (value) return value;
   }
   return null;
@@ -86,16 +89,30 @@ function conflictFromDecisionMarkdown(
   return { conflictKind, conflictTitle };
 }
 
+function conflictFromDecisionField(
+  body: string,
+): Pick<ProductDecisionComment, 'conflictKind' | 'conflictTitle'> | null {
+  const conflict = fieldFromDecisionBody(body, ['Conflict']);
+  const match = conflict?.match(/^(product_decision|doc_conflict)\s*(?:·|-|:)\s*(.+?)$/iu);
+  const conflictKind = match?.[1]?.trim();
+  const conflictTitle = match?.[2]?.trim();
+  if (!conflictKind || !conflictTitle) return null;
+  return { conflictKind, conflictTitle };
+}
+
 function parseProductDecisionComment(body: string): ProductDecisionComment | null {
   if (!body.includes(PRODUCT_DECISION_MARKER)) return null;
   const markdownConflict = conflictFromDecisionMarkdown(body);
+  const labeledConflict = conflictFromDecisionField(body);
   const conflictKind =
     markdownConflict?.conflictKind ??
+    labeledConflict?.conflictKind ??
     fieldFromDecisionBody(body, ['Conflict kind', 'conflict_kind']);
   const conflictTitle =
     markdownConflict?.conflictTitle ??
+    labeledConflict?.conflictTitle ??
     fieldFromDecisionBody(body, ['Conflict title', 'conflict_title']);
-  const chosenOption = fieldFromDecisionBody(body, ['Chosen option', 'chosen_option']);
+  const chosenOption = fieldFromDecisionBody(body, ['Chosen option', 'chosen_option', 'Chosen']);
   if (!conflictKind || !conflictTitle || !chosenOption) return null;
   return { conflictKind, conflictTitle, chosenOption };
 }

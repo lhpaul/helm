@@ -149,6 +149,12 @@ const LEGACY_STRUCTURED_DECISION = [
   'Chosen option: Option A',
 ].join('\n');
 
+const SPEC_STRUCTURED_DECISION = [
+  '<!-- helm:product-decision -->',
+  '- **Conflict:** product_decision · Pick direction',
+  '- **Chosen:** Option A',
+].join('\n');
+
 const HUMAN_REQUIRED_ADJUDICATION = [
   '# Review Adjudication: issue_42',
   '',
@@ -408,6 +414,25 @@ describe('POST /api/webhooks/github', () => {
       });
 
       const res = await post(prCommentPayload(LEGACY_STRUCTURED_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          specialistId: 'reviewer-fanout',
+        }),
+      );
+    });
+
+    it('accepts the spec structured decision labels', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(prCommentPayload(SPEC_STRUCTURED_DECISION), 'issue_comment');
 
       expect(res.status).toBe(200);
       expect(mockScheduleItemDispatch).toHaveBeenCalledWith(

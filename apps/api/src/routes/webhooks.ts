@@ -20,6 +20,7 @@ import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js
 import {
   authorHasWriteAccess,
   getPrimaryCodeRepo,
+  listPrIssueComments,
   resolveOpenPrMetadata,
 } from '../services/github-pr.js';
 import { readGitHubTokenFromEnv } from '../lib/github-token.js';
@@ -59,6 +60,10 @@ type ProductDecisionComment = {
   chosenOption: string;
 };
 
+type AdjudicationConflictRecord = ProductDecisionComment & {
+  body: string;
+};
+
 function fieldFromDecisionBody(body: string, names: string[]): string | null {
   for (const name of names) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -76,6 +81,102 @@ function parseProductDecisionComment(body: string): ProductDecisionComment | nul
   const chosenOption = fieldFromDecisionBody(body, ['Chosen option', 'chosen_option']);
   if (!conflictKind || !conflictTitle || !chosenOption) return null;
   return { conflictKind, conflictTitle, chosenOption };
+}
+
+function normalizeDecisionText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function extractMarkdownSection(body: string, heading: string): string {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = body.match(
+    new RegExp(`(?:^|\\n)##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, 'i'),
+  );
+  return match?.[1]?.trim() ?? '';
+}
+
+function adjudicationExternalId(body: string): string | null {
+  return body.match(/^#\s+Review Adjudication:\s*(.+?)\s*$/im)?.[1]?.trim() ?? null;
+}
+
+function adjudicationStatus(body: string): string | null {
+  return (
+    extractMarkdownSection(body, 'Status').match(/^(AUTO_REMEDIATE|HUMAN_REQUIRED)\b/i)?.[1] ?? null
+  );
+}
+
+function parseAdjudicationConflicts(body: string): AdjudicationConflictRecord[] {
+  const conflicts = extractMarkdownSection(body, 'Conflicts');
+  if (!conflicts) return [];
+
+  const records: AdjudicationConflictRecord[] = [];
+  const lines = conflicts.split(/\r?\n/);
+  let current: {
+    conflictKind: string;
+    conflictTitle: string;
+    lines: string[];
+  } | null = null;
+
+  const flush = () => {
+    if (!current) return;
+    records.push({
+      conflictKind: current.conflictKind,
+      conflictTitle: current.conflictTitle,
+      chosenOption: '',
+      body: current.lines.join('\n'),
+    });
+  };
+
+  for (const line of lines) {
+    const match = line.match(/^\s*-\s*\*\*(product_decision|doc_conflict)\*\*\s*·\s*(.+?)\s*$/i);
+    if (match) {
+      flush();
+      current = {
+        conflictKind: match[1] ?? '',
+        conflictTitle: match[2]?.trim() ?? '',
+        lines: [line],
+      };
+    } else if (current) {
+      current.lines.push(line);
+    }
+  }
+  flush();
+
+  return records;
+}
+
+function productDecisionMatchesAdjudication(
+  decision: ProductDecisionComment,
+  externalId: string,
+  adjudicationBody: string,
+): boolean {
+  if (adjudicationExternalId(adjudicationBody) !== externalId) return false;
+  if (adjudicationStatus(adjudicationBody)?.toUpperCase() !== 'HUMAN_REQUIRED') return false;
+
+  const expectedKind = normalizeDecisionText(decision.conflictKind);
+  const expectedTitle = normalizeDecisionText(decision.conflictTitle);
+  const expectedOption = normalizeDecisionText(decision.chosenOption);
+
+  return parseAdjudicationConflicts(adjudicationBody).some((record) => {
+    return (
+      normalizeDecisionText(record.conflictKind) === expectedKind &&
+      normalizeDecisionText(record.conflictTitle) === expectedTitle &&
+      normalizeDecisionText(record.body).includes(expectedOption)
+    );
+  });
+}
+
+function hasMatchingLatestAdjudication(
+  decision: ProductDecisionComment,
+  externalId: string,
+  commentBodies: string[],
+): boolean {
+  const latestAdjudication = [...commentBodies]
+    .reverse()
+    .find((body) => adjudicationExternalId(body) === externalId);
+  return latestAdjudication
+    ? productDecisionMatchesAdjudication(decision, externalId, latestAdjudication)
+    : false;
 }
 
 export const webhooksRouter = new Hono();
@@ -255,6 +356,21 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           return c.json({ processed: true });
         }
 
+        const comments = await listPrIssueComments({
+          product: config,
+          prNumber: pr.number,
+          githubToken,
+        });
+        const decisionMatchesRecord = hasMatchingLatestAdjudication(
+          decision,
+          parsed.externalId,
+          comments.map((comment) => comment.body),
+        );
+        if (!decisionMatchesRecord) {
+          console.info('[webhooks/github] PR decision ignored — no matching adjudication record');
+          return c.json({ processed: true });
+        }
+
         const outcome = await scheduleItemDispatch({
           productSlug: config.product.slug,
           externalId: parsed.externalId,
@@ -273,6 +389,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           '[webhooks/github] Failed to process PR decision comment:',
           err instanceof Error ? err.message : String(err),
         );
+        return c.json({ error: 'Internal server error' }, 500);
       }
     }
   } else if (event.type === 'pull_request_synchronized') {

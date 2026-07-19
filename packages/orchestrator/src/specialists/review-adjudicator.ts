@@ -96,7 +96,7 @@ export function buildReviewAdjudicatorParams(
     productSlug: product.product.slug,
     externalId,
     model: specialistCfg.model,
-    permissionMode: 'default',
+    permissionMode: 'acceptEdits',
     timeoutMs: REVIEW_ADJUDICATOR_TIMEOUT_MS,
   };
 }

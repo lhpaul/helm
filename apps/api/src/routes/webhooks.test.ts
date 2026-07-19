@@ -22,6 +22,7 @@ const {
   mockResolveOpenPrMetadata,
   mockAuthorHasWriteAccess,
   mockGetPrimaryCodeRepo,
+  mockListPrIssueComments,
 } = vi.hoisted(() => ({
   mockParseWebhook: vi.fn(),
   mockCreate: vi.fn(),
@@ -34,6 +35,7 @@ const {
   mockResolveOpenPrMetadata: vi.fn(),
   mockAuthorHasWriteAccess: vi.fn(),
   mockGetPrimaryCodeRepo: vi.fn(),
+  mockListPrIssueComments: vi.fn(),
 }));
 
 vi.mock('../services/dispatch-scheduler.js', () => ({
@@ -44,6 +46,7 @@ vi.mock('../services/github-pr.js', () => ({
   resolveOpenPrMetadata: mockResolveOpenPrMetadata,
   authorHasWriteAccess: mockAuthorHasWriteAccess,
   getPrimaryCodeRepo: mockGetPrimaryCodeRepo,
+  listPrIssueComments: mockListPrIssueComments,
 }));
 
 vi.mock('../services/index.js', async (importOriginal) => {
@@ -140,6 +143,21 @@ const STRUCTURED_DECISION = [
   'Chosen option: Option A',
 ].join('\n');
 
+const HUMAN_REQUIRED_ADJUDICATION = [
+  '# Review Adjudication: issue_42',
+  '',
+  '## Conflicts',
+  '- **product_decision** · Pick direction',
+  '  Option A: keep the current review-loop behavior.',
+  '  Option B: change review-loop behavior.',
+  '',
+  '## Unified remediation plan',
+  '- **DEFERRED** · Pick direction — awaiting human decision',
+  '',
+  '## Status',
+  'HUMAN_REQUIRED',
+].join('\n');
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('POST /api/webhooks/github', () => {
@@ -177,6 +195,7 @@ describe('POST /api/webhooks/github', () => {
       headSha: 'sha-42',
       htmlUrl: 'https://github.com/test-org/test-repo/pull/42',
     });
+    mockListPrIssueComments.mockResolvedValue([{ id: 1, body: HUMAN_REQUIRED_ADJUDICATION }]);
     mockGet.mockResolvedValue(null);
     vi.mocked(getIssueTrackerAdapter).mockResolvedValue({
       setSubStage: mockSetSubStage,
@@ -372,6 +391,51 @@ describe('POST /api/webhooks/github', () => {
         prNumber: 42,
         triggeredBy: 'webhook:pr-decision-comment',
       });
+    });
+
+    it('ignores structured decisions that do not match the latest adjudication record', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      mockListPrIssueComments.mockResolvedValue([
+        { id: 1, body: HUMAN_REQUIRED_ADJUDICATION },
+        {
+          id: 2,
+          body: [
+            '# Review Adjudication: issue_42',
+            '',
+            '## Conflicts',
+            '- **product_decision** · Different direction',
+            '  Option B: choose another path.',
+            '',
+            '## Status',
+            'HUMAN_REQUIRED',
+          ].join('\n'),
+        },
+      ]);
+
+      const res = await post(prCommentPayload(STRUCTURED_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 when structured decision processing unexpectedly fails', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      mockListPrIssueComments.mockRejectedValue(new Error('GitHub API failed'));
+
+      const res = await post(prCommentPayload(STRUCTURED_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(500);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
     });
 
     it('ignores unmarked PR comments', async () => {

@@ -12,6 +12,11 @@ export type GitHubPrMetadata = GitHubRepoRef & {
   htmlUrl: string;
 };
 
+export type GitHubIssueComment = {
+  id: number;
+  body: string;
+};
+
 const GITHUB_API_TIMEOUT_MS = 10_000;
 
 export class GitHubPrError extends Error {
@@ -96,6 +101,22 @@ export async function resolveOpenPrMetadata(input: {
     headSha,
     htmlUrl: pr.html_url,
   };
+}
+
+export async function listPrIssueComments(input: {
+  product: Product;
+  prNumber: number;
+  githubToken: string;
+}): Promise<GitHubIssueComment[]> {
+  const repo = getPrimaryCodeRepo(input.product);
+  const comments = await fetchGitHubJson<Array<{ id: number; body?: string | null }>>(
+    `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues/${input.prNumber}/comments?per_page=100`,
+    input.githubToken,
+  );
+
+  return comments
+    .filter((comment): comment is { id: number; body: string } => typeof comment.body === 'string')
+    .map((comment) => ({ id: comment.id, body: comment.body }));
 }
 
 export async function authorHasWriteAccess(input: {

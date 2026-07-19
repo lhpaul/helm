@@ -59,7 +59,7 @@ describe('buildReviewAdjudicatorParams', () => {
     expect(params.prompt).toContain('Code Review');
     expect(params.prompt).toContain('Vacate literally on empty search');
     expect(params.prompt).toContain('Do NOT modify source files');
-    expect(params.permissionMode).toBe('default');
+    expect(params.permissionMode).toBe('acceptEdits');
   });
 
   it('does not duplicate external blockers when they are embedded in code findings', () => {

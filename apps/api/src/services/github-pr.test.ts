@@ -3,6 +3,7 @@ import {
   GitHubPrError,
   authorHasWriteAccess,
   getPrimaryCodeRepo,
+  listPrIssueComments,
   parseGitHubRepoUrl,
   resolveOpenPrMetadata,
 } from './github-pr.js';
@@ -93,5 +94,24 @@ describe('github-pr', () => {
     await expect(
       authorHasWriteAccess({ product, login: 'maintainer', githubToken: 'token' }),
     ).resolves.toBe(true);
+  });
+
+  it('lists PR issue comments with bodies', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue([
+        { id: 1, body: '# Review Adjudication: issue_42' },
+        { id: 2, body: null },
+      ]),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      listPrIssueComments({ product, prNumber: 42, githubToken: 'token' }),
+    ).resolves.toEqual([{ id: 1, body: '# Review Adjudication: issue_42' }]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.github.com/repos/test-org/test-repo/issues/42/comments?per_page=100',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 });

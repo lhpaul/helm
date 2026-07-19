@@ -136,7 +136,13 @@ function prCommentPayload(
   });
 }
 
-const STRUCTURED_DECISION = [
+const MARKDOWN_DECISION = [
+  '<!-- helm:product-decision -->',
+  '- **product_decision** · Pick direction',
+  '- **Chosen option:** Option A',
+].join('\n');
+
+const LEGACY_STRUCTURED_DECISION = [
   '<!-- helm:product-decision -->',
   'Conflict kind: product_decision',
   'Conflict title: Pick direction',
@@ -377,7 +383,7 @@ describe('POST /api/webhooks/github', () => {
         history: [],
       });
 
-      const res = await post(prCommentPayload(STRUCTURED_DECISION), 'issue_comment');
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
 
       expect(res.status).toBe(200);
       expect(mockAuthorHasWriteAccess).toHaveBeenCalledWith(
@@ -391,6 +397,25 @@ describe('POST /api/webhooks/github', () => {
         prNumber: 42,
         triggeredBy: 'webhook:pr-decision-comment',
       });
+    });
+
+    it('preserves fallback parsing for legacy structured decisions', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(prCommentPayload(LEGACY_STRUCTURED_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          specialistId: 'reviewer-fanout',
+        }),
+      );
     });
 
     it('ignores structured decisions that do not match the latest adjudication record', async () => {
@@ -417,7 +442,7 @@ describe('POST /api/webhooks/github', () => {
         },
       ]);
 
-      const res = await post(prCommentPayload(STRUCTURED_DECISION), 'issue_comment');
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
 
       expect(res.status).toBe(200);
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
@@ -432,7 +457,7 @@ describe('POST /api/webhooks/github', () => {
       });
       mockListPrIssueComments.mockRejectedValue(new Error('GitHub API failed'));
 
-      const res = await post(prCommentPayload(STRUCTURED_DECISION), 'issue_comment');
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
 
       expect(res.status).toBe(500);
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
@@ -456,7 +481,7 @@ describe('POST /api/webhooks/github', () => {
 
     it('ignores edited marker-bearing comments', async () => {
       const res = await post(
-        prCommentPayload(STRUCTURED_DECISION, { action: 'edited' }),
+        prCommentPayload(MARKDOWN_DECISION, { action: 'edited' }),
         'issue_comment',
       );
 
@@ -466,7 +491,7 @@ describe('POST /api/webhooks/github', () => {
 
     it('ignores comments on the wrong repository', async () => {
       const res = await post(
-        prCommentPayload(STRUCTURED_DECISION, { repo: 'other-repo' }),
+        prCommentPayload(MARKDOWN_DECISION, { repo: 'other-repo' }),
         'issue_comment',
       );
 
@@ -478,7 +503,7 @@ describe('POST /api/webhooks/github', () => {
     it('ignores marker-bearing comments from users without write access', async () => {
       mockAuthorHasWriteAccess.mockResolvedValue(false);
 
-      const res = await post(prCommentPayload(STRUCTURED_DECISION), 'issue_comment');
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
 
       expect(res.status).toBe(200);
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
@@ -495,7 +520,7 @@ describe('POST /api/webhooks/github', () => {
       });
       mockGet.mockResolvedValue(null);
 
-      const res = await post(prCommentPayload(STRUCTURED_DECISION), 'issue_comment');
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
 
       expect(res.status).toBe(200);
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();

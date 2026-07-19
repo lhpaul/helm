@@ -67,17 +67,34 @@ type AdjudicationConflictRecord = ProductDecisionComment & {
 function fieldFromDecisionBody(body: string, names: string[]): string | null {
   for (const name of names) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const match = body.match(new RegExp(`^\\s*(?:[-*]\\s*)?${escaped}\\s*:\\s*(.+?)\\s*$`, 'im'));
+    const match = body.match(
+      new RegExp(`^\\s*(?:[-*]\\s*)?(?:\\*\\*)?${escaped}\\s*:\\s*(?:\\*\\*)?\\s*(.+?)\\s*$`, 'im'),
+    );
     const value = match?.[1]?.trim();
     if (value) return value;
   }
   return null;
 }
 
+function conflictFromDecisionMarkdown(
+  body: string,
+): Pick<ProductDecisionComment, 'conflictKind' | 'conflictTitle'> | null {
+  const match = body.match(/^\s*[-*]\s*\*\*(product_decision|doc_conflict)\*\*\s*·\s*(.+?)\s*$/im);
+  const conflictKind = match?.[1]?.trim();
+  const conflictTitle = match?.[2]?.trim();
+  if (!conflictKind || !conflictTitle) return null;
+  return { conflictKind, conflictTitle };
+}
+
 function parseProductDecisionComment(body: string): ProductDecisionComment | null {
   if (!body.includes(PRODUCT_DECISION_MARKER)) return null;
-  const conflictKind = fieldFromDecisionBody(body, ['Conflict kind', 'conflict_kind']);
-  const conflictTitle = fieldFromDecisionBody(body, ['Conflict title', 'conflict_title']);
+  const markdownConflict = conflictFromDecisionMarkdown(body);
+  const conflictKind =
+    markdownConflict?.conflictKind ??
+    fieldFromDecisionBody(body, ['Conflict kind', 'conflict_kind']);
+  const conflictTitle =
+    markdownConflict?.conflictTitle ??
+    fieldFromDecisionBody(body, ['Conflict title', 'conflict_title']);
   const chosenOption = fieldFromDecisionBody(body, ['Chosen option', 'chosen_option']);
   if (!conflictKind || !conflictTitle || !chosenOption) return null;
   return { conflictKind, conflictTitle, chosenOption };

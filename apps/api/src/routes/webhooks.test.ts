@@ -19,6 +19,7 @@ const {
   mockSetSubStage,
   mockEnsureSubStages,
   mockScheduleItemDispatch,
+  mockPersistReviewDispatchIntent,
   mockResolveOpenPrMetadata,
   mockAuthorHasWriteAccess,
   mockGetPrimaryCodeRepo,
@@ -32,6 +33,7 @@ const {
   mockSetSubStage: vi.fn(),
   mockEnsureSubStages: vi.fn(),
   mockScheduleItemDispatch: vi.fn(),
+  mockPersistReviewDispatchIntent: vi.fn(),
   mockResolveOpenPrMetadata: vi.fn(),
   mockAuthorHasWriteAccess: vi.fn(),
   mockGetPrimaryCodeRepo: vi.fn(),
@@ -40,6 +42,7 @@ const {
 
 vi.mock('../services/dispatch-scheduler.js', () => ({
   scheduleItemDispatch: mockScheduleItemDispatch,
+  persistReviewDispatchIntent: mockPersistReviewDispatchIntent,
 }));
 
 vi.mock('../services/github-pr.js', () => ({
@@ -103,11 +106,21 @@ async function post(
 /** Builds a real pull_request webhook payload (parsed by the pure parseGitHubWebhook). */
 function mergedPrPayload(
   headRef: string,
-  opts: { action?: string; merged?: boolean; senderLogin?: string } = {},
+  opts: {
+    action?: string;
+    merged?: boolean;
+    senderLogin?: string;
+    prNumber?: number;
+    headSha?: string;
+  } = {},
 ): string {
   const payload: Record<string, unknown> = {
     action: opts.action ?? 'closed',
-    pull_request: { merged: opts.merged ?? true, head: { ref: headRef } },
+    pull_request: {
+      number: opts.prNumber ?? 42,
+      merged: opts.merged ?? true,
+      head: { ref: headRef, sha: opts.headSha ?? 'sha-sync-1' },
+    },
   };
   if (opts.senderLogin) {
     payload.sender = { login: opts.senderLogin };
@@ -197,6 +210,7 @@ describe('POST /api/webhooks/github', () => {
     mockEnsureSubStages.mockResolvedValue(undefined);
     mockSetSubStage.mockResolvedValue(undefined);
     mockScheduleItemDispatch.mockResolvedValue({ scheduled: true, jobId: 'job-sync-1' });
+    mockPersistReviewDispatchIntent.mockResolvedValue(undefined);
     mockGetPrimaryCodeRepo.mockReturnValue({ owner: 'test-org', repo: 'test-repo' });
     mockAuthorHasWriteAccess.mockResolvedValue(true);
     mockResolveOpenPrMetadata.mockResolvedValue({
@@ -473,7 +487,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
     });
 
-    it('returns 500 when structured decision processing unexpectedly fails', async () => {
+    it('returns 503 when structured decision processing unexpectedly fails', async () => {
       mockGet.mockResolvedValue({
         externalId: 'issue_42',
         productSlug: 'test-app',
@@ -484,8 +498,48 @@ describe('POST /api/webhooks/github', () => {
 
       const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
 
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(503);
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('returns 503 when GITHUB_TOKEN is missing for an authorized decision path', async () => {
+      delete process.env.GITHUB_TOKEN;
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(503);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
+    });
+
+    it('persists a pending intent when scheduling rejects after an authorized decision', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      mockScheduleItemDispatch.mockResolvedValue({
+        scheduled: false,
+        reason: 'Unable to schedule dispatch',
+      });
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockPersistReviewDispatchIntent).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        triggeredBy: 'webhook:pr-decision-comment',
+      });
     });
 
     it('ignores unmarked PR comments', async () => {
@@ -703,7 +757,12 @@ describe('POST /api/webhooks/github', () => {
     // ── Impl PR synchronize (helm/impl/ → re-dispatch reviewer-fanout) ─────
 
     it('schedules reviewer-fanout when helm/impl/ PR syncs and item is in code-review', async () => {
-      const body = mergedPrPayload('helm/impl/LEA-192', { action: 'synchronize', merged: false });
+      const body = mergedPrPayload('helm/impl/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+        prNumber: 77,
+        headSha: 'sha-lea-192',
+      });
       mockGet.mockResolvedValue({
         externalId: 'LEA-192',
         productSlug: 'test-app',
@@ -716,6 +775,9 @@ describe('POST /api/webhooks/github', () => {
       expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
         productSlug: 'test-app',
         externalId: 'LEA-192',
+        specialistId: 'reviewer-fanout',
+        targetRevision: 'sha-lea-192',
+        prNumber: 77,
         triggeredBy: 'webhook:impl-pr-sync',
       });
       expect(mockTransition).not.toHaveBeenCalled();

@@ -115,7 +115,13 @@ export class JobStore {
     try {
       const jobs = await this.listJobsForItem(input.productSlug, input.externalId);
       if (input.targetRevision) {
-        const duplicate = jobs.find((j) => j.targetRevision === input.targetRevision);
+        // Permanent dedupe only for in-flight or successfully completed work.
+        // error/cancelled revisions must remain retryable after transient failures.
+        const duplicate = jobs.find(
+          (j) =>
+            j.targetRevision === input.targetRevision &&
+            (j.status === 'running' || j.status === 'done'),
+        );
         if (duplicate) return { duplicate: true, existingJobId: duplicate.jobId };
       }
       const running = jobs.find((j) => j.status === 'running');

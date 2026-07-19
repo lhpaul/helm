@@ -60,6 +60,20 @@ async function persistPendingReviewDispatch(input: {
   });
 }
 
+/** Exported for webhook handlers that must durable-store before ACK. */
+export async function persistReviewDispatchIntent(input: {
+  productSlug: string;
+  externalId: string;
+  prNumber?: number;
+  targetRevision?: string;
+  triggeredBy: string;
+}): Promise<void> {
+  await persistPendingReviewDispatch({
+    dataRoot: dataRootFromEnv(),
+    ...input,
+  });
+}
+
 async function replayPendingReviewDispatch(input: {
   product: Product;
   productSlug: string;
@@ -73,12 +87,20 @@ async function replayPendingReviewDispatch(input: {
   if (!intent) return;
 
   let targetRevision = intent.targetRevision;
-  if (!targetRevision && intent.prNumber !== undefined) {
+  if (intent.prNumber !== undefined) {
     const pr = await resolveOpenPrMetadata({
       product: input.product,
       prNumber: intent.prNumber,
       githubToken: input.githubToken,
     });
+    const expectedHeadRef = `helm/impl/${intent.externalId}`;
+    if (pr.headRef !== expectedHeadRef) {
+      console.info(
+        `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
+      );
+      return;
+    }
+    // Prefer the live PR head so replay tracks the newest SHA after headRef validation.
     targetRevision = pr.headSha;
   }
   if (!targetRevision) return;
@@ -92,7 +114,10 @@ async function replayPendingReviewDispatch(input: {
     triggeredBy: `outbox:${intent.triggeredBy}`,
   });
   if (outcome.scheduled || outcome.reason === 'Duplicate target revision') {
-    await outbox.remove(intent.productSlug, intent.externalId);
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+      updatedAt: intent.updatedAt,
+      targetRevision: intent.targetRevision,
+    });
   }
 }
 
@@ -103,8 +128,17 @@ async function scheduleReviewAfterImplementerCompletion(input: {
   prUrl: string | undefined;
   githubToken: string | undefined;
 }): Promise<void> {
-  if (!input.githubToken) return;
   const prNumber = parseGitHubPrNumber(input.prUrl);
+  if (!input.githubToken) {
+    await persistPendingReviewDispatch({
+      dataRoot: input.dataRoot,
+      productSlug: input.item.productSlug,
+      externalId: input.item.externalId,
+      prNumber: prNumber ?? undefined,
+      triggeredBy: 'agent:implementer:missing-token',
+    });
+    return;
+  }
   if (prNumber === null) {
     await persistPendingReviewDispatch({
       dataRoot: input.dataRoot,
@@ -319,6 +353,20 @@ export async function scheduleItemDispatch(input: {
   const githubToken = readGitHubTokenFromEnv();
   if (!githubToken) {
     console.error('[dispatch-scheduler] GITHUB_TOKEN is not configured — dispatch skipped');
+    if (input.targetRevision || input.prNumber !== undefined) {
+      try {
+        await persistPendingReviewDispatch({
+          dataRoot: dataRootFromEnv(),
+          productSlug: input.productSlug,
+          externalId: input.externalId,
+          prNumber: input.prNumber,
+          targetRevision: input.targetRevision,
+          triggeredBy: input.triggeredBy,
+        });
+      } catch (err) {
+        logErrorMetadata('dispatch-scheduler persist pending (no token)', err);
+      }
+    }
     return { scheduled: false, reason: DISPATCH_UNAVAILABLE };
   }
 

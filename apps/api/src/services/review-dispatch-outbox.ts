@@ -27,10 +27,14 @@ export class ReviewDispatchOutbox {
 
   private intentPath(productSlug: string, externalId: string): string {
     assertSafeIntentKey(productSlug, externalId);
-    return join(this.outboxDir, `${productSlug}--${externalId}.json`);
+    // Nested path avoids `${slug}--${id}` collisions when either segment contains `--`.
+    return join(this.outboxDir, productSlug, `${externalId}.json`);
   }
 
   async put(intent: Omit<ReviewDispatchIntent, 'updatedAt'>): Promise<ReviewDispatchIntent> {
+    const dir = join(this.outboxDir, intent.productSlug);
+    assertSafeIntentKey(intent.productSlug, intent.externalId);
+    await mkdir(dir, { recursive: true });
     const stored: ReviewDispatchIntent = { ...intent, updatedAt: new Date().toISOString() };
     await writeJsonAtomic(this.intentPath(intent.productSlug, intent.externalId), stored);
     return { ...stored };
@@ -41,6 +45,25 @@ export class ReviewDispatchOutbox {
     return intent ? { ...intent } : null;
   }
 
+  /**
+   * Removes an intent only when the stored identity still matches `expected`.
+   * Prevents a concurrent newer put from being deleted by a stale replay.
+   */
+  async removeIfMatches(
+    productSlug: string,
+    externalId: string,
+    expected: Pick<ReviewDispatchIntent, 'updatedAt' | 'targetRevision'>,
+  ): Promise<boolean> {
+    const current = await this.get(productSlug, externalId);
+    if (!current) return false;
+    if (current.updatedAt !== expected.updatedAt) return false;
+    if ((current.targetRevision ?? null) !== (expected.targetRevision ?? null)) return false;
+    await unlink(this.intentPath(productSlug, externalId)).catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== 'ENOENT') throw err;
+    });
+    return true;
+  }
+
   async remove(productSlug: string, externalId: string): Promise<void> {
     await unlink(this.intentPath(productSlug, externalId)).catch((err: NodeJS.ErrnoException) => {
       if (err.code !== 'ENOENT') throw err;
@@ -48,19 +71,32 @@ export class ReviewDispatchOutbox {
   }
 
   async list(): Promise<ReviewDispatchIntent[]> {
-    let entries: string[];
+    let productDirs: string[];
     try {
-      entries = await readdir(this.outboxDir);
+      productDirs = await readdir(this.outboxDir);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
       throw err;
     }
-    const intents = await Promise.all(
-      entries
-        .filter((entry) => entry.endsWith('.json'))
-        .map((entry) => readJson<ReviewDispatchIntent>(join(this.outboxDir, entry))),
-    );
-    return intents.filter((intent): intent is ReviewDispatchIntent => intent !== null);
+    const intents: ReviewDispatchIntent[] = [];
+    for (const productSlug of productDirs) {
+      if (!isSafeSegment(productSlug)) continue;
+      let entries: string[];
+      try {
+        entries = await readdir(join(this.outboxDir, productSlug));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw err;
+      }
+      for (const entry of entries) {
+        if (!entry.endsWith('.json')) continue;
+        const intent = await readJson<ReviewDispatchIntent>(
+          join(this.outboxDir, productSlug, entry),
+        );
+        if (intent) intents.push({ ...intent });
+      }
+    }
+    return intents;
   }
 }
 

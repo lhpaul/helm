@@ -27,7 +27,12 @@ export class GitHubPrError extends Error {
 }
 
 export function parseGitHubRepoUrl(url: string): GitHubRepoRef {
-  const parsed = new URL(url);
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new GitHubPrError('Invalid code repo URL');
+  }
   if (parsed.hostname !== 'github.com') {
     throw new GitHubPrError('Code repo URL must be a github.com URL');
   }
@@ -45,7 +50,7 @@ export function getPrimaryCodeRepo(product: Product): GitHubRepoRef {
   return parseGitHubRepoUrl(repo.url);
 }
 
-async function fetchGitHubJson<T>(url: string, token: string): Promise<T> {
+async function fetchGitHubResponse(url: string, token: string): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
   try {
@@ -61,7 +66,7 @@ async function fetchGitHubJson<T>(url: string, token: string): Promise<T> {
     if (!res.ok) {
       throw new GitHubPrError(`GitHub API request failed with status ${res.status}`);
     }
-    return (await res.json()) as T;
+    return res;
   } catch (err) {
     if (err instanceof GitHubPrError) throw err;
     if (err instanceof Error && err.name === 'AbortError') {
@@ -71,6 +76,20 @@ async function fetchGitHubJson<T>(url: string, token: string): Promise<T> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchGitHubJson<T>(url: string, token: string): Promise<T> {
+  const res = await fetchGitHubResponse(url, token);
+  return (await res.json()) as T;
+}
+
+function nextLinkFromHeader(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+  for (const part of linkHeader.split(',')) {
+    const match = part.trim().match(/^<([^>]+)>\s*;\s*rel="next"$/);
+    if (match?.[1]) return match[1];
+  }
+  return null;
 }
 
 export async function resolveOpenPrMetadata(input: {
@@ -109,14 +128,22 @@ export async function listPrIssueComments(input: {
   githubToken: string;
 }): Promise<GitHubIssueComment[]> {
   const repo = getPrimaryCodeRepo(input.product);
-  const comments = await fetchGitHubJson<Array<{ id: number; body?: string | null }>>(
-    `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues/${input.prNumber}/comments?per_page=100`,
-    input.githubToken,
-  );
+  const all: GitHubIssueComment[] = [];
+  let url: string | null =
+    `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues/${input.prNumber}/comments?per_page=100`;
 
-  return comments
-    .filter((comment): comment is { id: number; body: string } => typeof comment.body === 'string')
-    .map((comment) => ({ id: comment.id, body: comment.body }));
+  while (url) {
+    const res = await fetchGitHubResponse(url, input.githubToken);
+    const comments = (await res.json()) as Array<{ id: number; body?: string | null }>;
+    for (const comment of comments) {
+      if (typeof comment.body === 'string') {
+        all.push({ id: comment.id, body: comment.body });
+      }
+    }
+    url = nextLinkFromHeader(res.headers.get('link'));
+  }
+
+  return all;
 }
 
 export async function authorHasWriteAccess(input: {

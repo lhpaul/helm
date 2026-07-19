@@ -31,6 +31,11 @@ describe('github-pr', () => {
     expect(() => parseGitHubRepoUrl('https://example.com/o/r')).toThrow(GitHubPrError);
   });
 
+  it('wraps malformed URLs as GitHubPrError', () => {
+    expect(() => parseGitHubRepoUrl('not a url')).toThrow(GitHubPrError);
+    expect(() => parseGitHubRepoUrl('not a url')).toThrow(/Invalid code repo URL/);
+  });
+
   it('resolves the primary app code repo', () => {
     expect(getPrimaryCodeRepo(product)).toEqual({ owner: 'test-org', repo: 'test-repo' });
   });
@@ -99,6 +104,7 @@ describe('github-pr', () => {
   it('lists PR issue comments with bodies', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
+      headers: { get: () => null },
       json: vi.fn().mockResolvedValue([
         { id: 1, body: '# Review Adjudication: issue_42' },
         { id: 2, body: null },
@@ -113,5 +119,34 @@ describe('github-pr', () => {
       'https://api.github.com/repos/test-org/test-repo/issues/42/comments?per_page=100',
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+  });
+
+  it('paginates PR issue comments via Link rel=next', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: {
+          get: (name: string) =>
+            name.toLowerCase() === 'link'
+              ? '<https://api.github.com/repos/test-org/test-repo/issues/42/comments?page=2>; rel="next"'
+              : null,
+        },
+        json: vi.fn().mockResolvedValue([{ id: 1, body: 'page-1' }]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => null },
+        json: vi.fn().mockResolvedValue([{ id: 2, body: 'page-2' }]),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      listPrIssueComments({ product, prNumber: 42, githubToken: 'token' }),
+    ).resolves.toEqual([
+      { id: 1, body: 'page-1' },
+      { id: 2, body: 'page-2' },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

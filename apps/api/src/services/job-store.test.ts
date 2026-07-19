@@ -212,6 +212,35 @@ describe('createJobIfNoRunning', () => {
     expect(second).toEqual({ duplicate: true, existingJobId: first.job.jobId });
   });
 
+  it('allows retrying the same targetRevision after an error job', async () => {
+    const first = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+    if (!('job' in first)) throw new Error('expected job');
+    await store.updateJob(first.job.jobId, {
+      status: 'error',
+      error: 'transient',
+      finishedAt: new Date().toISOString(),
+    });
+
+    const second = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+
+    expect(second).toMatchObject({ job: { targetRevision: 'sha-a' } });
+    if (!('job' in second)) throw new Error('expected job');
+    expect(second.job.jobId).not.toBe(first.job.jobId);
+  });
+
+  it('allows retrying the same targetRevision after a cancelled job', async () => {
+    const first = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+    if (!('job' in first)) throw new Error('expected job');
+    await store.updateJob(first.job.jobId, {
+      status: 'cancelled',
+      finishedAt: new Date().toISOString(),
+    });
+
+    const second = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+
+    expect(second).toMatchObject({ job: { targetRevision: 'sha-a' } });
+  });
+
   it('blocks a newer targetRevision while an older job is running', async () => {
     const first = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
     if (!('job' in first)) throw new Error('expected job');
@@ -245,7 +274,22 @@ describe('createJobIfNoRunning', () => {
     ]);
 
     const created = [first, second].filter((outcome) => 'job' in outcome);
+    const blocked = [first, second].filter(
+      (outcome) => 'duplicate' in outcome || 'conflict' in outcome,
+    );
     expect(created).toHaveLength(1);
+    expect(blocked).toHaveLength(1);
+    const createdJob = created[0]!;
+    if (!('job' in createdJob)) throw new Error('expected job');
+    const blockedOutcome = blocked[0]!;
+    if ('duplicate' in blockedOutcome) {
+      expect(blockedOutcome.existingJobId).toBe(createdJob.job.jobId);
+    } else if ('conflict' in blockedOutcome) {
+      // Inflight race may return '' before the winner's job is visible on disk.
+      if (blockedOutcome.runningJobId !== '') {
+        expect(blockedOutcome.runningJobId).toBe(createdJob.job.jobId);
+      }
+    }
     const jobs = await store.listJobsForItem(BASE_INPUT.productSlug, BASE_INPUT.externalId);
     expect(jobs.filter((job) => job.targetRevision === 'sha-a')).toHaveLength(1);
   });

@@ -15,7 +15,10 @@ import {
   getProductConfig,
 } from '../services/index.js';
 import { createItem, transitionItem } from '../services/item-service.js';
-import { scheduleItemDispatch } from '../services/dispatch-scheduler.js';
+import {
+  scheduleItemDispatch,
+  persistReviewDispatchIntent,
+} from '../services/dispatch-scheduler.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
 import {
   authorHasWriteAccess,
@@ -346,8 +349,10 @@ webhooksRouter.post('/webhooks/github', async (c) => {
 
         const githubToken = readGitHubTokenFromEnv();
         if (!githubToken) {
+          // Without credentials we cannot authorize or resolve the impl item.
+          // Return 503 so GitHub retries — do not ACK a droppable decision.
           console.error('[webhooks/github] GITHUB_TOKEN is not configured for PR decision');
-          return c.json({ processed: true });
+          return c.json({ error: 'GITHUB_TOKEN is not configured' }, 503);
         }
 
         if (!event.authorLogin) {
@@ -413,9 +418,16 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           prNumber: pr.number,
           triggeredBy: 'webhook:pr-decision-comment',
         });
-        if (!outcome.scheduled) {
+        if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+          await persistReviewDispatchIntent({
+            productSlug: config.product.slug,
+            externalId: parsed.externalId,
+            prNumber: pr.number,
+            targetRevision: pr.headSha,
+            triggeredBy: 'webhook:pr-decision-comment',
+          });
           console.info(
-            `[webhooks/github] PR decision dispatch skipped for ${parsed.externalId}: ${outcome.reason}`,
+            `[webhooks/github] PR decision dispatch deferred for ${parsed.externalId}: ${outcome.reason}`,
           );
         }
       } catch (err) {
@@ -423,7 +435,8 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           '[webhooks/github] Failed to process PR decision comment:',
           err instanceof Error ? err.message : String(err),
         );
-        return c.json({ error: 'Internal server error' }, 500);
+        // Transient failure after an authorized decision — ask GitHub to retry.
+        return c.json({ error: 'Temporary failure processing PR decision' }, 503);
       }
     }
   } else if (event.type === 'pull_request_synchronized') {
@@ -441,11 +454,23 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             const outcome = await scheduleItemDispatch({
               productSlug: config.product.slug,
               externalId: parsed.externalId,
+              specialistId: 'reviewer-fanout',
+              targetRevision: event.headSha,
+              prNumber: event.prNumber,
               triggeredBy: 'webhook:impl-pr-sync',
             });
-            if (!outcome.scheduled) {
+            if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+              if (event.headSha || event.prNumber !== undefined) {
+                await persistReviewDispatchIntent({
+                  productSlug: config.product.slug,
+                  externalId: parsed.externalId,
+                  prNumber: event.prNumber,
+                  targetRevision: event.headSha,
+                  triggeredBy: 'webhook:impl-pr-sync',
+                });
+              }
               console.info(
-                `[webhooks/github] impl PR sync for ${parsed.externalId} — dispatch skipped: ${outcome.reason}`,
+                `[webhooks/github] impl PR sync for ${parsed.externalId} — dispatch deferred: ${outcome.reason}`,
               );
             }
           } else {

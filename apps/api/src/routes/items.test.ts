@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../app.js';
 import { _resetForTests } from '../services/index.js';
+import { GitHubPullRequestLookupError } from '../services/github-pull-requests.js';
 
 // Stub the tracker adapter so writeback (ADR-033) is deterministic and never
 // touches the network — getProductConfig/getItemStore stay real (filesystem).
@@ -303,5 +304,62 @@ describe('POST /api/items/:externalId/merge-reconciliation', () => {
     expect(((await res.json()) as { status: string }).status).toBe('already-reconciled');
     expect(afterSecond[0]?.history).toHaveLength(afterFirst[0]?.history.length ?? 0);
     expect(mockSetSubStage).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when GitHub reports the pull request does not exist', async () => {
+    mockResolveCurrentPullRequestState.mockRejectedValue(
+      new GitHubPullRequestLookupError('Pull request not found', {
+        code: 'not_found',
+        githubStatus: 404,
+      }),
+    );
+
+    const res = await post('/api/items/HLM-1/merge-reconciliation', {
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestNumber: 7,
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: 'Pull request not found',
+      code: 'not_found',
+    });
+  });
+
+  it('returns 503 when GitHub rate limits the lookup', async () => {
+    mockResolveCurrentPullRequestState.mockRejectedValue(
+      new GitHubPullRequestLookupError('GitHub API rate limit exceeded', {
+        code: 'rate_limited',
+        githubStatus: 403,
+      }),
+    );
+
+    const res = await post('/api/items/HLM-1/merge-reconciliation', {
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestNumber: 7,
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'GitHub rate limit exceeded',
+      code: 'rate_limited',
+    });
+  });
+
+  it('returns 504 when the GitHub lookup times out', async () => {
+    mockResolveCurrentPullRequestState.mockRejectedValue(
+      new GitHubPullRequestLookupError('GitHub API request timed out', { code: 'timeout' }),
+    );
+
+    const res = await post('/api/items/HLM-1/merge-reconciliation', {
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestNumber: 7,
+    });
+
+    expect(res.status).toBe(504);
+    expect(await res.json()).toEqual({
+      error: 'GitHub pull request lookup timed out',
+      code: 'timeout',
+    });
   });
 });

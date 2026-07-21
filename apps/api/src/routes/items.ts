@@ -8,6 +8,7 @@ import { createItem, transitionItem } from '../services/item-service.js';
 import { readGitHubTokenFromEnv } from '../lib/github-token.js';
 import {
   GitHubPullRequestLookupError,
+  type GitHubPullRequestLookupErrorCode,
   resolveCurrentPullRequestState,
 } from '../services/github-pull-requests.js';
 import {
@@ -54,6 +55,28 @@ const ReconcilePullRequestBodySchema = z
     pullRequestNumber: z.number().int().positive(),
   })
   .strict();
+
+function mapGitHubPullRequestLookupError(err: GitHubPullRequestLookupError): {
+  body: { error: string; code: GitHubPullRequestLookupErrorCode };
+  status: 404 | 502 | 503 | 504;
+} {
+  switch (err.code) {
+    case 'not_found':
+      return { body: { error: 'Pull request not found', code: err.code }, status: 404 };
+    case 'rate_limited':
+      return { body: { error: 'GitHub rate limit exceeded', code: err.code }, status: 503 };
+    case 'timeout':
+      return {
+        body: { error: 'GitHub pull request lookup timed out', code: err.code },
+        status: 504,
+      };
+    case 'unauthorized':
+    case 'forbidden':
+    case 'bad_response':
+    case 'upstream_failure':
+      return { body: { error: 'Failed to resolve pull request', code: err.code }, status: 502 };
+  }
+}
 
 // ── Error → HTTP status mapping ───────────────────────────────────────────────
 // 400 Bad Request:          Zod validation failure, invalid externalId path param
@@ -174,7 +197,8 @@ itemsRouter.post('/items/:externalId/merge-reconciliation', async (c) => {
   } catch (err) {
     if (err instanceof GitHubPullRequestLookupError) {
       console.error('[items] Failed to resolve pull request for merge reconciliation:', err);
-      return c.json({ error: 'Failed to resolve pull request' }, 502);
+      const mapped = mapGitHubPullRequestLookupError(err);
+      return c.json(mapped.body, mapped.status);
     }
     const mapped = mapErrorToResponse(err);
     if (mapped.status === 500) throw err;

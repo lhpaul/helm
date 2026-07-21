@@ -14,6 +14,7 @@ const {
   mockParseWebhook,
   mockCreate,
   mockTransition,
+  mockTransitionIfCurrentStage,
   mockList,
   mockGet,
   mockSetSubStage,
@@ -28,6 +29,7 @@ const {
   mockParseWebhook: vi.fn(),
   mockCreate: vi.fn(),
   mockTransition: vi.fn(),
+  mockTransitionIfCurrentStage: vi.fn(),
   mockList: vi.fn(),
   mockGet: vi.fn(),
   mockSetSubStage: vi.fn(),
@@ -50,6 +52,11 @@ vi.mock('../services/github-pr.js', () => ({
   authorHasWriteAccess: mockAuthorHasWriteAccess,
   getPrimaryCodeRepo: mockGetPrimaryCodeRepo,
   listPrIssueComments: mockListPrIssueComments,
+  parseGitHubRepoUrl: (url: string) => {
+    const parsed = new URL(url);
+    const [owner, repoWithSuffix] = parsed.pathname.replace(/^\/+/, '').split('/');
+    return { owner, repo: repoWithSuffix?.replace(/\.git$/, '') };
+  },
 }));
 
 vi.mock('../services/index.js', async (importOriginal) => {
@@ -64,6 +71,7 @@ vi.mock('../services/index.js', async (importOriginal) => {
     getItemStore: vi.fn().mockResolvedValue({
       create: mockCreate,
       transition: mockTransition,
+      transitionIfCurrentStage: mockTransitionIfCurrentStage,
       list: mockList,
       get: mockGet,
     }),
@@ -75,6 +83,8 @@ vi.mock('../services/index.js', async (importOriginal) => {
         project_number: 1,
         custom_field_name: 'Helm Stage',
       },
+      code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+      knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
       workflow: { final_stage: 'released' },
     }),
   };
@@ -117,9 +127,14 @@ function mergedPrPayload(
   const payload: Record<string, unknown> = {
     action: opts.action ?? 'closed',
     pull_request: {
+      id: 1000 + (opts.prNumber ?? 42),
       number: opts.prNumber ?? 42,
       merged: opts.merged ?? true,
       head: { ref: headRef, sha: opts.headSha ?? 'sha-sync-1' },
+    },
+    repository: {
+      name: 'test-repo',
+      owner: { login: 'test-org' },
     },
   };
   if (opts.senderLogin) {
@@ -202,6 +217,8 @@ describe('POST /api/webhooks/github', () => {
         project_number: 1,
         custom_field_name: 'Helm Stage',
       },
+      code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+      knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
       workflow: { final_stage: 'released' },
     } as never);
     vi.mocked(getGitHubAdapter).mockResolvedValue({ parseWebhook: mockParseWebhook } as never);
@@ -607,6 +624,15 @@ describe('POST /api/webhooks/github', () => {
   });
 
   describe('dispatch: pull_request_merged', () => {
+    beforeEach(() => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'spec-draft',
+        history: [],
+      });
+    });
+
     // Fix 1: pull_request events are parsed by the pure parseGitHubWebhook — the
     // GitHub Projects adapter is NOT consulted. Each test sends a real PR payload.
 
@@ -615,18 +641,20 @@ describe('POST /api/webhooks/github', () => {
     it('transitions spec-draft → spec-ready when helm/spec/ branch is merged', async () => {
       const body = mergedPrPayload('helm/spec/issue_42');
       // Writeback reads the resulting ItemState, so the mock returns a realistic one.
-      mockTransition.mockResolvedValue({
-        externalId: 'issue_42',
-        currentStage: 'spec-ready',
-        history: [],
+      mockTransitionIfCurrentStage.mockResolvedValue({
+        state: { externalId: 'issue_42', currentStage: 'spec-ready', history: [] },
+        applied: true,
       });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransition).toHaveBeenCalledWith({
+      expect(mockTransitionIfCurrentStage).toHaveBeenCalledWith({
         externalId: 'issue_42',
+        fromStage: 'spec-draft',
         toStage: 'spec-ready',
         triggeredBy: 'webhook:knowledge-repo',
+        note: expect.stringContaining('merge-reconciliation:test-org/test-repo#id:1042:spec-ready'),
+        idempotencyKey: 'merge-reconciliation:test-org/test-repo#id:1042:spec-ready',
       });
       // Fix 1: the GitHub Projects adapter is never consulted for pull_request events.
       expect(getGitHubAdapter).not.toHaveBeenCalled();
@@ -637,20 +665,21 @@ describe('POST /api/webhooks/github', () => {
 
     it('returns 200 on WorkflowTransitionError for spec merge (item already past spec-draft)', async () => {
       const body = mergedPrPayload('helm/spec/issue_42');
-      const { WorkflowTransitionError } = await import('@helm/workflow');
-      mockTransition.mockRejectedValue(
-        new WorkflowTransitionError('Cannot transition', 'spec-ready', 'spec-ready'),
-      );
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'spec-ready',
+        history: [],
+      });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransition).toHaveBeenCalledOnce();
+      expect(mockTransitionIfCurrentStage).not.toHaveBeenCalled();
     });
 
     it('returns 200 on ItemNotFoundError for spec merge (item not in this Helm instance)', async () => {
       const body = mergedPrPayload('helm/spec/issue_42');
-      const { ItemNotFoundError } = await import('../services/errors.js');
-      mockTransition.mockRejectedValue(new ItemNotFoundError('issue_42'));
+      mockGet.mockResolvedValue(null);
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
@@ -658,7 +687,7 @@ describe('POST /api/webhooks/github', () => {
 
     it('returns 500 on unexpected error during spec merge transition', async () => {
       const body = mergedPrPayload('helm/spec/issue_42');
-      mockTransition.mockRejectedValue(new Error('storage failure'));
+      mockTransitionIfCurrentStage.mockRejectedValue(new Error('storage failure'));
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(500);
@@ -668,33 +697,46 @@ describe('POST /api/webhooks/github', () => {
 
     it('transitions plan-draft → plan-ready when helm/plan/ branch is merged', async () => {
       const body = mergedPrPayload('helm/plan/issue_42');
-      mockTransition.mockResolvedValue({ history: [] });
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'plan-draft',
+        history: [],
+      });
+      mockTransitionIfCurrentStage.mockResolvedValue({
+        state: { currentStage: 'plan-ready', history: [] },
+        applied: true,
+      });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransition).toHaveBeenCalledWith({
+      expect(mockTransitionIfCurrentStage).toHaveBeenCalledWith({
         externalId: 'issue_42',
+        fromStage: 'plan-draft',
         toStage: 'plan-ready',
         triggeredBy: 'webhook:knowledge-repo',
+        note: expect.stringContaining('merge-reconciliation:test-org/test-repo#id:1042:plan-ready'),
+        idempotencyKey: 'merge-reconciliation:test-org/test-repo#id:1042:plan-ready',
       });
     });
 
     it('returns 200 on WorkflowTransitionError for plan merge (item already past plan-draft)', async () => {
       const body = mergedPrPayload('helm/plan/issue_42');
-      const { WorkflowTransitionError } = await import('@helm/workflow');
-      mockTransition.mockRejectedValue(
-        new WorkflowTransitionError('Cannot transition', 'plan-ready', 'plan-ready'),
-      );
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'plan-ready',
+        history: [],
+      });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransition).toHaveBeenCalledOnce();
+      expect(mockTransitionIfCurrentStage).not.toHaveBeenCalled();
     });
 
     it('returns 200 on ItemNotFoundError for plan merge (item not in this Helm instance)', async () => {
       const body = mergedPrPayload('helm/plan/HLM-7');
-      const { ItemNotFoundError } = await import('../services/errors.js');
-      mockTransition.mockRejectedValue(new ItemNotFoundError('HLM-7'));
+      mockGet.mockResolvedValue(null);
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
@@ -702,7 +744,13 @@ describe('POST /api/webhooks/github', () => {
 
     it('returns 500 on unexpected error during plan merge transition', async () => {
       const body = mergedPrPayload('helm/plan/issue_42');
-      mockTransition.mockRejectedValue(new Error('storage failure'));
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'plan-draft',
+        history: [],
+      });
+      mockTransitionIfCurrentStage.mockRejectedValue(new Error('storage failure'));
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(500);
@@ -714,33 +762,46 @@ describe('POST /api/webhooks/github', () => {
 
     it('transitions code-review → merged when helm/impl/ branch is merged', async () => {
       const body = mergedPrPayload('helm/impl/issue_42');
-      mockTransition.mockResolvedValue({ history: [] });
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      mockTransitionIfCurrentStage.mockResolvedValue({
+        state: { currentStage: 'merged', history: [] },
+        applied: true,
+      });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransition).toHaveBeenCalledWith({
+      expect(mockTransitionIfCurrentStage).toHaveBeenCalledWith({
         externalId: 'issue_42',
+        fromStage: 'code-review',
         toStage: 'merged',
         triggeredBy: 'webhook:code-repo',
+        note: expect.stringContaining('merge-reconciliation:test-org/test-repo#id:1042:merged'),
+        idempotencyKey: 'merge-reconciliation:test-org/test-repo#id:1042:merged',
       });
     });
 
     it('returns 200 on WorkflowTransitionError for impl merge (item already past code-review)', async () => {
       const body = mergedPrPayload('helm/impl/issue_42');
-      const { WorkflowTransitionError } = await import('@helm/workflow');
-      mockTransition.mockRejectedValue(
-        new WorkflowTransitionError('Cannot transition', 'merged', 'merged'),
-      );
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'merged',
+        history: [],
+      });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransition).toHaveBeenCalledOnce();
+      expect(mockTransitionIfCurrentStage).not.toHaveBeenCalled();
     });
 
     it('returns 200 on ItemNotFoundError for impl merge (item not in this Helm instance)', async () => {
       const body = mergedPrPayload('helm/impl/HLM-7');
-      const { ItemNotFoundError } = await import('../services/errors.js');
-      mockTransition.mockRejectedValue(new ItemNotFoundError('HLM-7'));
+      mockGet.mockResolvedValue(null);
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
@@ -748,7 +809,13 @@ describe('POST /api/webhooks/github', () => {
 
     it('returns 500 on unexpected error during impl merge transition', async () => {
       const body = mergedPrPayload('helm/impl/issue_42');
-      mockTransition.mockRejectedValue(new Error('storage failure'));
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      mockTransitionIfCurrentStage.mockRejectedValue(new Error('storage failure'));
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(500);
@@ -840,7 +907,7 @@ describe('POST /api/webhooks/github', () => {
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransition).not.toHaveBeenCalled();
+      expect(mockTransitionIfCurrentStage).not.toHaveBeenCalled();
     });
 
     // ── Non-artifact branches ─────────────────────────────────────────────────
@@ -850,7 +917,7 @@ describe('POST /api/webhooks/github', () => {
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransition).not.toHaveBeenCalled();
+      expect(mockTransitionIfCurrentStage).not.toHaveBeenCalled();
     });
 
     it('returns 200 and does not transition for a dot-traversal headRef (parseArtifactBranch rejects it)', async () => {
@@ -858,7 +925,7 @@ describe('POST /api/webhooks/github', () => {
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransition).not.toHaveBeenCalled();
+      expect(mockTransitionIfCurrentStage).not.toHaveBeenCalled();
     });
 
     it('returns 200 and does not transition for a dot-traversal plan headRef', async () => {
@@ -866,7 +933,7 @@ describe('POST /api/webhooks/github', () => {
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransition).not.toHaveBeenCalled();
+      expect(mockTransitionIfCurrentStage).not.toHaveBeenCalled();
     });
 
     it('returns 200 and does not transition for a dot-traversal impl headRef', async () => {
@@ -874,7 +941,7 @@ describe('POST /api/webhooks/github', () => {
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransition).not.toHaveBeenCalled();
+      expect(mockTransitionIfCurrentStage).not.toHaveBeenCalled();
     });
   });
 
@@ -925,6 +992,8 @@ describe('POST /api/webhooks/github', () => {
           project_number: 1,
           custom_field_name: 'Helm Stage',
         },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
         workflow: { final_stage: 'merged' },
       } as never);
 
@@ -990,6 +1059,8 @@ describe('POST /api/webhooks/github', () => {
           provider: 'linear',
           webhook_secret_env: 'LINEAR_WEBHOOK_SECRET',
         },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
       } as never);
       vi.mocked(getGitHubAdapter).mockRejectedValue(
         new Error('GitHub Projects adapter is not available for a linear product'),
@@ -998,16 +1069,28 @@ describe('POST /api/webhooks/github', () => {
 
     it('processes a pull_request_merged for a Linear product without the GitHub adapter', async () => {
       const body = mergedPrPayload('helm/impl/issue_42');
-      mockTransition.mockResolvedValue({ history: [] });
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'mome',
+        currentStage: 'code-review',
+        history: [],
+      });
+      mockTransitionIfCurrentStage.mockResolvedValue({
+        state: { currentStage: 'merged', history: [] },
+        applied: true,
+      });
 
       const res = await post(body, 'pull_request');
 
       expect(res.status).toBe(200);
       expect(getGitHubAdapter).not.toHaveBeenCalled();
-      expect(mockTransition).toHaveBeenCalledWith({
+      expect(mockTransitionIfCurrentStage).toHaveBeenCalledWith({
         externalId: 'issue_42',
+        fromStage: 'code-review',
         toStage: 'merged',
         triggeredBy: 'webhook:code-repo',
+        note: expect.stringContaining('merge-reconciliation:test-org/test-repo#id:1042:merged'),
+        idempotencyKey: 'merge-reconciliation:test-org/test-repo#id:1042:merged',
       });
     });
 

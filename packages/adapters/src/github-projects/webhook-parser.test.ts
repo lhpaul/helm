@@ -129,14 +129,25 @@ describe('parseGitHubWebhook', () => {
       const result = parseGitHubWebhook(
         ctx('pull_request', {
           action: 'closed',
-          pull_request: { merged: true, head: { ref: 'helm/spec/issue_42' } },
+          pull_request: { id: 1042, merged: true, head: { ref: 'helm/spec/issue_42' } },
         }),
       );
       expect(result).toMatchObject({
         type: 'pull_request_merged',
         headRef: 'helm/spec/issue_42',
+        pullRequestId: 1042,
       });
       expect('timestamp' in result).toBe(true);
+    });
+
+    it('pull_request closed+merged:true without id → unknown', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'closed',
+          pull_request: { merged: true, head: { ref: 'helm/spec/issue_42' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
     });
 
     it('pull_request closed+merged:false → unknown (not a merge)', () => {
@@ -220,7 +231,7 @@ describe('parseGitHubWebhook', () => {
       const result = parseGitHubWebhook(
         ctx('pull_request', {
           action: 'closed',
-          pull_request: { merged: true, head: { ref: 'feature/some-other-branch' } },
+          pull_request: { id: 1043, merged: true, head: { ref: 'feature/some-other-branch' } },
         }),
       );
       expect(result).toMatchObject({

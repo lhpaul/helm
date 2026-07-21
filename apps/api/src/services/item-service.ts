@@ -187,6 +187,40 @@ export async function transitionItem(input: {
 }
 
 /**
+ * Compare-and-set variant for event reconciliation. The store writes only when
+ * the item is still at `fromStage`, and persisted history carries the optional
+ * idempotency key. Successful transitions use the same tracker writeback path
+ * as normal transitionItem().
+ */
+export async function transitionItemIfCurrentStage(input: {
+  externalId: string;
+  fromStage: WorkflowStage;
+  toStage: WorkflowStage;
+  triggeredBy: string;
+  note?: string;
+  idempotencyKey?: string;
+}): Promise<ItemState> {
+  const result = await transitionItemIfCurrentStageResult(input);
+  return result.item;
+}
+
+export async function transitionItemIfCurrentStageResult(input: {
+  externalId: string;
+  fromStage: WorkflowStage;
+  toStage: WorkflowStage;
+  triggeredBy: string;
+  note?: string;
+  idempotencyKey?: string;
+}): Promise<{ item: ItemState; applied: boolean }> {
+  const store = await getItemStore();
+  const { state: updated, applied } = await store.transitionIfCurrentStage(input);
+  if (applied) {
+    await writebackStage(updated.externalId, updated.currentStage, input.triggeredBy);
+  }
+  return { item: { ...updated, history: [...updated.history] }, applied };
+}
+
+/**
  * Force-advances an item bypassing the state machine (operator escape valve,
  * ADR-029), then writes the new stage back to the tracker (best-effort).
  * Drop-in replacement for `store.forceTransition`.

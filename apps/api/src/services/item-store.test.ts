@@ -130,6 +130,104 @@ describe('transition', () => {
   });
 });
 
+describe('transitionIfCurrentStage', () => {
+  async function advanceToCodeReview(): Promise<void> {
+    await store.create(BASE_INPUT);
+    for (const toStage of [
+      'spec-draft',
+      'spec-ready',
+      'plan-draft',
+      'plan-ready',
+      'in-development',
+      'code-review',
+    ] as const) {
+      await store.transition({ externalId: 'HLM-1', toStage, triggeredBy: 'agent:test' });
+    }
+  }
+
+  it('applies the transition when the predecessor stage matches', async () => {
+    await advanceToCodeReview();
+
+    const { state, applied } = await store.transitionIfCurrentStage({
+      externalId: 'HLM-1',
+      fromStage: 'code-review',
+      toStage: 'merged',
+      triggeredBy: 'webhook:code-repo',
+      note: 'merge-reconciliation:example/repo#id:1:merged',
+      idempotencyKey: 'merge-reconciliation:example/repo#id:1:merged',
+    });
+
+    expect(applied).toBe(true);
+    expect(state.currentStage).toBe('merged');
+  });
+
+  it('is a durable no-op when the idempotency key is already in history', async () => {
+    await advanceToCodeReview();
+    const key = 'merge-reconciliation:example/repo#id:1:merged';
+    await store.transitionIfCurrentStage({
+      externalId: 'HLM-1',
+      fromStage: 'code-review',
+      toStage: 'merged',
+      triggeredBy: 'webhook:code-repo',
+      note: key,
+      idempotencyKey: key,
+    });
+    const historyAfterFirst = (await store.get('HLM-1'))?.history.length;
+
+    const { state, applied } = await store.transitionIfCurrentStage({
+      externalId: 'HLM-1',
+      fromStage: 'code-review',
+      toStage: 'merged',
+      triggeredBy: 'operator:recovery',
+      note: key,
+      idempotencyKey: key,
+    });
+
+    expect(applied).toBe(false);
+    expect(state.currentStage).toBe('merged');
+    expect(state.history).toHaveLength(historyAfterFirst ?? 0);
+    expect(state.history.at(-1)?.idempotencyKey).toBe(key);
+  });
+
+  it('throws StageMismatchError when the predecessor stage does not match', async () => {
+    await advanceToCodeReview();
+
+    await expect(
+      store.transitionIfCurrentStage({
+        externalId: 'HLM-1',
+        fromStage: 'plan-ready',
+        toStage: 'merged',
+        triggeredBy: 'webhook:code-repo',
+      }),
+    ).rejects.toThrow(StageMismatchError);
+  });
+
+  it('ignores crafted transition notes that only contain the key as a substring', async () => {
+    await store.create(BASE_INPUT);
+    await store.transition({
+      externalId: 'HLM-1',
+      toStage: 'spec-draft',
+      triggeredBy: 'human:spoof',
+      note: 'merge-reconciliation:example/repo#id:9:spec-ready; forged',
+    });
+
+    const { state, applied } = await store.transitionIfCurrentStage({
+      externalId: 'HLM-1',
+      fromStage: 'spec-draft',
+      toStage: 'spec-ready',
+      triggeredBy: 'webhook:knowledge-repo',
+      note: 'merge-reconciliation:example/repo#id:9:spec-ready; source:webhook',
+      idempotencyKey: 'merge-reconciliation:example/repo#id:9:spec-ready',
+    });
+
+    expect(applied).toBe(true);
+    expect(state.currentStage).toBe('spec-ready');
+    expect(state.history.at(-1)?.idempotencyKey).toBe(
+      'merge-reconciliation:example/repo#id:9:spec-ready',
+    );
+  });
+});
+
 describe('forceTransition', () => {
   // Advances an item along the valid forward chain to 'in-development', the
   // only stage from which a rollback to 'plan-ready' is permitted (ADR-029).

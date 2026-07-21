@@ -5,6 +5,17 @@ import { EXTERNAL_ID_REGEX } from '../services/types.js';
 import { mapErrorToResponse, validateExternalId } from '../lib/http-errors.js';
 import { getItemStore, getProductConfig } from '../services/index.js';
 import { createItem, transitionItem } from '../services/item-service.js';
+import { readGitHubTokenFromEnv } from '../lib/github-token.js';
+import {
+  GitHubPullRequestLookupError,
+  type GitHubPullRequestLookupErrorCode,
+  resolveCurrentPullRequestState,
+} from '../services/github-pull-requests.js';
+import {
+  isRepositoryConfiguredForProduct,
+  reconcileMergedArtifactPullRequest,
+  reconciliationInputFromCurrentPullRequestState,
+} from '../services/merge-reconciliation.js';
 
 // NOTE: No authentication in v0. This server is self-hosted single-user.
 // Authentication and authorization enter in v1+ with multi-tenant support.
@@ -27,6 +38,48 @@ const TransitionBodySchema = z
     note: z.string().optional(),
   })
   .strict();
+
+const GitHubRepoSegmentSchema = z
+  .string()
+  .min(1)
+  .regex(/^[A-Za-z0-9_.-]+$/)
+  .refine((value) => value !== '.' && value !== '..', {
+    message: 'Repository owner/repo must not be "." or ".."',
+  });
+
+const ReconcilePullRequestBodySchema = z
+  .object({
+    repository: z
+      .object({
+        owner: GitHubRepoSegmentSchema,
+        repo: GitHubRepoSegmentSchema,
+      })
+      .strict(),
+    pullRequestNumber: z.number().int().positive(),
+  })
+  .strict();
+
+function mapGitHubPullRequestLookupError(err: GitHubPullRequestLookupError): {
+  body: { error: string; code: GitHubPullRequestLookupErrorCode };
+  status: 404 | 502 | 503 | 504;
+} {
+  switch (err.code) {
+    case 'not_found':
+      return { body: { error: 'Pull request not found', code: err.code }, status: 404 };
+    case 'rate_limited':
+      return { body: { error: 'GitHub rate limit exceeded', code: err.code }, status: 503 };
+    case 'timeout':
+      return {
+        body: { error: 'GitHub pull request lookup timed out', code: err.code },
+        status: 504,
+      };
+    case 'unauthorized':
+    case 'forbidden':
+    case 'bad_response':
+    case 'upstream_failure':
+      return { body: { error: 'Failed to resolve pull request', code: err.code }, status: 502 };
+  }
+}
 
 // ── Error → HTTP status mapping ───────────────────────────────────────────────
 // 400 Bad Request:          Zod validation failure, invalid externalId path param
@@ -109,6 +162,67 @@ itemsRouter.post('/items/:externalId/transitions', async (c) => {
     });
     return c.json(item);
   } catch (err) {
+    const mapped = mapErrorToResponse(err);
+    if (mapped.status === 500) throw err;
+    return c.json(mapped.body, mapped.status);
+  }
+});
+
+// ── POST /api/items/:externalId/merge-reconciliation ─────────────────────────
+
+itemsRouter.post('/items/:externalId/merge-reconciliation', async (c) => {
+  const idResult = validateExternalId(c.req.param('externalId'));
+  if (!idResult.ok) {
+    return c.json(idResult.response.body, idResult.response.status);
+  }
+  const externalId = idResult.value;
+
+  const bodyResult = ReconcilePullRequestBodySchema.safeParse(await c.req.json().catch(() => null));
+  if (!bodyResult.success) {
+    return c.json({ error: 'Invalid request body', details: bodyResult.error.issues }, 400);
+  }
+
+  const githubToken = readGitHubTokenFromEnv();
+  if (!githubToken) {
+    console.error('[items] GitHub credentials are not configured for merge reconciliation');
+    return c.json({ error: 'GitHub credentials are not configured' }, 503);
+  }
+
+  let product;
+  try {
+    product = await getProductConfig();
+  } catch (err) {
+    console.error('[items] Failed to load product config for merge reconciliation:', err);
+    return c.json({ error: 'Product configuration unavailable' }, 500);
+  }
+
+  // Allowlist before any GitHub call so the shared token cannot probe arbitrary repos.
+  if (!isRepositoryConfiguredForProduct(product, bodyResult.data.repository)) {
+    return c.json(
+      {
+        error: 'Repository is not configured for this product',
+        code: 'repository_not_allowed',
+      },
+      400,
+    );
+  }
+
+  try {
+    const pr = await resolveCurrentPullRequestState({
+      repository: bodyResult.data.repository,
+      pullRequestNumber: bodyResult.data.pullRequestNumber,
+      githubToken,
+    });
+    const result = await reconcileMergedArtifactPullRequest(
+      reconciliationInputFromCurrentPullRequestState(pr, externalId),
+    );
+    return c.json(result);
+  } catch (err) {
+    if (err instanceof GitHubPullRequestLookupError) {
+      console.error('[items] Failed to resolve pull request for merge reconciliation:', err);
+      const mapped = mapGitHubPullRequestLookupError(err);
+      return c.json(mapped.body, mapped.status);
+    }
     const mapped = mapErrorToResponse(err);
     if (mapped.status === 500) throw err;
     return c.json(mapped.body, mapped.status);

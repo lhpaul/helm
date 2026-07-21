@@ -57,7 +57,15 @@ export type NormalizedEvent =
    * interpreting the branch name convention — the adapter emits the raw ref
    * without applying any Helm-specific semantics.
    */
-  | { type: 'pull_request_merged'; headRef: string; timestamp: string }
+  | {
+      type: 'pull_request_merged';
+      headRef: string;
+      owner: string | null;
+      repo: string | null;
+      prNumber: number | null;
+      pullRequestId: number | null;
+      timestamp: string;
+    }
   /**
    * New commits were pushed to an open pull request (action: synchronize).
    * headRef is the PR source branch (e.g. `helm/impl/LEA-192`).

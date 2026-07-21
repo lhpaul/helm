@@ -12,10 +12,13 @@ import { _resetForTests } from '../services/index.js';
 // because a vi.mock factory cannot reference an imported value — vitest hoists
 // the factory above imports, so a shared mock would throw "Cannot access before
 // initialization". The duplication across items/release/rollback is required.
-const { mockSetSubStage, mockEnsureSubStages } = vi.hoisted(() => ({
-  mockSetSubStage: vi.fn().mockResolvedValue(undefined),
-  mockEnsureSubStages: vi.fn().mockResolvedValue(undefined),
-}));
+const { mockSetSubStage, mockEnsureSubStages, mockResolveCurrentPullRequestState } = vi.hoisted(
+  () => ({
+    mockSetSubStage: vi.fn().mockResolvedValue(undefined),
+    mockEnsureSubStages: vi.fn().mockResolvedValue(undefined),
+    mockResolveCurrentPullRequestState: vi.fn(),
+  }),
+);
 vi.mock('../services/index.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../services/index.js')>();
   return {
@@ -23,6 +26,13 @@ vi.mock('../services/index.js', async (importOriginal) => {
     getIssueTrackerAdapter: vi
       .fn()
       .mockResolvedValue({ setSubStage: mockSetSubStage, ensureSubStages: mockEnsureSubStages }),
+  };
+});
+vi.mock('../services/github-pull-requests.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../services/github-pull-requests.js')>();
+  return {
+    ...real,
+    resolveCurrentPullRequestState: mockResolveCurrentPullRequestState,
   };
 });
 
@@ -59,7 +69,11 @@ specialists:
 `.trim();
 
 let testDir: string;
-let savedEnv: { dataDir: string | undefined; knowledgePath: string | undefined };
+let savedEnv: {
+  dataDir: string | undefined;
+  knowledgePath: string | undefined;
+  githubToken: string | undefined;
+};
 
 beforeEach(async () => {
   _resetForTests();
@@ -67,6 +81,7 @@ beforeEach(async () => {
   // not clearAllMocks, so the hoisted mocks would otherwise accumulate calls).
   mockSetSubStage.mockClear();
   mockEnsureSubStages.mockClear();
+  mockResolveCurrentPullRequestState.mockReset();
   testDir = join(tmpdir(), `helm-items-api-${randomUUID()}`);
   await mkdir(join(testDir, 'data'), { recursive: true });
   await mkdir(join(testDir, 'knowledge', '.helm'), { recursive: true });
@@ -75,9 +90,11 @@ beforeEach(async () => {
   savedEnv = {
     dataDir: process.env.HELM_DATA_DIR,
     knowledgePath: process.env.HELM_KNOWLEDGE_REPO_PATH,
+    githubToken: process.env.GITHUB_TOKEN,
   };
   process.env.HELM_DATA_DIR = join(testDir, 'data');
   process.env.HELM_KNOWLEDGE_REPO_PATH = join(testDir, 'knowledge');
+  process.env.GITHUB_TOKEN = 'test-github-token';
 });
 
 afterEach(async () => {
@@ -87,6 +104,8 @@ afterEach(async () => {
   else process.env.HELM_DATA_DIR = savedEnv.dataDir;
   if (savedEnv.knowledgePath === undefined) delete process.env.HELM_KNOWLEDGE_REPO_PATH;
   else process.env.HELM_KNOWLEDGE_REPO_PATH = savedEnv.knowledgePath;
+  if (savedEnv.githubToken === undefined) delete process.env.GITHUB_TOKEN;
+  else process.env.GITHUB_TOKEN = savedEnv.githubToken;
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -210,5 +229,79 @@ describe('POST /api/items/:externalId/transitions', () => {
     expect(res.status).toBe(422);
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain("'released'");
+  });
+});
+
+// ── POST /api/items/:externalId/merge-reconciliation ─────────────────────────
+
+describe('POST /api/items/:externalId/merge-reconciliation', () => {
+  async function seedCodeReviewItem(): Promise<void> {
+    await post('/api/items', { externalId: 'HLM-1', triggeredBy: 'human:test' });
+    for (const toStage of [
+      'spec-draft',
+      'spec-ready',
+      'plan-draft',
+      'plan-ready',
+      'in-development',
+      'code-review',
+    ] as const) {
+      await post('/api/items/HLM-1/transitions', { toStage, triggeredBy: 'test:advance' });
+    }
+    mockSetSubStage.mockClear();
+  }
+
+  beforeEach(() => {
+    mockResolveCurrentPullRequestState.mockResolvedValue({
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestId: 5001,
+      pullRequestNumber: 7,
+      headRef: 'helm/impl/HLM-1',
+      headSha: 'sha-1',
+      merged: true,
+      mergedAt: '2026-07-21T12:00:00Z',
+      htmlUrl: 'https://github.com/example-org/example-app/pull/7',
+    });
+  });
+
+  it('reconciles a merged artifact PR from current GitHub state', async () => {
+    await seedCodeReviewItem();
+
+    const res = await post('/api/items/HLM-1/merge-reconciliation', {
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestNumber: 7,
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; toStage: string };
+    expect(body.status).toBe('advanced');
+    expect(body.toStage).toBe('merged');
+    expect(mockSetSubStage).toHaveBeenCalledWith('HLM-1', 'merged');
+  });
+
+  it('is a no-op when the same recovery call is repeated after success', async () => {
+    await seedCodeReviewItem();
+    await post('/api/items/HLM-1/merge-reconciliation', {
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestNumber: 7,
+    });
+    const afterFirst = (await (await app.request('/api/items')).json()) as Array<{
+      externalId: string;
+      history: unknown[];
+    }>;
+    mockSetSubStage.mockClear();
+
+    const res = await post('/api/items/HLM-1/merge-reconciliation', {
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestNumber: 7,
+    });
+    const afterSecond = (await (await app.request('/api/items')).json()) as Array<{
+      externalId: string;
+      history: unknown[];
+    }>;
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { status: string }).status).toBe('already-reconciled');
+    expect(afterSecond[0]?.history).toHaveLength(afterFirst[0]?.history.length ?? 0);
+    expect(mockSetSubStage).not.toHaveBeenCalled();
   });
 });

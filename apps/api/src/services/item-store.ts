@@ -12,6 +12,8 @@ import type { ItemState, WorkflowEvent } from './types.js';
  * Each item is stored as data/items/{externalId}.json using atomic writes.
  */
 export class ItemStore {
+  private readonly itemLocks = new Map<string, Promise<unknown>>();
+
   constructor(private readonly itemsDir: string) {}
 
   /**
@@ -115,6 +117,44 @@ export class ItemStore {
   }
 
   /**
+   * Advances an item only if its persisted current stage still matches the
+   * caller's expected predecessor. `idempotencyKey` is checked against persisted
+   * history notes before writing, so replaying the same external event is a
+   * durable no-op even after process restart.
+   *
+   * The per-item lock keeps the read/check/write sequence atomic within the
+   * local single-process runtime. The persisted stage + history key are still
+   * the source of truth for replay behavior.
+   */
+  async transitionIfCurrentStage(input: {
+    externalId: string;
+    fromStage: WorkflowStage;
+    toStage: WorkflowStage;
+    triggeredBy: string;
+    note?: string;
+    idempotencyKey?: string;
+  }): Promise<{ state: ItemState; applied: boolean }> {
+    return this.withItemLock(input.externalId, async () => {
+      const current = await readJson<ItemState>(this.itemPath(input.externalId));
+      if (current === null) {
+        throw new ItemNotFoundError(input.externalId);
+      }
+
+      const idempotencyKey = input.idempotencyKey;
+      if (idempotencyKey && current.history.some((event) => event.note?.includes(idempotencyKey))) {
+        return { state: current, applied: false };
+      }
+
+      if (current.currentStage !== input.fromStage) {
+        throw new StageMismatchError(input.externalId, input.fromStage, current.currentStage);
+      }
+
+      validateTransition(current.currentStage, input.toStage);
+      return { state: await this.applyTransition(current, input), applied: true };
+    });
+  }
+
+  /**
    * Applies a workflow transition WITHOUT the validateTransition guard.
    *
    * This deliberately bypasses the state machine's VALID_TRANSITIONS map and is
@@ -178,6 +218,26 @@ export class ItemStore {
 
     await writeJsonAtomic(this.itemPath(current.externalId), updated);
     return updated;
+  }
+
+  private async withItemLock<T>(externalId: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.itemLocks.get(externalId) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = previous.catch(() => undefined).then(() => current);
+    this.itemLocks.set(externalId, chained);
+
+    await previous.catch(() => undefined);
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.itemLocks.get(externalId) === chained) {
+        this.itemLocks.delete(externalId);
+      }
+    }
   }
 
   /**

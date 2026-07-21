@@ -5,8 +5,8 @@ import {
   parseGitHubWebhook,
   type NormalizedEvent,
 } from '@helm/adapters';
-import { WorkflowTransitionError, type WorkflowStage } from '@helm/workflow';
-import { parseArtifactBranch, type ArtifactBranchKind } from '@helm/shared';
+import { WorkflowTransitionError } from '@helm/workflow';
+import { parseArtifactBranch } from '@helm/shared';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
 import {
   getGitHubAdapter,
@@ -27,26 +27,7 @@ import {
   resolveOpenPrMetadata,
 } from '../services/github-pr.js';
 import { readGitHubTokenFromEnv } from '../lib/github-token.js';
-
-// ── Artifact branch routing ───────────────────────────────────────────────────
-
-/** Maps artifact branch kind to the workflow stage it should transition to. */
-const ARTIFACT_STAGE_MAP: Record<ArtifactBranchKind, WorkflowStage> = {
-  spec: 'spec-ready',
-  plan: 'plan-ready',
-  // ADR-032: a merged helm/impl/<id> PR lands the item in `merged` (PR merged),
-  // NOT `released` (shipped to users). `released` is reached only via the
-  // release trigger — the operator endpoint or the release.published webhook.
-  impl: 'merged',
-};
-
-/** Maps artifact branch kind to the triggeredBy source identifier.
- *  spec/plan PRs live in the knowledge repo; impl PRs live in the code repo. */
-const ARTIFACT_TRIGGERED_BY_MAP: Record<ArtifactBranchKind, string> = {
-  spec: 'webhook:knowledge-repo',
-  plan: 'webhook:knowledge-repo',
-  impl: 'webhook:code-repo',
-};
+import { reconcileMergedArtifactPullRequest } from '../services/merge-reconciliation.js';
 
 /** GitHub logins that push via Helm orchestration — ignore their PR synchronize webhooks. */
 const ORCHESTRATOR_SENDER_LOGINS = new Set(['helm-bot']);
@@ -487,36 +468,21 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       }
     }
   } else if (event.type === 'pull_request_merged') {
-    // Interpret the head ref: if it matches a Helm artifact branch prefix
-    // (helm/spec/, helm/plan/, helm/impl/), advance the item to the
-    // corresponding stage.  Any other branch (feature/, main, …) is silently
-    // ignored — it belongs to a different workflow.
-    const parsed = parseArtifactBranch(event.headRef);
-    if (parsed !== null) {
-      const toStage = ARTIFACT_STAGE_MAP[parsed.kind];
-      const triggeredBy = ARTIFACT_TRIGGERED_BY_MAP[parsed.kind];
-      try {
-        // triggeredBy is webhook:code-repo / webhook:knowledge-repo — NOT
-        // tracker-originated, so transitionItem writes the new stage back to the
-        // tracker (the merge happened in GitHub, the tracker doesn't know yet).
-        await transitionItem({
-          externalId: parsed.externalId,
-          toStage,
-          triggeredBy,
-        });
-      } catch (err) {
-        if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
-          // Not a delivery problem — item may already be in the target stage or
-          // may not exist in this Helm instance.  Log and return 200 (idempotent).
-          console.error('[webhooks/github] Artifact merge transition not applied:', err.message);
-        } else {
-          console.error(
-            '[webhooks/github] Unexpected error during artifact merge transition:',
-            err,
-          );
-          return c.json({ error: 'Internal server error' }, 500);
-        }
-      }
+    try {
+      await reconcileMergedArtifactPullRequest({
+        repository: event.owner && event.repo ? { owner: event.owner, repo: event.repo } : null,
+        pullRequestId: event.pullRequestId,
+        pullRequestNumber: event.prNumber,
+        headRef: event.headRef,
+        merged: true,
+        source: 'webhook',
+      });
+    } catch (err) {
+      console.error(
+        '[webhooks/github] Unexpected error during artifact merge reconciliation:',
+        err,
+      );
+      return c.json({ error: 'Internal server error' }, 500);
     }
   } else if (event.type === 'release_published') {
     // ADR-032: a published GitHub release ships the instance product. Bulk-

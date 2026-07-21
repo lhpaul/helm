@@ -41,10 +41,17 @@ const IssueCommentWebhookSchema = z.object({
 const PullRequestWebhookSchema = z.object({
   action: z.string(),
   pull_request: z.object({
+    id: z.number().int().positive().optional(),
     number: z.number().int().positive().optional(),
     merged: z.boolean(),
     head: z.object({ ref: z.string(), sha: z.string().optional() }),
   }),
+  repository: z
+    .object({
+      name: z.string(),
+      owner: z.object({ login: z.string() }),
+    })
+    .optional(),
   sender: z.object({ login: z.string() }).optional(),
 });
 
@@ -122,7 +129,15 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
       const { action, pull_request: pr } = parsed.data;
       // Only a closed+merged PR is actionable; any other action is noise.
       if (action === 'closed' && pr.merged === true) {
-        return { type: 'pull_request_merged', headRef: pr.head.ref, timestamp };
+        return {
+          type: 'pull_request_merged',
+          headRef: pr.head.ref,
+          owner: parsed.data.repository?.owner.login ?? null,
+          repo: parsed.data.repository?.name ?? null,
+          prNumber: pr.number ?? null,
+          pullRequestId: pr.id ?? null,
+          timestamp,
+        };
       }
       if (action === 'synchronize') {
         return {

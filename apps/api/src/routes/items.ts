@@ -5,6 +5,15 @@ import { EXTERNAL_ID_REGEX } from '../services/types.js';
 import { mapErrorToResponse, validateExternalId } from '../lib/http-errors.js';
 import { getItemStore, getProductConfig } from '../services/index.js';
 import { createItem, transitionItem } from '../services/item-service.js';
+import { readGitHubTokenFromEnv } from '../lib/github-token.js';
+import {
+  GitHubPullRequestLookupError,
+  resolveCurrentPullRequestState,
+} from '../services/github-pull-requests.js';
+import {
+  reconcileMergedArtifactPullRequest,
+  reconciliationInputFromCurrentPullRequestState,
+} from '../services/merge-reconciliation.js';
 
 // NOTE: No authentication in v0. This server is self-hosted single-user.
 // Authentication and authorization enter in v1+ with multi-tenant support.
@@ -25,6 +34,24 @@ const TransitionBodySchema = z
     toStage: z.enum(WORKFLOW_STAGES),
     triggeredBy: z.string().min(1),
     note: z.string().optional(),
+  })
+  .strict();
+
+const ReconcilePullRequestBodySchema = z
+  .object({
+    repository: z
+      .object({
+        owner: z
+          .string()
+          .min(1)
+          .regex(/^[A-Za-z0-9_.-]+$/),
+        repo: z
+          .string()
+          .min(1)
+          .regex(/^[A-Za-z0-9_.-]+$/),
+      })
+      .strict(),
+    pullRequestNumber: z.number().int().positive(),
   })
   .strict();
 
@@ -109,6 +136,46 @@ itemsRouter.post('/items/:externalId/transitions', async (c) => {
     });
     return c.json(item);
   } catch (err) {
+    const mapped = mapErrorToResponse(err);
+    if (mapped.status === 500) throw err;
+    return c.json(mapped.body, mapped.status);
+  }
+});
+
+// ── POST /api/items/:externalId/merge-reconciliation ─────────────────────────
+
+itemsRouter.post('/items/:externalId/merge-reconciliation', async (c) => {
+  const idResult = validateExternalId(c.req.param('externalId'));
+  if (!idResult.ok) {
+    return c.json(idResult.response.body, idResult.response.status);
+  }
+  const externalId = idResult.value;
+
+  const bodyResult = ReconcilePullRequestBodySchema.safeParse(await c.req.json().catch(() => null));
+  if (!bodyResult.success) {
+    return c.json({ error: 'Invalid request body', details: bodyResult.error.issues }, 400);
+  }
+
+  const githubToken = readGitHubTokenFromEnv();
+  if (!githubToken) {
+    return c.json({ error: 'GITHUB_TOKEN is not configured' }, 503);
+  }
+
+  try {
+    const pr = await resolveCurrentPullRequestState({
+      repository: bodyResult.data.repository,
+      pullRequestNumber: bodyResult.data.pullRequestNumber,
+      githubToken,
+    });
+    const result = await reconcileMergedArtifactPullRequest(
+      reconciliationInputFromCurrentPullRequestState(pr, externalId),
+    );
+    return c.json(result);
+  } catch (err) {
+    if (err instanceof GitHubPullRequestLookupError) {
+      console.error('[items] Failed to resolve pull request for merge reconciliation:', err);
+      return c.json({ error: 'Failed to resolve pull request' }, 502);
+    }
     const mapped = mapErrorToResponse(err);
     if (mapped.status === 500) throw err;
     return c.json(mapped.body, mapped.status);

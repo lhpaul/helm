@@ -53,6 +53,12 @@ export type WorkflowEvent = {
   at: string;
   /** Optional human-readable context for the transition */
   note?: string;
+  /**
+   * Server-owned replay marker for idempotent transitions (e.g. merge
+   * reconciliation). Never accepted from client request bodies — only set by
+   * internal callers of {@link ItemStore.transitionIfCurrentStage}.
+   */
+  idempotencyKey?: string;
 };
 
 /**

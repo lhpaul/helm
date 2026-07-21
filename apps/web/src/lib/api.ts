@@ -13,6 +13,8 @@ export type WorkflowEvent = {
   /** ISO 8601 */
   at: string;
   note?: string;
+  /** Server-owned replay marker; never set from client request bodies. */
+  idempotencyKey?: string;
 };
 
 export type ItemState = {

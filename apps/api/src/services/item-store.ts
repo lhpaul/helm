@@ -118,13 +118,14 @@ export class ItemStore {
 
   /**
    * Advances an item only if its persisted current stage still matches the
-   * caller's expected predecessor. `idempotencyKey` is checked against persisted
-   * history notes before writing, so replaying the same external event is a
-   * durable no-op even after process restart.
+   * caller's expected predecessor. When `idempotencyKey` is set, it is stored
+   * on the history event and matched by exact equality on replay, so replaying
+   * the same external event is a durable no-op even after process restart.
    *
-   * The per-item lock keeps the read/check/write sequence atomic within the
-   * local single-process runtime. The persisted stage + history key are still
-   * the source of truth for replay behavior.
+   * Concurrency: the per-item lock serializes read/check/write only within a
+   * single Node process. Multi-instance deployments are out of scope for v0
+   * (self-hosted single-user); durable safety still comes from the persisted
+   * stage + exact history `idempotencyKey` once one writer wins.
    */
   async transitionIfCurrentStage(input: {
     externalId: string;
@@ -141,7 +142,10 @@ export class ItemStore {
       }
 
       const idempotencyKey = input.idempotencyKey;
-      if (idempotencyKey && current.history.some((event) => event.note?.includes(idempotencyKey))) {
+      if (
+        idempotencyKey &&
+        current.history.some((event) => event.idempotencyKey === idempotencyKey)
+      ) {
         return { state: current, applied: false };
       }
 
@@ -198,7 +202,12 @@ export class ItemStore {
    */
   private async applyTransition(
     current: ItemState,
-    input: { toStage: WorkflowStage; triggeredBy: string; note?: string },
+    input: {
+      toStage: WorkflowStage;
+      triggeredBy: string;
+      note?: string;
+      idempotencyKey?: string;
+    },
   ): Promise<ItemState> {
     const now = new Date().toISOString();
     const event: WorkflowEvent = {
@@ -207,6 +216,7 @@ export class ItemStore {
       triggeredBy: input.triggeredBy,
       at: now,
       note: input.note,
+      ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
     };
 
     const updated: ItemState = {

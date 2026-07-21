@@ -16,6 +16,7 @@ const WorkflowEventSchema = z.object({
   triggeredBy: z.string(),
   at: z.string(),
   note: z.string().optional(),
+  idempotencyKey: z.string().optional(),
 });
 const ItemStateSchema = z.object({
   externalId: z.string(),

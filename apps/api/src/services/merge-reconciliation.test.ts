@@ -122,8 +122,9 @@ describe('reconcileMergedArtifactPullRequest', () => {
     ]);
     const persisted = await store.get('HLM-1');
     const mergeEvents =
-      persisted?.history.filter((event) =>
-        event.note?.includes('merge-reconciliation:test-org/test-repo#id:1234:merged'),
+      persisted?.history.filter(
+        (event) =>
+          event.idempotencyKey === 'merge-reconciliation:test-org/test-repo#id:1234:merged',
       ) ?? [];
 
     expect([auto.status, recovery.status].sort()).toEqual(['advanced', 'already-reconciled']);

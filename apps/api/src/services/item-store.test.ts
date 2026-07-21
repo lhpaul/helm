@@ -186,6 +186,7 @@ describe('transitionIfCurrentStage', () => {
     expect(applied).toBe(false);
     expect(state.currentStage).toBe('merged');
     expect(state.history).toHaveLength(historyAfterFirst ?? 0);
+    expect(state.history.at(-1)?.idempotencyKey).toBe(key);
   });
 
   it('throws StageMismatchError when the predecessor stage does not match', async () => {
@@ -199,6 +200,31 @@ describe('transitionIfCurrentStage', () => {
         triggeredBy: 'webhook:code-repo',
       }),
     ).rejects.toThrow(StageMismatchError);
+  });
+
+  it('ignores crafted transition notes that only contain the key as a substring', async () => {
+    await store.create(BASE_INPUT);
+    await store.transition({
+      externalId: 'HLM-1',
+      toStage: 'spec-draft',
+      triggeredBy: 'human:spoof',
+      note: 'merge-reconciliation:example/repo#id:9:spec-ready; forged',
+    });
+
+    const { state, applied } = await store.transitionIfCurrentStage({
+      externalId: 'HLM-1',
+      fromStage: 'spec-draft',
+      toStage: 'spec-ready',
+      triggeredBy: 'webhook:knowledge-repo',
+      note: 'merge-reconciliation:example/repo#id:9:spec-ready; source:webhook',
+      idempotencyKey: 'merge-reconciliation:example/repo#id:9:spec-ready',
+    });
+
+    expect(applied).toBe(true);
+    expect(state.currentStage).toBe('spec-ready');
+    expect(state.history.at(-1)?.idempotencyKey).toBe(
+      'merge-reconciliation:example/repo#id:9:spec-ready',
+    );
   });
 });
 

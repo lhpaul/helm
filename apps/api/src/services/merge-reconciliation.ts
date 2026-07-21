@@ -260,7 +260,7 @@ function alreadyReconciled(
     artifactKind,
     fromStage: transition.fromStage,
     toStage: transition.toStage,
-    item,
+    item: { ...item, history: [...item.history] },
     idempotencyKey,
   };
 }

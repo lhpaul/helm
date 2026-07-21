@@ -1,5 +1,5 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -74,7 +74,10 @@ let savedEnv: {
   dataDir: string | undefined;
   knowledgePath: string | undefined;
   githubToken: string | undefined;
+  webhookSecret: string | undefined;
 };
+
+const TEST_WEBHOOK_SECRET = 'test-items-webhook-secret';
 
 beforeEach(async () => {
   _resetForTests();
@@ -92,10 +95,12 @@ beforeEach(async () => {
     dataDir: process.env.HELM_DATA_DIR,
     knowledgePath: process.env.HELM_KNOWLEDGE_REPO_PATH,
     githubToken: process.env.GITHUB_TOKEN,
+    webhookSecret: process.env.GITHUB_WEBHOOK_SECRET,
   };
   process.env.HELM_DATA_DIR = join(testDir, 'data');
   process.env.HELM_KNOWLEDGE_REPO_PATH = join(testDir, 'knowledge');
   process.env.GITHUB_TOKEN = 'test-github-token';
+  process.env.GITHUB_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
 });
 
 afterEach(async () => {
@@ -107,6 +112,8 @@ afterEach(async () => {
   else process.env.HELM_KNOWLEDGE_REPO_PATH = savedEnv.knowledgePath;
   if (savedEnv.githubToken === undefined) delete process.env.GITHUB_TOKEN;
   else process.env.GITHUB_TOKEN = savedEnv.githubToken;
+  if (savedEnv.webhookSecret === undefined) delete process.env.GITHUB_WEBHOOK_SECRET;
+  else process.env.GITHUB_WEBHOOK_SECRET = savedEnv.webhookSecret;
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -236,28 +243,48 @@ describe('POST /api/items/:externalId/transitions', () => {
 // ── POST /api/items/:externalId/merge-reconciliation ─────────────────────────
 
 describe('POST /api/items/:externalId/merge-reconciliation', () => {
-  async function seedSpecDraftItem(): Promise<void> {
-    await post('/api/items', { externalId: 'HLM-1', triggeredBy: 'human:test' });
-    await post('/api/items/HLM-1/transitions', {
-      toStage: 'spec-draft',
-      triggeredBy: 'test:advance',
-    });
-    mockSetSubStage.mockClear();
-  }
-
-  async function seedCodeReviewItem(): Promise<void> {
-    await post('/api/items', { externalId: 'HLM-1', triggeredBy: 'human:test' });
-    for (const toStage of [
+  async function seedAt(
+    externalId: string,
+    stage:
+      | 'spec-draft'
+      | 'plan-draft'
+      | 'code-review'
+      | 'spec-ready'
+      | 'plan-ready'
+      | 'in-development'
+      | 'merged',
+  ): Promise<void> {
+    await post('/api/items', { externalId, triggeredBy: 'human:test' });
+    const chain = [
       'spec-draft',
       'spec-ready',
       'plan-draft',
       'plan-ready',
       'in-development',
       'code-review',
-    ] as const) {
-      await post('/api/items/HLM-1/transitions', { toStage, triggeredBy: 'test:advance' });
+      'merged',
+    ] as const;
+    for (const toStage of chain) {
+      const items = (await (await app.request('/api/items')).json()) as Array<{
+        externalId: string;
+        currentStage: string;
+      }>;
+      if (items.find((item) => item.externalId === externalId)?.currentStage === stage) break;
+      await post(`/api/items/${externalId}/transitions`, { toStage, triggeredBy: 'test:advance' });
     }
     mockSetSubStage.mockClear();
+  }
+
+  async function seedSpecDraftItem(): Promise<void> {
+    await seedAt('HLM-1', 'spec-draft');
+  }
+
+  async function seedCodeReviewItem(): Promise<void> {
+    await seedAt('HLM-1', 'code-review');
+  }
+
+  function signWebhook(body: string): string {
+    return 'sha256=' + createHmac('sha256', TEST_WEBHOOK_SECRET).update(body).digest('hex');
   }
 
   beforeEach(() => {
@@ -273,8 +300,146 @@ describe('POST /api/items/:externalId/merge-reconciliation', () => {
     });
   });
 
-  it('reconciles a merged artifact PR from current GitHub state', async () => {
+  it.each([
+    {
+      kind: 'impl',
+      seed: 'code-review' as const,
+      headRef: 'helm/impl/HLM-1',
+      repo: { owner: 'example-org', repo: 'example-app' },
+      toStage: 'merged',
+      pullRequestId: 5001,
+      pullRequestNumber: 7,
+    },
+    {
+      kind: 'spec',
+      seed: 'spec-draft' as const,
+      headRef: 'helm/spec/HLM-1',
+      repo: { owner: 'example-org', repo: 'example-app-knowledge' },
+      toStage: 'spec-ready',
+      pullRequestId: 5002,
+      pullRequestNumber: 8,
+    },
+    {
+      kind: 'plan',
+      seed: 'plan-draft' as const,
+      headRef: 'helm/plan/HLM-1',
+      repo: { owner: 'example-org', repo: 'example-app-knowledge' },
+      toStage: 'plan-ready',
+      pullRequestId: 5003,
+      pullRequestNumber: 9,
+    },
+  ])(
+    'reconciles a merged $kind artifact PR from current GitHub state',
+    async ({ seed, headRef, repo, toStage, pullRequestId, pullRequestNumber }) => {
+      await seedAt('HLM-1', seed);
+      mockResolveCurrentPullRequestState.mockResolvedValue({
+        repository: repo,
+        pullRequestId,
+        pullRequestNumber,
+        headRef,
+        headSha: 'sha-1',
+        merged: true,
+        mergedAt: '2026-07-21T12:00:00Z',
+        htmlUrl: `https://github.com/${repo.owner}/${repo.repo}/pull/${pullRequestNumber}`,
+      });
+
+      const res = await post('/api/items/HLM-1/merge-reconciliation', {
+        repository: repo,
+        pullRequestNumber,
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { status: string; toStage: string };
+      expect(body.status).toBe('advanced');
+      expect(body.toStage).toBe(toStage);
+      expect(mockSetSubStage).toHaveBeenCalledWith('HLM-1', toStage);
+    },
+  );
+
+  it('serializes webhook and recovery overlap through the real HTTP entrypoints', async () => {
     await seedCodeReviewItem();
+    const pullRequestId = 5001;
+    const pullRequestNumber = 7;
+    mockResolveCurrentPullRequestState.mockResolvedValue({
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestId,
+      pullRequestNumber,
+      headRef: 'helm/impl/HLM-1',
+      headSha: 'sha-1',
+      merged: true,
+      mergedAt: '2026-07-21T12:00:00Z',
+      htmlUrl: 'https://github.com/example-org/example-app/pull/7',
+    });
+
+    const webhookBody = JSON.stringify({
+      action: 'closed',
+      pull_request: {
+        id: pullRequestId,
+        number: pullRequestNumber,
+        merged: true,
+        head: { ref: 'helm/impl/HLM-1', sha: 'sha-1' },
+      },
+      repository: {
+        name: 'example-app',
+        owner: { login: 'example-org' },
+      },
+    });
+
+    const [webhookRes, recoveryRes] = await Promise.all([
+      app.request('/api/webhooks/github', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-github-event': 'pull_request',
+          'x-github-delivery': 'overlap-1',
+          'x-hub-signature-256': signWebhook(webhookBody),
+        },
+        body: webhookBody,
+      }),
+      post('/api/items/HLM-1/merge-reconciliation', {
+        repository: { owner: 'example-org', repo: 'example-app' },
+        pullRequestNumber,
+      }),
+    ]);
+
+    expect(webhookRes.status).toBe(200);
+    expect(recoveryRes.status).toBe(200);
+    const recoveryBody = (await recoveryRes.json()) as { status: string };
+    expect(['advanced', 'already-reconciled']).toContain(recoveryBody.status);
+
+    const items = (await (await app.request('/api/items')).json()) as Array<{
+      externalId: string;
+      currentStage: string;
+      history: Array<{ idempotencyKey?: string }>;
+    }>;
+    const item = items.find((entry) => entry.externalId === 'HLM-1');
+    const mergeEvents =
+      item?.history.filter(
+        (event) =>
+          event.idempotencyKey === 'merge-reconciliation:example-org/example-app#id:5001:merged',
+      ) ?? [];
+
+    expect(item?.currentStage).toBe('merged');
+    expect(mergeEvents).toHaveLength(1);
+    expect(mockSetSubStage).toHaveBeenCalledWith('HLM-1', 'merged');
+    expect(mockSetSubStage).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores recovery when the PR head belongs to a different item', async () => {
+    await seedCodeReviewItem();
+    mockResolveCurrentPullRequestState.mockResolvedValue({
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestId: 5001,
+      pullRequestNumber: 7,
+      headRef: 'helm/impl/HLM-2',
+      headSha: 'sha-1',
+      merged: true,
+      mergedAt: '2026-07-21T12:00:00Z',
+      htmlUrl: 'https://github.com/example-org/example-app/pull/7',
+    });
+    const before = (await (await app.request('/api/items')).json()) as Array<{
+      history: unknown[];
+    }>;
 
     const res = await post('/api/items/HLM-1/merge-reconciliation', {
       repository: { owner: 'example-org', repo: 'example-app' },
@@ -282,10 +447,65 @@ describe('POST /api/items/:externalId/merge-reconciliation', () => {
     });
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string; toStage: string };
-    expect(body.status).toBe('advanced');
-    expect(body.toStage).toBe('merged');
-    expect(mockSetSubStage).toHaveBeenCalledWith('HLM-1', 'merged');
+    expect(await res.json()).toMatchObject({
+      status: 'ignored',
+      reason: 'external-id-mismatch',
+      externalId: 'HLM-2',
+    });
+    const after = (await (await app.request('/api/items')).json()) as Array<{
+      history: unknown[];
+    }>;
+    expect(after[0]?.history).toHaveLength(before[0]?.history.length ?? 0);
+    expect(mockSetSubStage).not.toHaveBeenCalled();
+  });
+
+  it('ignores recovery when GitHub reports the PR is not merged', async () => {
+    await seedCodeReviewItem();
+    mockResolveCurrentPullRequestState.mockResolvedValue({
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestId: 5001,
+      pullRequestNumber: 7,
+      headRef: 'helm/impl/HLM-1',
+      headSha: 'sha-1',
+      merged: false,
+      mergedAt: null,
+      htmlUrl: 'https://github.com/example-org/example-app/pull/7',
+    });
+
+    const res = await post('/api/items/HLM-1/merge-reconciliation', {
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestNumber: 7,
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: 'ignored', reason: 'not-merged' });
+    expect(mockSetSubStage).not.toHaveBeenCalled();
+  });
+
+  it('ignores recovery when the PR head is not an artifact branch', async () => {
+    await seedCodeReviewItem();
+    mockResolveCurrentPullRequestState.mockResolvedValue({
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestId: 5001,
+      pullRequestNumber: 7,
+      headRef: 'feature/random',
+      headSha: 'sha-1',
+      merged: true,
+      mergedAt: '2026-07-21T12:00:00Z',
+      htmlUrl: 'https://github.com/example-org/example-app/pull/7',
+    });
+
+    const res = await post('/api/items/HLM-1/merge-reconciliation', {
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestNumber: 7,
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      status: 'ignored',
+      reason: 'unsupported-artifact-branch',
+    });
+    expect(mockSetSubStage).not.toHaveBeenCalled();
   });
 
   it('rejects recovery for repositories outside the product allowlist before GitHub lookup', async () => {

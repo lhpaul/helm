@@ -332,8 +332,8 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         if (!githubToken) {
           // Without credentials we cannot authorize or resolve the impl item.
           // Return 503 so GitHub retries — do not ACK a droppable decision.
-          console.error('[webhooks/github] GITHUB_TOKEN is not configured for PR decision');
-          return c.json({ error: 'GITHUB_TOKEN is not configured' }, 503);
+          console.error('[webhooks/github] GitHub credentials are not configured for PR decision');
+          return c.json({ error: 'GitHub credentials are not configured' }, 503);
         }
 
         if (!event.authorLogin) {

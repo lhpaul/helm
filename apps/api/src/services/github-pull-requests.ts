@@ -41,12 +41,6 @@ export class GitHubPullRequestLookupError extends Error {
 }
 
 function lookupErrorFromGitHubResponse(res: Response): GitHubPullRequestLookupError {
-  if (res.status === 404) {
-    return new GitHubPullRequestLookupError('Pull request not found', {
-      code: 'not_found',
-      githubStatus: res.status,
-    });
-  }
   if (res.status === 401) {
     return new GitHubPullRequestLookupError('GitHub token is unauthorized', {
       code: 'unauthorized',
@@ -71,7 +65,8 @@ function lookupErrorFromGitHubResponse(res: Response): GitHubPullRequestLookupEr
   });
 }
 
-async function fetchGitHubJson<T>(url: string, token: string): Promise<T> {
+/** Fetches JSON from the GitHub API. Returns `null` on HTTP 404. */
+async function fetchGitHubJson<T>(url: string, token: string): Promise<T | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
   try {
@@ -84,6 +79,9 @@ async function fetchGitHubJson<T>(url: string, token: string): Promise<T> {
       },
       signal: controller.signal,
     });
+    if (res.status === 404) {
+      return null;
+    }
     if (!res.ok) {
       throw lookupErrorFromGitHubResponse(res);
     }
@@ -117,6 +115,13 @@ export async function resolveCurrentPullRequestState(input: {
     `https://api.github.com/repos/${input.repository.owner}/${input.repository.repo}/pulls/${input.pullRequestNumber}`,
     input.githubToken,
   );
+
+  if (!pr) {
+    throw new GitHubPullRequestLookupError('Pull request not found', {
+      code: 'not_found',
+      githubStatus: 404,
+    });
+  }
 
   const headRef = pr.head?.ref;
   if (!headRef) {

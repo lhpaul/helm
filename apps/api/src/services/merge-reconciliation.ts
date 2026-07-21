@@ -155,21 +155,9 @@ export async function reconcileMergedArtifactPullRequest(
   if (existing.productSlug !== config.product.slug) {
     return { status: 'ignored', reason: 'wrong-product', externalId: parsed.externalId };
   }
-  if (existing.history.some((event) => event.note?.includes(idempotencyKey))) {
-    return alreadyReconciled(parsed.kind, parsed.externalId, transition, existing, idempotencyKey);
-  }
-  if (existing.currentStage === transition.toStage) {
-    return alreadyReconciled(parsed.kind, parsed.externalId, transition, existing, idempotencyKey);
-  }
-  if (existing.currentStage !== transition.fromStage) {
-    return {
-      status: 'ignored',
-      reason: 'invalid-predecessor-stage',
-      externalId: parsed.externalId,
-      currentStage: existing.currentStage,
-    };
-  }
 
+  // Stage / idempotency checks run inside transitionItemIfCurrentStageResult
+  // (per-item lock). Avoid redundant unlocked pre-checks that race with overlap.
   try {
     const { item: updated, applied } = await transitionItemIfCurrentStageResult({
       externalId: parsed.externalId,
@@ -180,10 +168,7 @@ export async function reconcileMergedArtifactPullRequest(
       idempotencyKey,
     });
 
-    if (updated.currentStage !== transition.toStage) {
-      return alreadyReconciled(parsed.kind, parsed.externalId, transition, updated, idempotencyKey);
-    }
-    if (!applied) {
+    if (!applied || updated.currentStage !== transition.toStage) {
       return alreadyReconciled(parsed.kind, parsed.externalId, transition, updated, idempotencyKey);
     }
 
@@ -222,6 +207,19 @@ export async function reconcileMergedArtifactPullRequest(
   }
 }
 
+/**
+ * True when `repository` is the product knowledge repo or any configured code
+ * repo. Used by the operator recovery endpoint to block GitHub lookups against
+ * arbitrary owner/repo pairs before the shared token is used.
+ */
+export function isRepositoryConfiguredForProduct(
+  product: Product,
+  repository: GitHubPullRequestRepository,
+): boolean {
+  const urls = [product.knowledge_repo.url, ...product.code_repos.map((repo) => repo.url)];
+  return urls.some((url) => repositoryMatchesUrl(repository, url));
+}
+
 function isRepositoryAllowedForArtifact(
   product: Product,
   artifactKind: ArtifactBranchKind,
@@ -234,17 +232,19 @@ function isRepositoryAllowedForArtifact(
       ? product.code_repos.map((repo) => repo.url)
       : [product.knowledge_repo.url];
 
-  return allowedRepos.some((url) => {
-    try {
-      const allowed = parseGitHubRepoUrl(url);
-      return (
-        allowed.owner.toLowerCase() === repository.owner.toLowerCase() &&
-        allowed.repo.toLowerCase() === repository.repo.toLowerCase()
-      );
-    } catch {
-      return false;
-    }
-  });
+  return allowedRepos.some((url) => repositoryMatchesUrl(repository, url));
+}
+
+function repositoryMatchesUrl(repository: GitHubPullRequestRepository, url: string): boolean {
+  try {
+    const allowed = parseGitHubRepoUrl(url);
+    return (
+      allowed.owner.toLowerCase() === repository.owner.toLowerCase() &&
+      allowed.repo.toLowerCase() === repository.repo.toLowerCase()
+    );
+  } catch {
+    return false;
+  }
 }
 
 function alreadyReconciled(

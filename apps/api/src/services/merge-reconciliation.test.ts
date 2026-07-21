@@ -162,4 +162,80 @@ describe('reconcileMergedArtifactPullRequest', () => {
     });
     expect((await store.get('HLM-1'))?.history.length).toBe(before);
   });
+
+  it('ignores non-merged pull requests', async () => {
+    await seedAt('HLM-1', 'code-review');
+
+    const result = await reconcileMergedArtifactPullRequest({
+      ...input('helm/impl/HLM-1'),
+      merged: false,
+    });
+
+    expect(result).toEqual({ status: 'ignored', reason: 'not-merged' });
+    expect(mockSetSubStage).not.toHaveBeenCalled();
+  });
+
+  it('ignores unsupported branch names', async () => {
+    await seedAt('HLM-1', 'code-review');
+
+    const result = await reconcileMergedArtifactPullRequest(input('feature/random'));
+
+    expect(result).toEqual({ status: 'ignored', reason: 'unsupported-artifact-branch' });
+  });
+
+  it('ignores when expectedExternalId does not match the branch', async () => {
+    await seedAt('HLM-1', 'code-review');
+
+    const result = await reconcileMergedArtifactPullRequest({
+      ...input('helm/impl/HLM-1'),
+      expectedExternalId: 'HLM-OTHER',
+    });
+
+    expect(result).toMatchObject({
+      status: 'ignored',
+      reason: 'external-id-mismatch',
+      externalId: 'HLM-1',
+    });
+  });
+
+  it('ignores repositories outside the artifact allowlist', async () => {
+    await seedAt('HLM-1', 'code-review');
+
+    const result = await reconcileMergedArtifactPullRequest({
+      ...input('helm/impl/HLM-1'),
+      repository: { owner: 'other-org', repo: 'other-repo' },
+    });
+
+    expect(result).toMatchObject({
+      status: 'ignored',
+      reason: 'repository-not-allowed',
+      externalId: 'HLM-1',
+    });
+  });
+
+  it('ignores when the item does not exist', async () => {
+    const result = await reconcileMergedArtifactPullRequest(input('helm/impl/HLM-missing'));
+
+    expect(result).toMatchObject({
+      status: 'ignored',
+      reason: 'item-not-found',
+      externalId: 'HLM-missing',
+    });
+  });
+
+  it('ignores when the item belongs to another product', async () => {
+    await store.create({
+      externalId: 'HLM-1',
+      productSlug: 'other-product',
+      triggeredBy: 'test:create',
+    });
+
+    const result = await reconcileMergedArtifactPullRequest(input('helm/impl/HLM-1'));
+
+    expect(result).toMatchObject({
+      status: 'ignored',
+      reason: 'wrong-product',
+      externalId: 'HLM-1',
+    });
+  });
 });

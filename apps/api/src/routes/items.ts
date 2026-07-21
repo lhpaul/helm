@@ -12,6 +12,7 @@ import {
   resolveCurrentPullRequestState,
 } from '../services/github-pull-requests.js';
 import {
+  isRepositoryConfiguredForProduct,
   reconcileMergedArtifactPullRequest,
   reconciliationInputFromCurrentPullRequestState,
 } from '../services/merge-reconciliation.js';
@@ -38,18 +39,20 @@ const TransitionBodySchema = z
   })
   .strict();
 
+const GitHubRepoSegmentSchema = z
+  .string()
+  .min(1)
+  .regex(/^[A-Za-z0-9_.-]+$/)
+  .refine((value) => value !== '.' && value !== '..', {
+    message: 'Repository owner/repo must not be "." or ".."',
+  });
+
 const ReconcilePullRequestBodySchema = z
   .object({
     repository: z
       .object({
-        owner: z
-          .string()
-          .min(1)
-          .regex(/^[A-Za-z0-9_.-]+$/),
-        repo: z
-          .string()
-          .min(1)
-          .regex(/^[A-Za-z0-9_.-]+$/),
+        owner: GitHubRepoSegmentSchema,
+        repo: GitHubRepoSegmentSchema,
       })
       .strict(),
     pullRequestNumber: z.number().int().positive(),
@@ -181,7 +184,27 @@ itemsRouter.post('/items/:externalId/merge-reconciliation', async (c) => {
 
   const githubToken = readGitHubTokenFromEnv();
   if (!githubToken) {
-    return c.json({ error: 'GITHUB_TOKEN is not configured' }, 503);
+    console.error('[items] GitHub credentials are not configured for merge reconciliation');
+    return c.json({ error: 'GitHub credentials are not configured' }, 503);
+  }
+
+  let product;
+  try {
+    product = await getProductConfig();
+  } catch (err) {
+    console.error('[items] Failed to load product config for merge reconciliation:', err);
+    return c.json({ error: 'Product configuration unavailable' }, 500);
+  }
+
+  // Allowlist before any GitHub call so the shared token cannot probe arbitrary repos.
+  if (!isRepositoryConfiguredForProduct(product, bodyResult.data.repository)) {
+    return c.json(
+      {
+        error: 'Repository is not configured for this product',
+        code: 'repository_not_allowed',
+      },
+      400,
+    );
   }
 
   try {

@@ -288,31 +288,44 @@ describe('POST /api/items/:externalId/merge-reconciliation', () => {
     expect(mockSetSubStage).toHaveBeenCalledWith('HLM-1', 'merged');
   });
 
-  it('ignores merged PR state from repositories outside the product allowlist', async () => {
+  it('rejects recovery for repositories outside the product allowlist before GitHub lookup', async () => {
     await seedCodeReviewItem();
-    mockResolveCurrentPullRequestState.mockResolvedValue({
-      repository: { owner: 'outside-org', repo: 'outside-app' },
-      pullRequestId: 5001,
-      pullRequestNumber: 7,
-      headRef: 'helm/impl/HLM-1',
-      headSha: 'sha-1',
-      merged: true,
-      mergedAt: '2026-07-21T12:00:00Z',
-      htmlUrl: 'https://github.com/outside-org/outside-app/pull/7',
-    });
 
     const res = await post('/api/items/HLM-1/merge-reconciliation', {
       repository: { owner: 'outside-org', repo: 'outside-app' },
       pullRequestNumber: 7,
     });
 
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({
-      status: 'ignored',
-      reason: 'repository-not-allowed',
-      externalId: 'HLM-1',
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Repository is not configured for this product',
+      code: 'repository_not_allowed',
     });
+    expect(mockResolveCurrentPullRequestState).not.toHaveBeenCalled();
     expect(mockSetSubStage).not.toHaveBeenCalled();
+  });
+
+  it('rejects "." and ".." repository segments without calling GitHub', async () => {
+    const res = await post('/api/items/HLM-1/merge-reconciliation', {
+      repository: { owner: '..', repo: 'example-app' },
+      pullRequestNumber: 7,
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockResolveCurrentPullRequestState).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 with a sanitized message when GitHub credentials are missing', async () => {
+    delete process.env.GITHUB_TOKEN;
+
+    const res = await post('/api/items/HLM-1/merge-reconciliation', {
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestNumber: 7,
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'GitHub credentials are not configured' });
+    expect(mockResolveCurrentPullRequestState).not.toHaveBeenCalled();
   });
 
   it('ignores spec and plan PR state from repositories outside the knowledge repo', async () => {

@@ -1,7 +1,8 @@
 import { WorkflowTransitionError, type WorkflowStage } from '@helm/workflow';
-import { parseArtifactBranch, type ArtifactBranchKind } from '@helm/shared';
+import { parseArtifactBranch, type ArtifactBranchKind, type Product } from '@helm/shared';
 import { getItemStore, getProductConfig } from './index.js';
 import { ItemNotFoundError, StageMismatchError } from './errors.js';
+import { parseGitHubRepoUrl } from './github-pr.js';
 import { transitionItemIfCurrentStageResult } from './item-service.js';
 import type {
   CurrentPullRequestState,
@@ -68,6 +69,7 @@ export type MergeReconciliationResult =
         | 'not-merged'
         | 'unsupported-artifact-branch'
         | 'external-id-mismatch'
+        | 'repository-not-allowed'
         | 'item-not-found'
         | 'wrong-product'
         | 'invalid-predecessor-stage';
@@ -125,6 +127,15 @@ export async function reconcileMergedArtifactPullRequest(
   }
 
   const transition = ARTIFACT_TRANSITIONS[parsed.kind];
+  const config = await getProductConfig();
+  if (!isRepositoryAllowedForArtifact(config, parsed.kind, input.repository)) {
+    return {
+      status: 'ignored',
+      reason: 'repository-not-allowed',
+      externalId: parsed.externalId,
+    };
+  }
+
   const idempotencyKey = mergeReconciliationKey({
     repository: input.repository,
     pullRequestId: input.pullRequestId,
@@ -133,7 +144,7 @@ export async function reconcileMergedArtifactPullRequest(
   });
   const note = `${idempotencyKey}; source:${input.source}; branch:${input.headRef}`;
 
-  const [store, config] = await Promise.all([getItemStore(), getProductConfig()]);
+  const store = await getItemStore();
   const existing = await store.get(parsed.externalId);
   if (!existing) {
     return { status: 'ignored', reason: 'item-not-found', externalId: parsed.externalId };
@@ -206,6 +217,31 @@ export async function reconcileMergedArtifactPullRequest(
     }
     throw err;
   }
+}
+
+function isRepositoryAllowedForArtifact(
+  product: Product,
+  artifactKind: ArtifactBranchKind,
+  repository: GitHubPullRequestRepository | null,
+): boolean {
+  if (!repository) return false;
+
+  const allowedRepos =
+    artifactKind === 'impl'
+      ? product.code_repos.map((repo) => repo.url)
+      : [product.knowledge_repo.url];
+
+  return allowedRepos.some((url) => {
+    try {
+      const allowed = parseGitHubRepoUrl(url);
+      return (
+        allowed.owner.toLowerCase() === repository.owner.toLowerCase() &&
+        allowed.repo.toLowerCase() === repository.repo.toLowerCase()
+      );
+    } catch {
+      return false;
+    }
+  });
 }
 
 function alreadyReconciled(

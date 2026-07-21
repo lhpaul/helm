@@ -236,6 +236,15 @@ describe('POST /api/items/:externalId/transitions', () => {
 // ── POST /api/items/:externalId/merge-reconciliation ─────────────────────────
 
 describe('POST /api/items/:externalId/merge-reconciliation', () => {
+  async function seedSpecDraftItem(): Promise<void> {
+    await post('/api/items', { externalId: 'HLM-1', triggeredBy: 'human:test' });
+    await post('/api/items/HLM-1/transitions', {
+      toStage: 'spec-draft',
+      triggeredBy: 'test:advance',
+    });
+    mockSetSubStage.mockClear();
+  }
+
   async function seedCodeReviewItem(): Promise<void> {
     await post('/api/items', { externalId: 'HLM-1', triggeredBy: 'human:test' });
     for (const toStage of [
@@ -277,6 +286,60 @@ describe('POST /api/items/:externalId/merge-reconciliation', () => {
     expect(body.status).toBe('advanced');
     expect(body.toStage).toBe('merged');
     expect(mockSetSubStage).toHaveBeenCalledWith('HLM-1', 'merged');
+  });
+
+  it('ignores merged PR state from repositories outside the product allowlist', async () => {
+    await seedCodeReviewItem();
+    mockResolveCurrentPullRequestState.mockResolvedValue({
+      repository: { owner: 'outside-org', repo: 'outside-app' },
+      pullRequestId: 5001,
+      pullRequestNumber: 7,
+      headRef: 'helm/impl/HLM-1',
+      headSha: 'sha-1',
+      merged: true,
+      mergedAt: '2026-07-21T12:00:00Z',
+      htmlUrl: 'https://github.com/outside-org/outside-app/pull/7',
+    });
+
+    const res = await post('/api/items/HLM-1/merge-reconciliation', {
+      repository: { owner: 'outside-org', repo: 'outside-app' },
+      pullRequestNumber: 7,
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      status: 'ignored',
+      reason: 'repository-not-allowed',
+      externalId: 'HLM-1',
+    });
+    expect(mockSetSubStage).not.toHaveBeenCalled();
+  });
+
+  it('ignores spec and plan PR state from repositories outside the knowledge repo', async () => {
+    await seedSpecDraftItem();
+    mockResolveCurrentPullRequestState.mockResolvedValue({
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestId: 5002,
+      pullRequestNumber: 8,
+      headRef: 'helm/spec/HLM-1',
+      headSha: 'sha-2',
+      merged: true,
+      mergedAt: '2026-07-21T12:00:00Z',
+      htmlUrl: 'https://github.com/example-org/example-app/pull/8',
+    });
+
+    const res = await post('/api/items/HLM-1/merge-reconciliation', {
+      repository: { owner: 'example-org', repo: 'example-app' },
+      pullRequestNumber: 8,
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      status: 'ignored',
+      reason: 'repository-not-allowed',
+      externalId: 'HLM-1',
+    });
+    expect(mockSetSubStage).not.toHaveBeenCalled();
   });
 
   it('is a no-op when the same recovery call is repeated after success', async () => {

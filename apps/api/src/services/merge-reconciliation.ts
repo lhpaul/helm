@@ -70,6 +70,7 @@ export type MergeReconciliationResult =
         | 'unsupported-artifact-branch'
         | 'external-id-mismatch'
         | 'repository-not-allowed'
+        | 'unstable-pr-identity'
         | 'item-not-found'
         | 'wrong-product'
         | 'invalid-predecessor-stage';
@@ -78,17 +79,12 @@ export type MergeReconciliationResult =
     };
 
 export function mergeReconciliationKey(input: {
-  repository: GitHubPullRequestRepository | null;
-  pullRequestId: number | null;
-  pullRequestNumber: number | null;
+  repository: GitHubPullRequestRepository;
+  pullRequestId: number;
   expectedStage: WorkflowStage;
 }): string {
-  const repo = input.repository ? `${input.repository.owner}/${input.repository.repo}` : 'unknown';
-  const prIdentity =
-    input.pullRequestId !== null
-      ? `id:${input.pullRequestId}`
-      : `number:${input.pullRequestNumber ?? 'unknown'}`;
-  return `merge-reconciliation:${repo}#${prIdentity}:${input.expectedStage}`;
+  const repo = `${input.repository.owner}/${input.repository.repo}`;
+  return `merge-reconciliation:${repo}#id:${input.pullRequestId}:${input.expectedStage}`;
 }
 
 export function reconciliationInputFromCurrentPullRequestState(
@@ -128,18 +124,25 @@ export async function reconcileMergedArtifactPullRequest(
 
   const transition = ARTIFACT_TRANSITIONS[parsed.kind];
   const config = await getProductConfig();
-  if (!isRepositoryAllowedForArtifact(config, parsed.kind, input.repository)) {
+  const repository = input.repository;
+  if (!repository || !isRepositoryAllowedForArtifact(config, parsed.kind, repository)) {
     return {
       status: 'ignored',
       reason: 'repository-not-allowed',
       externalId: parsed.externalId,
     };
   }
+  if (input.pullRequestId === null) {
+    return {
+      status: 'ignored',
+      reason: 'unstable-pr-identity',
+      externalId: parsed.externalId,
+    };
+  }
 
   const idempotencyKey = mergeReconciliationKey({
-    repository: input.repository,
+    repository,
     pullRequestId: input.pullRequestId,
-    pullRequestNumber: input.pullRequestNumber,
     expectedStage: transition.toStage,
   });
   const note = `${idempotencyKey}; source:${input.source}; branch:${input.headRef}`;

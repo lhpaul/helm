@@ -40,6 +40,8 @@ beforeEach(async () => {
       project_number: 1,
       custom_field_name: 'Helm Stage',
     },
+    code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+    knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
     workflow: { final_stage: 'released' },
   });
   mockSetSubStage.mockClear();
@@ -126,6 +128,25 @@ describe('reconcileMergedArtifactPullRequest', () => {
 
     expect([auto.status, recovery.status].sort()).toEqual(['advanced', 'already-reconciled']);
     expect(mergeEvents).toHaveLength(1);
+  });
+
+  it('fails closed when a merged PR event has no stable GitHub PR id', async () => {
+    await seedAt('HLM-1', 'code-review');
+    const before = (await store.get('HLM-1'))?.history.length;
+
+    const result = await reconcileMergedArtifactPullRequest({
+      ...input('helm/impl/HLM-1'),
+      pullRequestId: null,
+      pullRequestNumber: 42,
+    });
+
+    expect(result).toMatchObject({
+      status: 'ignored',
+      reason: 'unstable-pr-identity',
+      externalId: 'HLM-1',
+    });
+    expect((await store.get('HLM-1'))?.history.length).toBe(before);
+    expect(mockSetSubStage).not.toHaveBeenCalled();
   });
 
   it('does not write history when the item is not in the expected predecessor stage', async () => {

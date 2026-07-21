@@ -129,6 +129,7 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
       const { action, pull_request: pr } = parsed.data;
       // Only a closed+merged PR is actionable; any other action is noise.
       if (action === 'closed' && pr.merged === true) {
+        if (pr.id === undefined) return { type: 'unknown', raw: rawEvent };
         return {
           type: 'pull_request_merged',
           headRef: pr.head.ref,

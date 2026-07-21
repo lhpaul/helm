@@ -52,6 +52,11 @@ vi.mock('../services/github-pr.js', () => ({
   authorHasWriteAccess: mockAuthorHasWriteAccess,
   getPrimaryCodeRepo: mockGetPrimaryCodeRepo,
   listPrIssueComments: mockListPrIssueComments,
+  parseGitHubRepoUrl: (url: string) => {
+    const parsed = new URL(url);
+    const [owner, repoWithSuffix] = parsed.pathname.replace(/^\/+/, '').split('/');
+    return { owner, repo: repoWithSuffix?.replace(/\.git$/, '') };
+  },
 }));
 
 vi.mock('../services/index.js', async (importOriginal) => {
@@ -78,6 +83,8 @@ vi.mock('../services/index.js', async (importOriginal) => {
         project_number: 1,
         custom_field_name: 'Helm Stage',
       },
+      code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+      knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
       workflow: { final_stage: 'released' },
     }),
   };
@@ -210,6 +217,8 @@ describe('POST /api/webhooks/github', () => {
         project_number: 1,
         custom_field_name: 'Helm Stage',
       },
+      code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+      knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
       workflow: { final_stage: 'released' },
     } as never);
     vi.mocked(getGitHubAdapter).mockResolvedValue({ parseWebhook: mockParseWebhook } as never);
@@ -983,6 +992,8 @@ describe('POST /api/webhooks/github', () => {
           project_number: 1,
           custom_field_name: 'Helm Stage',
         },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
         workflow: { final_stage: 'merged' },
       } as never);
 
@@ -1048,6 +1059,8 @@ describe('POST /api/webhooks/github', () => {
           provider: 'linear',
           webhook_secret_env: 'LINEAR_WEBHOOK_SECRET',
         },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
       } as never);
       vi.mocked(getGitHubAdapter).mockRejectedValue(
         new Error('GitHub Projects adapter is not available for a linear product'),

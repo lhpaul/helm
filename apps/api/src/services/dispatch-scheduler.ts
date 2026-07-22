@@ -1,6 +1,10 @@
 import { join } from 'node:path';
 import { GitHubNotFoundError, LinearNotFoundError } from '@helm/adapters';
-import { dispatchStageHandler, resolveSpecialistId } from '@helm/orchestrator';
+import {
+  dispatchStageHandler,
+  resolveSpecialistId,
+  type DeferredExternalReviewIntent,
+} from '@helm/orchestrator';
 import type { Product } from '@helm/shared';
 import { createRuntimeForProduct } from './runtime-factory.js';
 import { transitionItem } from './item-service.js';
@@ -52,10 +56,36 @@ async function persistPendingReviewDispatch(input: {
 }): Promise<void> {
   const outbox = await getReviewDispatchOutbox(input.dataRoot);
   await outbox.put({
+    kind: 'review_dispatch',
     productSlug: input.productSlug,
     externalId: input.externalId,
     prNumber: input.prNumber,
     targetRevision: input.targetRevision,
+    triggeredBy: input.triggeredBy,
+  });
+}
+
+async function persistPendingExternalReview(input: {
+  dataRoot: string;
+  intent: DeferredExternalReviewIntent;
+  triggeredBy: string;
+}): Promise<void> {
+  if (!input.intent.targetRevision) {
+    console.info('[dispatch-scheduler] external review deferral skipped — missing target revision');
+    return;
+  }
+  const outbox = await getReviewDispatchOutbox(input.dataRoot);
+  const now = Date.now();
+  await outbox.put({
+    kind: 'pending_external_review',
+    productSlug: input.intent.productSlug,
+    externalId: input.intent.externalId,
+    prNumber: input.intent.prNumber,
+    targetRevision: input.intent.targetRevision,
+    provider: input.intent.provider,
+    reason: input.intent.reason,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + input.intent.maxDeferSec * 1000).toISOString(),
     triggeredBy: input.triggeredBy,
   });
 }
@@ -74,6 +104,44 @@ export async function persistReviewDispatchIntent(input: {
   });
 }
 
+export async function resumePendingExternalReview(input: {
+  productSlug: string;
+  externalId: string;
+  provider: string;
+  prNumber: number;
+  targetRevision: string;
+  triggeredBy: string;
+}): Promise<ScheduleItemDispatchResult> {
+  const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
+  const intent = await outbox.findPendingExternalReview(input);
+  if (!intent) {
+    return { scheduled: false, reason: 'No matching pending external review' };
+  }
+  if (Date.parse(intent.expiresAt) <= Date.now()) {
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+      updatedAt: intent.updatedAt,
+      targetRevision: intent.targetRevision,
+    });
+    return { scheduled: false, reason: 'Pending external review expired' };
+  }
+
+  const outcome = await scheduleItemDispatch({
+    productSlug: intent.productSlug,
+    externalId: intent.externalId,
+    specialistId: 'reviewer-fanout',
+    targetRevision: intent.targetRevision,
+    prNumber: intent.prNumber,
+    triggeredBy: input.triggeredBy,
+  });
+  if (outcome.scheduled || outcome.reason === 'Duplicate target revision') {
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+      updatedAt: intent.updatedAt,
+      targetRevision: intent.targetRevision,
+    });
+  }
+  return outcome;
+}
+
 async function replayPendingReviewDispatch(input: {
   product: Product;
   productSlug: string;
@@ -85,6 +153,7 @@ async function replayPendingReviewDispatch(input: {
   const outbox = await getReviewDispatchOutbox(input.dataRoot);
   const intent = await outbox.get(input.productSlug, input.externalId);
   if (!intent) return;
+  if ((intent.kind ?? 'review_dispatch') !== 'review_dispatch') return;
 
   let targetRevision = intent.targetRevision;
   if (intent.prNumber !== undefined) {
@@ -261,6 +330,14 @@ export async function runDispatchJob(
           }
           return [...(latest.resolvedProductDecisions ?? [])];
         },
+        targetRevision: job.targetRevision,
+        onExternalReviewDeferred: async (intent) => {
+          await persistPendingExternalReview({
+            dataRoot: ctx.dataRoot,
+            intent,
+            triggeredBy: 'external-review:analysis-pending',
+          });
+        },
       },
     );
 
@@ -284,13 +361,15 @@ export async function runDispatchJob(
           githubToken: ctx.githubToken,
         });
       }
-      await replayPendingReviewDispatch({
-        product: ctx.product,
-        productSlug: ctx.item.productSlug,
-        externalId: ctx.item.externalId,
-        dataRoot: ctx.dataRoot,
-        githubToken: ctx.githubToken,
-      });
+      if (result.status !== 'deferred') {
+        await replayPendingReviewDispatch({
+          product: ctx.product,
+          productSlug: ctx.item.productSlug,
+          externalId: ctx.item.externalId,
+          dataRoot: ctx.dataRoot,
+          githubToken: ctx.githubToken,
+        });
+      }
     } catch (handoffErr) {
       logErrorMetadata('dispatch review handoff', handoffErr);
     }

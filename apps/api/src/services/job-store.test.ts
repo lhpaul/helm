@@ -241,6 +241,21 @@ describe('createJobIfNoRunning', () => {
     expect(second).toMatchObject({ job: { targetRevision: 'sha-a' } });
   });
 
+  it('allows retrying the same targetRevision after a deferred job', async () => {
+    const first = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+    if (!('job' in first)) throw new Error('expected job');
+    await store.updateJob(first.job.jobId, {
+      status: 'deferred',
+      finishedAt: new Date().toISOString(),
+    });
+
+    const second = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+
+    expect(second).toMatchObject({ job: { targetRevision: 'sha-a' } });
+    if (!('job' in second)) throw new Error('expected job');
+    expect(second.job.jobId).not.toBe(first.job.jobId);
+  });
+
   it('blocks a newer targetRevision while an older job is running', async () => {
     const first = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
     if (!('job' in first)) throw new Error('expected job');

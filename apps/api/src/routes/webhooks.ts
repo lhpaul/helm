@@ -22,6 +22,7 @@ import { createItem, transitionItem } from '../services/item-service.js';
 import {
   scheduleItemDispatch,
   persistReviewDispatchIntent,
+  resumePendingExternalReview,
 } from '../services/dispatch-scheduler.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
 import {
@@ -73,7 +74,13 @@ webhooksRouter.post('/webhooks/github', async (c) => {
   const eventType = c.req.header('x-github-event') ?? '';
   let event: NormalizedEvent;
   try {
-    if (eventType === 'pull_request' || eventType === 'release' || eventType === 'issue_comment') {
+    if (
+      eventType === 'pull_request' ||
+      eventType === 'release' ||
+      eventType === 'issue_comment' ||
+      eventType === 'check_run' ||
+      eventType === 'status'
+    ) {
       // Tracker-agnostic — pure parser. The knowledge/code repos are always on
       // GitHub regardless of the issue tracker, so PR merge events (helm/spec/*,
       // helm/plan/*, helm/impl/*) AND release.published events must process for
@@ -337,6 +344,54 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           );
         }
       }
+    }
+  } else if (event.type === 'external_review_ready') {
+    try {
+      const [config, itemStore] = await Promise.all([getProductConfig(), getItemStore()]);
+      if (config.review?.external?.resume_on_check_run === false) {
+        console.info('[webhooks/github] external review readiness ignored — resume disabled');
+        return c.json({ processed: true });
+      }
+      const repo = getPrimaryCodeRepo(config);
+      if (event.owner !== repo.owner || event.repo !== repo.repo) {
+        console.info('[webhooks/github] external review readiness ignored — repository mismatch');
+        return c.json({ processed: true });
+      }
+      if (config.review?.external?.provider !== event.provider) {
+        console.info('[webhooks/github] external review readiness ignored — provider mismatch');
+        return c.json({ processed: true });
+      }
+      const parsed = event.headRef ? parseArtifactBranch(event.headRef) : null;
+      if (parsed?.kind !== 'impl') {
+        console.info('[webhooks/github] external review readiness ignored — non-impl ref');
+        return c.json({ processed: true });
+      }
+      const item = await itemStore.get(parsed.externalId);
+      if (item?.productSlug !== config.product.slug || item.currentStage !== 'code-review') {
+        console.info(
+          '[webhooks/github] external review readiness ignored — item not in code-review',
+        );
+        return c.json({ processed: true });
+      }
+      const outcome = await resumePendingExternalReview({
+        productSlug: config.product.slug,
+        externalId: parsed.externalId,
+        provider: event.provider,
+        prNumber: event.prNumber,
+        targetRevision: event.targetRevision,
+        triggeredBy: 'webhook:external-review-ready',
+      });
+      if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+        console.info(
+          `[webhooks/github] external review readiness did not resume ${parsed.externalId}: ${outcome.reason}`,
+        );
+      }
+    } catch (err) {
+      console.error(
+        '[webhooks/github] Failed to process external review readiness:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return c.json({ error: 'Temporary failure processing external review readiness' }, 503);
     }
   } else if (event.type === 'pull_request_merged') {
     try {

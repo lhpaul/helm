@@ -13,7 +13,7 @@ export type Job = {
   productSlug: string;
   externalId: string;
   specialistId: string;
-  status: 'running' | 'done' | 'error' | 'cancelled';
+  status: 'running' | 'done' | 'error' | 'cancelled' | 'deferred';
   targetRevision?: string;
   startedAt: string;
   finishedAt?: string;

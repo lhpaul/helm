@@ -4,12 +4,27 @@ import { readJson, writeJsonAtomic } from '@helm/storage';
 import { EXTERNAL_ID_REGEX } from './types.js';
 
 export type ReviewDispatchIntent = {
+  kind?: 'review_dispatch' | 'pending_external_review';
   productSlug: string;
   externalId: string;
   prNumber?: number;
   targetRevision?: string;
+  provider?: string;
+  reason?: 'analysis_pending';
+  createdAt?: string;
+  expiresAt?: string;
   triggeredBy: string;
   updatedAt: string;
+};
+
+export type PendingExternalReviewIntent = ReviewDispatchIntent & {
+  kind: 'pending_external_review';
+  provider: string;
+  reason: 'analysis_pending';
+  prNumber: number;
+  targetRevision: string;
+  createdAt: string;
+  expiresAt: string;
 };
 
 function isSafeSegment(value: string): boolean {
@@ -35,7 +50,19 @@ export class ReviewDispatchOutbox {
     const dir = join(this.outboxDir, intent.productSlug);
     assertSafeIntentKey(intent.productSlug, intent.externalId);
     await mkdir(dir, { recursive: true });
-    const stored: ReviewDispatchIntent = { ...intent, updatedAt: new Date().toISOString() };
+    const now = new Date().toISOString();
+    const current = await this.get(intent.productSlug, intent.externalId);
+    const sameDeferredRevision =
+      intent.kind === 'pending_external_review' &&
+      current?.kind === 'pending_external_review' &&
+      current.provider === intent.provider &&
+      current.prNumber === intent.prNumber &&
+      current.targetRevision === intent.targetRevision;
+    const stored: ReviewDispatchIntent = {
+      ...intent,
+      createdAt: sameDeferredRevision ? (current.createdAt ?? now) : (intent.createdAt ?? now),
+      updatedAt: now,
+    };
     await writeJsonAtomic(this.intentPath(intent.productSlug, intent.externalId), stored);
     return { ...stored };
   }
@@ -68,6 +95,24 @@ export class ReviewDispatchOutbox {
     await unlink(this.intentPath(productSlug, externalId)).catch((err: NodeJS.ErrnoException) => {
       if (err.code !== 'ENOENT') throw err;
     });
+  }
+
+  async findPendingExternalReview(input: {
+    productSlug: string;
+    externalId: string;
+    provider: string;
+    prNumber: number;
+    targetRevision: string;
+  }): Promise<PendingExternalReviewIntent | null> {
+    const intent = await this.get(input.productSlug, input.externalId);
+    if (!intent) return null;
+    if (intent.kind !== 'pending_external_review') return null;
+    if (intent.provider !== input.provider) return null;
+    if (intent.reason !== 'analysis_pending') return null;
+    if (intent.prNumber !== input.prNumber) return null;
+    if (intent.targetRevision !== input.targetRevision) return null;
+    if (!intent.createdAt || !intent.expiresAt) return null;
+    return intent as PendingExternalReviewIntent;
   }
 
   async list(): Promise<ReviewDispatchIntent[]> {

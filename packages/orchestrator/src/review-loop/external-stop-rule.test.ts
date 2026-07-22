@@ -16,6 +16,24 @@ describe('evaluateExternalReviewStopRule', () => {
     });
   });
 
+  it('defers when adapter reports analysis pending', () => {
+    const decision = evaluateExternalReviewStopRule({
+      result: {
+        status: 'deferred',
+        reason: 'analysis_pending',
+        providerReason: 'pending_timeout',
+      },
+      skipAttempt: 1,
+      maxSkipAttempts: 2,
+      evidence: null,
+    });
+    expect(decision).toEqual({
+      action: 'defer',
+      reason: 'analysis_pending',
+      providerReason: 'pending_timeout',
+    });
+  });
+
   it('continues on clean, needs_fixes, and not_configured', () => {
     expect(
       evaluateExternalReviewStopRule({

@@ -106,7 +106,7 @@ describe('HaystackExternalReviewAdapter', () => {
     expect(result.advisories[0]?.id).toBe('haystack:apps/api/src/routes/items.ts:Minor:102');
   });
 
-  it('polls until triage completes and escalates on pending_timeout', async () => {
+  it('polls until triage completes and defers on pending analysis by default', async () => {
     const pending = loadFixture<HaystackTriageJson>('triage-pending.json');
     let now = 0;
     const runHaystack = vi.fn(async () => ({
@@ -125,9 +125,43 @@ describe('HaystackExternalReviewAdapter', () => {
     });
     const result = await adapter.reviewPullRequest(ctx);
 
-    expect(result).toEqual({ status: 'escalate', reason: 'haystack pending_timeout' });
+    expect(result).toEqual({
+      status: 'deferred',
+      reason: 'analysis_pending',
+      providerReason: 'pending_timeout',
+    });
     expect(runHaystack.mock.calls.length).toBeGreaterThan(1);
     expect(sleep).toHaveBeenCalled();
+  });
+
+  it('keeps pending timeout escalatory when deferral is disabled', async () => {
+    const pending = loadFixture<HaystackTriageJson>('triage-pending.json');
+    let now = 0;
+    const runHaystack = vi.fn(async () => ({
+      stdout: JSON.stringify(pending),
+      stderr: '',
+      exitCode: 0,
+    }));
+    const sleep = vi.fn(async () => {
+      now += 1000;
+    });
+
+    const adapter = new HaystackExternalReviewAdapter(
+      {
+        ...baseProduct,
+        review: {
+          external: {
+            provider: 'haystack',
+            defer_when_pending: false,
+            haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 5 },
+          },
+        },
+      },
+      { runHaystack, sleep, now: () => now },
+    );
+    const result = await adapter.reviewPullRequest(ctx);
+
+    expect(result).toEqual({ status: 'escalate', reason: 'haystack pending_timeout' });
   });
 
   it('skips when haystack reports status=none', async () => {

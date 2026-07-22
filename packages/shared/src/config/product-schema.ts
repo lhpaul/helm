@@ -182,6 +182,9 @@ export const ProductSchema = z
         external: z
           .object({
             provider: z.enum(['haystack']).optional(),
+            defer_when_pending: z.boolean().optional(),
+            resume_on_check_run: z.boolean().optional(),
+            max_defer_sec: z.number().int().positive().optional(),
             haystack: z
               .object({
                 major_is_blocking: z.boolean().default(false),

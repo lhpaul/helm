@@ -30,6 +30,11 @@ export type ExternalReviewResult =
       advisories: NormalizedFinding[];
     }
   | { status: 'skipped'; reason: 'not_configured' | 'unavailable' | 'not_implemented' }
+  | {
+      status: 'deferred';
+      reason: 'analysis_pending';
+      providerReason?: string;
+    }
   | { status: 'escalate'; reason: string };
 
 export interface ExternalReviewAdapter {

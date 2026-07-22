@@ -54,15 +54,27 @@ import { isEnoentError } from '../lib/fs-errors.js';
 import { type StoredResolvedProductDecision } from './adjudication.js';
 
 export type CodeReviewLoopResult = {
-  status: 'done' | 'error';
+  status: 'done' | 'error' | 'deferred';
   prUrl: string;
   costUsd: number;
   durationMs: number;
   cyclesCompleted: number;
   newStage?: 'code-review' | 'remediation';
+  deferredExternalReview?: DeferredExternalReviewIntent;
   error?: string;
   escalated?: boolean;
   escalationReason?: StopRuleEscalationReason;
+};
+
+export type DeferredExternalReviewIntent = {
+  productSlug: string;
+  externalId: string;
+  provider: string;
+  reason: 'analysis_pending';
+  providerReason?: string;
+  prNumber: number;
+  targetRevision?: string;
+  maxDeferSec: number;
 };
 
 export type RunCodeReviewLoopParams = {
@@ -85,6 +97,8 @@ export type RunCodeReviewLoopParams = {
    * so a human choice recorded while the job is still running is visible.
    */
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
+  targetRevision?: string;
+  onExternalReviewDeferred?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
 };
 
 function escalationMessage(
@@ -126,6 +140,10 @@ function buildExternalReviewContext(params: RunCodeReviewLoopParams): ExternalRe
 function externalRetryDelayMs(product: Product): number {
   const pollSec = product.review?.external?.haystack?.poll_interval_sec ?? 15;
   return pollSec * 1000;
+}
+
+function externalMaxDeferSec(product: Product): number {
+  return product.review?.external?.max_defer_sec ?? 30 * 60;
 }
 
 async function postEscalationCommentBestEffort(
@@ -182,6 +200,11 @@ async function postReviewLoopSummaryBestEffort(
 type ExternalReviewLoopOutcome =
   | { kind: 'continue'; external: ExternalReviewResult }
   | {
+      kind: 'defer';
+      reason: 'analysis_pending';
+      providerReason?: string;
+    }
+  | {
       kind: 'escalate';
       reason: StopRuleEscalationReason;
       message: string;
@@ -228,6 +251,14 @@ async function runExternalReviewWithStopRule(
 
     if (decision.action === 'continue') {
       return { kind: 'continue', external: decision.result };
+    }
+
+    if (decision.action === 'defer') {
+      return {
+        kind: 'defer',
+        reason: decision.reason,
+        providerReason: decision.providerReason,
+      };
     }
 
     if (decision.action === 'escalate') {
@@ -383,6 +414,40 @@ export async function runCodeReviewLoop(
 
     const fanout = lastFanout!;
     const externalOutcome = await runExternalReviewWithStopRule(params, loopConfig);
+    if (externalOutcome.kind === 'defer') {
+      const provider = params.product.review?.external?.provider;
+      const prRef = parsePullRequestRef(params.prUrl);
+      if (!provider || !prRef) {
+        return {
+          status: 'error',
+          prUrl: fanout.prUrl,
+          costUsd: totalCost,
+          durationMs: maxDuration,
+          cyclesCompleted: cycle,
+          error: 'External review deferred but review identity could not be resolved',
+        };
+      }
+      const deferredExternalReview: DeferredExternalReviewIntent = {
+        productSlug: params.product.product.slug,
+        externalId: params.externalId,
+        provider,
+        reason: externalOutcome.reason,
+        providerReason: externalOutcome.providerReason,
+        prNumber: prRef.prNumber,
+        targetRevision: params.targetRevision,
+        maxDeferSec: externalMaxDeferSec(params.product),
+      };
+      await params.onExternalReviewDeferred?.(deferredExternalReview);
+      return {
+        status: 'deferred',
+        prUrl: fanout.prUrl,
+        costUsd: totalCost,
+        durationMs: maxDuration,
+        cyclesCompleted: cycle,
+        deferredExternalReview,
+      };
+    }
+
     if (externalOutcome.kind === 'escalate') {
       await postEscalationCommentBestEffort(params, {
         reason: externalOutcome.reason,

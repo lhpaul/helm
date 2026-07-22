@@ -61,6 +61,57 @@ const ReleaseWebhookSchema = z.object({
   release: z.object({ tag_name: z.string() }),
 });
 
+const CheckRunWebhookSchema = z.object({
+  action: z.string(),
+  check_run: z.object({
+    name: z.string(),
+    status: z.string().optional(),
+    conclusion: z.string().nullable().optional(),
+    head_sha: z.string(),
+    app: z.object({ slug: z.string().optional(), name: z.string().optional() }).optional(),
+    pull_requests: z
+      .array(
+        z.object({
+          number: z.number().int().positive(),
+          head: z.object({ ref: z.string().optional(), sha: z.string().optional() }).optional(),
+        }),
+      )
+      .optional(),
+  }),
+  repository: z
+    .object({
+      name: z.string(),
+      owner: z.object({ login: z.string() }),
+    })
+    .optional(),
+});
+
+const StatusWebhookSchema = z.object({
+  context: z.string(),
+  state: z.string(),
+  sha: z.string(),
+  target_url: z.string().nullable().optional(),
+  branches: z.array(z.object({ name: z.string() })).optional(),
+  repository: z
+    .object({
+      name: z.string(),
+      owner: z.object({ login: z.string() }),
+    })
+    .optional(),
+});
+
+function providerFromGitHubCheck(name: string, appSlug?: string, appName?: string): string | null {
+  const normalized = `${name} ${appSlug ?? ''} ${appName ?? ''}`.toLowerCase();
+  if (normalized.includes('haystack')) return 'haystack';
+  return null;
+}
+
+function prNumberFromUrl(value: string | null | undefined): number | null {
+  const match = value?.match(/\/pull\/(\d+)(?:\D|$)/);
+  if (!match) return null;
+  return Number.parseInt(match[1]!, 10);
+}
+
 // ── Pure parser (handles issues.* and issue_comment.*) ───────────────────────
 
 /**
@@ -162,6 +213,55 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
         return { type: 'release_published', tag: release.tag_name, timestamp };
       }
       return { type: 'unknown', raw: rawEvent };
+    }
+
+    if (eventType === 'check_run') {
+      const parsed = CheckRunWebhookSchema.safeParse(payload);
+      if (!parsed.success) return { type: 'unknown', raw: rawEvent };
+      const { action, check_run: checkRun } = parsed.data;
+      if (action !== 'completed' || checkRun.status !== 'completed') {
+        return { type: 'unknown', raw: rawEvent };
+      }
+      if (!['success', 'neutral'].includes(checkRun.conclusion ?? '')) {
+        return { type: 'unknown', raw: rawEvent };
+      }
+      const provider = providerFromGitHubCheck(
+        checkRun.name,
+        checkRun.app?.slug,
+        checkRun.app?.name,
+      );
+      const pr = checkRun.pull_requests?.[0];
+      if (!provider || !pr) return { type: 'unknown', raw: rawEvent };
+      return {
+        type: 'external_review_ready',
+        provider,
+        owner: parsed.data.repository?.owner.login ?? null,
+        repo: parsed.data.repository?.name ?? null,
+        prNumber: pr.number,
+        targetRevision: checkRun.head_sha,
+        headRef: pr.head?.ref,
+        timestamp,
+      };
+    }
+
+    if (eventType === 'status') {
+      const parsed = StatusWebhookSchema.safeParse(payload);
+      if (!parsed.success) return { type: 'unknown', raw: rawEvent };
+      const provider = providerFromGitHubCheck(parsed.data.context);
+      const prNumber = prNumberFromUrl(parsed.data.target_url);
+      if (!provider || parsed.data.state !== 'success' || prNumber === null) {
+        return { type: 'unknown', raw: rawEvent };
+      }
+      return {
+        type: 'external_review_ready',
+        provider,
+        owner: parsed.data.repository?.owner.login ?? null,
+        repo: parsed.data.repository?.name ?? null,
+        prNumber,
+        targetRevision: parsed.data.sha,
+        headRef: parsed.data.branches?.[0]?.name,
+        timestamp,
+      };
     }
 
     return { type: 'unknown', raw: rawEvent };

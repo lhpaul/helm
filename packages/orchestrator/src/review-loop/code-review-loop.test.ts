@@ -473,6 +473,55 @@ describe('runCodeReviewLoop', () => {
     expect(postPRComment).toHaveBeenCalledTimes(1);
   });
 
+  it('defers analysis-pending external review without posting escalation', async () => {
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        external: {
+          provider: 'haystack',
+          max_defer_sec: 600,
+          haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 5 },
+        },
+      },
+    };
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'deferred',
+      reason: 'analysis_pending',
+      providerReason: 'pending_timeout',
+    });
+    const onExternalReviewDeferred = vi.fn();
+
+    const result = await runCodeReviewLoop({
+      externalId: 'issue_1',
+      product,
+      prUrl: PR_URL,
+      codeRepo: product.code_repos[0]!,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+      targetRevision: 'sha-42',
+      onExternalReviewDeferred,
+    });
+
+    expect(result).toMatchObject({
+      status: 'deferred',
+      cyclesCompleted: 1,
+      deferredExternalReview: {
+        productSlug: 'test',
+        externalId: 'issue_1',
+        provider: 'haystack',
+        reason: 'analysis_pending',
+        providerReason: 'pending_timeout',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        maxDeferSec: 600,
+      },
+    });
+    expect(onExternalReviewDeferred).toHaveBeenCalledWith(result.deferredExternalReview);
+    expect(postPRComment).not.toHaveBeenCalled();
+  });
+
   it('escalates when external review skips with Haystack evidence', async () => {
     const product: Product = {
       ...baseProduct,

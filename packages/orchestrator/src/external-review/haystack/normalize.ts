@@ -13,14 +13,17 @@ import type { NormalizedFinding } from '../types.js';
 const DEFAULT_MAJOR_IS_BLOCKING = false;
 const DEFAULT_POLL_INTERVAL_SEC = 15;
 const DEFAULT_TIMEOUT_SEC = 120;
+const DEFAULT_DEFER_WHEN_PENDING = true;
 
 /** Reads `review.external.haystack` with ADR-036 defaults. */
 export function resolveHaystackReviewConfig(product: Product): HaystackReviewConfig {
+  const external = product.review?.external;
   const haystack = product.review?.external?.haystack;
   return {
     majorIsBlocking: haystack?.major_is_blocking ?? DEFAULT_MAJOR_IS_BLOCKING,
     pollIntervalSec: haystack?.poll_interval_sec ?? DEFAULT_POLL_INTERVAL_SEC,
     timeoutSec: haystack?.timeout_sec ?? DEFAULT_TIMEOUT_SEC,
+    deferWhenPending: external?.defer_when_pending ?? DEFAULT_DEFER_WHEN_PENDING,
   };
 }
 

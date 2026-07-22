@@ -64,4 +64,68 @@ describe('ReviewDispatchOutbox', () => {
     expect(removedNewer).toBe(true);
     expect(await outbox.get('helm', 'issue_1')).toBeNull();
   });
+
+  it('stores pending external review intents idempotently for the same revision', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    const first = await outbox.put({
+      kind: 'pending_external_review',
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      provider: 'haystack',
+      reason: 'analysis_pending',
+      prNumber: 42,
+      targetRevision: 'abc123',
+      createdAt: '2026-07-22T10:00:00.000Z',
+      expiresAt: '2026-07-22T10:30:00.000Z',
+      triggeredBy: 'test:first',
+    });
+    const second = await outbox.put({
+      kind: 'pending_external_review',
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      provider: 'haystack',
+      reason: 'analysis_pending',
+      prNumber: 42,
+      targetRevision: 'abc123',
+      expiresAt: '2026-07-22T10:45:00.000Z',
+      triggeredBy: 'test:retry',
+    });
+
+    expect(second.createdAt).toBe(first.createdAt);
+    expect(second.updatedAt).not.toBe('');
+    await expect(
+      outbox.findPendingExternalReview({
+        productSlug: 'helm',
+        externalId: 'issue_78',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'abc123',
+      }),
+    ).resolves.toEqual(second);
+  });
+
+  it('does not match pending external review readiness for the wrong revision', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      kind: 'pending_external_review',
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      provider: 'haystack',
+      reason: 'analysis_pending',
+      prNumber: 42,
+      targetRevision: 'abc123',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      triggeredBy: 'test',
+    });
+
+    await expect(
+      outbox.findPendingExternalReview({
+        productSlug: 'helm',
+        externalId: 'issue_78',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'def456',
+      }),
+    ).resolves.toBeNull();
+  });
 });

@@ -891,8 +891,8 @@ describe('runCodeReviewLoop', () => {
     });
 
     expect(result.status).toBe('error');
-    expect(result.error).toContain('Failed to reload settled product decisions');
-    expect(result.error).toContain('disk read failed');
+    expect(result.error).toBe('Failed to reload settled product decisions');
+    expect(result.error).not.toContain('disk read failed');
     expect(handleReviewAdjudicatorResult).not.toHaveBeenCalled();
   });
 

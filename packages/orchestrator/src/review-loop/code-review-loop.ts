@@ -749,13 +749,16 @@ async function runAdjudicationIfEnabled(input: {
   try {
     resolvedProductDecisions = await resolveSettledDecisions(input);
   } catch (err) {
+    // Keep filesystem/path details out of DispatchResult.error (returned via jobs API).
+    console.error(
+      '[code-review-loop] Failed to reload settled product decisions:',
+      err instanceof Error ? err.message : String(err),
+    );
     return {
       status: 'error',
       totalCost: input.totalCost,
       maxDuration: input.maxDuration,
-      error: `Failed to reload settled product decisions: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      error: 'Failed to reload settled product decisions',
     };
   }
   return runAdjudicationPass({ ...input, resolvedProductDecisions });

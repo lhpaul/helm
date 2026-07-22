@@ -88,12 +88,8 @@ export class ItemStore {
   /**
    * Advances an item to a new workflow stage.
    *
-   * NOTE: This implementation has no concurrency control. If two callers
-   * invoke transition() on the same externalId concurrently, the last write
-   * wins and the intermediate transition is lost silently. This is acceptable
-   * for v0 (single-process, single-user). Address with file locking or
-   * optimistic versioning when parallel agents become real (target: Session 8+
-   * with parallel reviewers).
+   * Concurrent writers for the same externalId are serialized via withItemLock
+   * (same queue as transitionIfCurrentStage / upsertResolvedProductDecision).
    *
    * Throws ItemNotFoundError if the item does not exist.
    * Throws WorkflowTransitionError if the transition is not permitted.
@@ -104,16 +100,18 @@ export class ItemStore {
     triggeredBy: string;
     note?: string;
   }): Promise<ItemState> {
-    const current = await readJson<ItemState>(this.itemPath(input.externalId));
-    if (current === null) {
-      throw new ItemNotFoundError(input.externalId);
-    }
+    return this.withItemLock(input.externalId, async () => {
+      const current = await readJson<ItemState>(this.itemPath(input.externalId));
+      if (current === null) {
+        throw new ItemNotFoundError(input.externalId);
+      }
 
-    // Throws WorkflowTransitionError if the transition is not in VALID_TRANSITIONS.
-    // The file is NOT written until after this check — invalid transitions are a no-op.
-    validateTransition(current.currentStage, input.toStage);
+      // Throws WorkflowTransitionError if the transition is not in VALID_TRANSITIONS.
+      // The file is NOT written until after this check — invalid transitions are a no-op.
+      validateTransition(current.currentStage, input.toStage);
 
-    return this.applyTransition(current, input);
+      return this.applyTransition(current, input);
+    });
   }
 
   /**
@@ -183,16 +181,18 @@ export class ItemStore {
     triggeredBy: string;
     note?: string;
   }): Promise<ItemState> {
-    const current = await readJson<ItemState>(this.itemPath(input.externalId));
-    if (current === null) {
-      throw new ItemNotFoundError(input.externalId);
-    }
+    return this.withItemLock(input.externalId, async () => {
+      const current = await readJson<ItemState>(this.itemPath(input.externalId));
+      if (current === null) {
+        throw new ItemNotFoundError(input.externalId);
+      }
 
-    if (current.currentStage !== input.fromStage) {
-      throw new StageMismatchError(input.externalId, input.fromStage, current.currentStage);
-    }
+      if (current.currentStage !== input.fromStage) {
+        throw new StageMismatchError(input.externalId, input.fromStage, current.currentStage);
+      }
 
-    return this.applyTransition(current, input);
+      return this.applyTransition(current, input);
+    });
   }
 
   async upsertResolvedProductDecision(input: {

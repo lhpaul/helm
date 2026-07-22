@@ -145,6 +145,66 @@ Chosen option: Option A`)!;
     ).toBe(false);
   });
 
+  it('uses the latest adjudication when multiple adjudication comments exist', () => {
+    const older = `# Review Adjudication: HLM-72
+
+## Conflicts
+- **product_decision** · Pick direction
+  Paths: src/a.ts
+  Scope markers: API
+  Option A: keep the current behavior.
+  Option B: change the behavior.
+
+## Status
+HUMAN_REQUIRED`;
+    const newer = `# Review Adjudication: HLM-72
+
+## Conflicts
+- **product_decision** · Pick direction
+  Paths: src/a.ts
+  Scope markers: API
+  Option A: keep the current behavior.
+  Option B: change the behavior.
+  Option C: defer entirely.
+
+## Status
+HUMAN_REQUIRED`;
+    const decisionA = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Pick direction
+Affected paths: src/a.ts
+Scope markers: API
+Chosen option: Option A`)!;
+    const decisionC = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Pick direction
+Affected paths: src/a.ts
+Scope markers: API
+Chosen option: Option C`)!;
+
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'HLM-72',
+        decision: decisionA,
+        adjudicationBodies: [older, newer],
+      }),
+    ).toBe(true);
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'HLM-72',
+        decision: decisionC,
+        adjudicationBodies: [older, newer],
+      }),
+    ).toBe(true);
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'HLM-72',
+        decision: decisionC,
+        adjudicationBodies: [older],
+      }),
+    ).toBe(false);
+  });
+
   it('rejects choices that are only substrings of conflict text', () => {
     const decision = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
 Conflict kind: product_decision
@@ -191,5 +251,39 @@ HUMAN_REQUIRED`);
     expect(result.conflicts).toHaveLength(1);
     expect(result.conflicts[0]?.conflictTitle).toBe('Other direction');
     expect(result.unifiedPlan).toContain('SETTLED');
+    expect(result.body).toMatch(/## Status\s*\nHUMAN_REQUIRED/);
+    expect(result.conflictsSection).toContain('Other direction');
+    expect(result.conflictsSection).not.toContain('Pick direction');
+  });
+
+  it('flips to AUTO_REMEDIATE when every conflict is already settled', () => {
+    const parsed = parseAdjudicationBody(`# Review Adjudication: HLM-72
+
+## Conflicts
+- **product_decision** · Pick direction
+  Paths: src/a.ts
+  Scope markers: API
+  Option A: keep the current behavior.
+  Option B: change the behavior.
+
+## Unified remediation plan
+- **AUTO** · Apply remaining mechanical fixes
+
+## Status
+HUMAN_REQUIRED`);
+    const settled = parsed.conflicts[0]!;
+
+    const result = suppressSettledConflicts(parsed, [
+      {
+        fingerprint: settled.fingerprint,
+        chosenOption: 'Option A',
+      },
+    ]);
+
+    expect(result.status).toBe('AUTO_REMEDIATE');
+    expect(result.conflicts).toHaveLength(0);
+    expect(result.body).toMatch(/## Status\s*\nAUTO_REMEDIATE/);
+    expect(result.body).toContain('SETTLED');
+    expect(result.body).not.toContain('**product_decision**');
   });
 });

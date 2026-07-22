@@ -369,6 +369,59 @@ describe('upsertResolvedProductDecision', () => {
 
     expect(state?.resolvedProductDecisions?.[0]).toEqual(decision);
   });
+
+  it('preserves decisions across concurrent transition and upsert writers', async () => {
+    await store.create(BASE_INPUT);
+    await store.transition({
+      externalId: 'HLM-1',
+      toStage: 'spec-draft',
+      triggeredBy: 'agent:spec-writer',
+    });
+
+    const [transitioned, upserted] = await Promise.all([
+      store.transition({
+        externalId: 'HLM-1',
+        toStage: 'spec-ready',
+        triggeredBy: 'agent:spec-reviewer',
+      }),
+      store.upsertResolvedProductDecision({
+        externalId: 'HLM-1',
+        decision,
+        triggeredBy: 'webhook:pr-decision-comment',
+      }),
+    ]);
+
+    const finalState = await store.get('HLM-1');
+    expect(finalState?.currentStage).toBe('spec-ready');
+    expect(finalState?.resolvedProductDecisions).toEqual([decision]);
+    // Both writers completed without clobbering each other.
+    expect(
+      transitioned.currentStage === 'spec-ready' || upserted.state.currentStage === 'spec-ready',
+    ).toBe(true);
+    expect(
+      transitioned.resolvedProductDecisions?.length === 1 ||
+        upserted.state.resolvedProductDecisions?.length === 1,
+    ).toBe(true);
+  });
+
+  it('survives a stage move then re-dispatch-style reload of the decision ledger', async () => {
+    await store.create(BASE_INPUT);
+    await store.upsertResolvedProductDecision({
+      externalId: 'HLM-1',
+      decision,
+      triggeredBy: 'webhook:pr-decision-comment',
+    });
+    await store.transition({
+      externalId: 'HLM-1',
+      toStage: 'spec-draft',
+      triggeredBy: 'agent:spec-writer',
+    });
+
+    // Simulate dispatch-scheduler refreshing item state from disk at job start.
+    const dispatchRead = await new ItemStore(itemsDir).get('HLM-1');
+    expect(dispatchRead?.currentStage).toBe('spec-draft');
+    expect(dispatchRead?.resolvedProductDecisions).toEqual([decision]);
+  });
 });
 
 describe('list', () => {

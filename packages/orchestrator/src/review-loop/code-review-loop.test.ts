@@ -716,20 +716,14 @@ describe('runCodeReviewLoop', () => {
       costUsd: 0.01,
       durationMs: 100,
       commentPosted: true,
+      // handleReviewAdjudicatorResult suppresses settled conflicts before return.
       parsed: {
-        status: 'HUMAN_REQUIRED',
-        unifiedPlan: '- **DEFERRED** · Vacancy semantics — awaiting human decision',
-        body: '# Review Adjudication\n\n## Status\nHUMAN_REQUIRED',
-        conflictsSection: '- **product_decision** · Vacancy semantics',
-        conflicts: [
-          {
-            conflictKind: 'product_decision',
-            conflictTitle: 'Vacancy semantics',
-            scope: { paths: [], markers: [] },
-            fingerprint: 'kind=product_decision|title=vacancy semantics|paths=|markers=',
-            body: '- **product_decision** · Vacancy semantics',
-          },
-        ],
+        status: 'AUTO_REMEDIATE',
+        unifiedPlan:
+          '- **DEFERRED** · Vacancy semantics — awaiting human decision\n- **SETTLED** · Vacancy semantics — using recorded choice: Option A',
+        body: '# Review Adjudication\n\n## Status\nAUTO_REMEDIATE',
+        conflictsSection: '',
+        conflicts: [],
       },
     });
 
@@ -763,6 +757,19 @@ describe('runCodeReviewLoop', () => {
 
     expect(result.status).toBe('done');
     expect(result.escalated).toBeUndefined();
+    expect(handleReviewAdjudicatorResult).toHaveBeenCalledWith(
+      'issue_1',
+      expect.anything(),
+      expect.any(String),
+      PR_URL,
+      'token',
+      undefined,
+      expect.arrayContaining([
+        expect.objectContaining({
+          fingerprint: 'kind=product_decision|title=vacancy semantics|paths=|markers=',
+        }),
+      ]),
+    );
     expect(buildRemediationParams).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(Object),

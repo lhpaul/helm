@@ -172,12 +172,23 @@ export function suppressSettledConflicts(
     })
     .join('\n');
 
+  const status: AdjudicationStatus =
+    remainingConflicts.length > 0 ? 'HUMAN_REQUIRED' : 'AUTO_REMEDIATE';
+  const conflictsSection = remainingConflicts.map((conflict) => conflict.body).join('\n\n');
   const unifiedPlan = [parsed.unifiedPlan, settledNotes].filter(Boolean).join('\n');
+
+  // Rewrite the markdown body before publish so PR comments never re-surface
+  // settled conflicts as open HUMAN_REQUIRED work.
+  let body = replaceSection(parsed.body, 'Conflicts', conflictsSection);
+  body = replaceSection(body, 'Unified remediation plan', unifiedPlan);
+  body = replaceSection(body, 'Status', status);
+
   return {
     ...parsed,
+    body,
     conflicts: remainingConflicts,
-    conflictsSection: remainingConflicts.map((conflict) => conflict.body).join('\n\n'),
-    status: remainingConflicts.length > 0 ? 'HUMAN_REQUIRED' : 'AUTO_REMEDIATE',
+    conflictsSection,
+    status,
     unifiedPlan,
   };
 }
@@ -336,6 +347,33 @@ function extractSection(body: string, heading: string): string {
   );
   const match = body.match(re);
   return match?.[1]?.trim() ?? '';
+}
+
+function replaceSection(body: string, heading: string, content: string): string {
+  const lines = body.split(/\r?\n/);
+  const headingRe = new RegExp(`^##\\s+${escapeRegExp(heading)}\\s*$`, 'i');
+  const nextHeadingRe = /^##\s+/;
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (headingRe.test(lines[i]!)) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) {
+    return `${body.trimEnd()}\n\n## ${heading}\n${content.trim()}\n`;
+  }
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (nextHeadingRe.test(lines[i]!)) {
+      end = i;
+      break;
+    }
+  }
+  const contentLines = content.trim().length > 0 ? content.trim().split(/\r?\n/) : [];
+  return [...lines.slice(0, start), `## ${heading}`, ...contentLines, '', ...lines.slice(end)]
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n');
 }
 
 function escapeRegExp(value: string): string {

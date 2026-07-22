@@ -51,7 +51,7 @@ import {
   recordStickyImprovement,
 } from './finding-fingerprint.js';
 import { isEnoentError } from '../lib/fs-errors.js';
-import { suppressSettledConflicts, type StoredResolvedProductDecision } from './adjudication.js';
+import { type StoredResolvedProductDecision } from './adjudication.js';
 
 export type CodeReviewLoopResult = {
   status: 'done' | 'error';
@@ -617,6 +617,7 @@ async function runAdjudicationPass(input: {
       input.prUrl,
       input.githubToken,
       input.runGh,
+      input.resolvedProductDecisions ?? [],
     );
 
     const totalCost = input.totalCost + adjudicationResult.costUsd;
@@ -631,10 +632,8 @@ async function runAdjudicationPass(input: {
       };
     }
 
-    const parsed = suppressSettledConflicts(
-      adjudicationResult.parsed,
-      input.resolvedProductDecisions ?? [],
-    );
+    // Settled conflicts were already suppressed before the PR comment was posted.
+    const parsed = adjudicationResult.parsed;
 
     if (parsed.status === 'HUMAN_REQUIRED') {
       return {

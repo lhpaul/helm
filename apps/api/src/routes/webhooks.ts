@@ -22,6 +22,7 @@ import { createItem, transitionItem } from '../services/item-service.js';
 import {
   scheduleItemDispatch,
   persistReviewDispatchIntent,
+  peekPendingExternalReviewByRevision,
   resumePendingExternalReview,
 } from '../services/dispatch-scheduler.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
@@ -361,12 +362,40 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         console.info('[webhooks/github] external review readiness ignored — provider mismatch');
         return c.json({ processed: true });
       }
-      const parsed = event.headRef ? parseArtifactBranch(event.headRef) : null;
-      if (parsed?.kind !== 'impl') {
-        console.info('[webhooks/github] external review readiness ignored — non-impl ref');
+
+      let externalId: string | null = null;
+      let prNumber: number | null = event.prNumber ?? null;
+
+      if (event.headRef) {
+        const parsed = parseArtifactBranch(event.headRef);
+        if (parsed?.kind !== 'impl') {
+          console.info('[webhooks/github] external review readiness ignored — non-impl ref');
+          return c.json({ processed: true });
+        }
+        externalId = parsed.externalId;
+      } else {
+        // check_run often omits pull_requests — match pending intent by SHA first.
+        const matched = await peekPendingExternalReviewByRevision({
+          productSlug: config.product.slug,
+          provider: event.provider,
+          targetRevision: event.targetRevision,
+        });
+        if (!matched) {
+          console.info(
+            '[webhooks/github] external review readiness ignored — no pending intent for revision',
+          );
+          return c.json({ processed: true });
+        }
+        externalId = matched.externalId;
+        prNumber = matched.prNumber;
+      }
+
+      if (prNumber === null || externalId === null) {
+        console.info('[webhooks/github] external review readiness ignored — missing PR identity');
         return c.json({ processed: true });
       }
-      const item = await itemStore.get(parsed.externalId);
+
+      const item = await itemStore.get(externalId);
       if (item?.productSlug !== config.product.slug || item.currentStage !== 'code-review') {
         console.info(
           '[webhooks/github] external review readiness ignored — item not in code-review',
@@ -375,15 +404,15 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       }
       const outcome = await resumePendingExternalReview({
         productSlug: config.product.slug,
-        externalId: parsed.externalId,
+        externalId,
         provider: event.provider,
-        prNumber: event.prNumber,
+        prNumber,
         targetRevision: event.targetRevision,
         triggeredBy: 'webhook:external-review-ready',
       });
       if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
         console.info(
-          `[webhooks/github] external review readiness did not resume ${parsed.externalId}: ${outcome.reason}`,
+          `[webhooks/github] external review readiness did not resume ${externalId}: ${outcome.reason}`,
         );
       }
     } catch (err) {

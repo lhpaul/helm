@@ -3,8 +3,10 @@ import { join } from 'node:path';
 import { readJson, writeJsonAtomic } from '@helm/storage';
 import { EXTERNAL_ID_REGEX } from './types.js';
 
+export type ReviewDispatchIntentKind = 'review_dispatch' | 'pending_external_review';
+
 export type ReviewDispatchIntent = {
-  kind?: 'review_dispatch' | 'pending_external_review';
+  kind?: ReviewDispatchIntentKind;
   productSlug: string;
   externalId: string;
   prNumber?: number;
@@ -37,38 +39,59 @@ function assertSafeIntentKey(productSlug: string, externalId: string): void {
   }
 }
 
+function normalizeKind(kind: ReviewDispatchIntentKind | undefined): ReviewDispatchIntentKind {
+  return kind ?? 'review_dispatch';
+}
+
 export class ReviewDispatchOutbox {
   constructor(private readonly outboxDir: string) {}
 
-  private intentPath(productSlug: string, externalId: string): string {
+  private intentPath(
+    productSlug: string,
+    externalId: string,
+    kind: ReviewDispatchIntentKind = 'review_dispatch',
+  ): string {
     assertSafeIntentKey(productSlug, externalId);
-    // Nested path avoids `${slug}--${id}` collisions when either segment contains `--`.
-    return join(this.outboxDir, productSlug, `${externalId}.json`);
+    // Separate files per kind so review_dispatch and pending_external_review
+    // cannot clobber each other under concurrent sync + defer.
+    const fileName =
+      kind === 'pending_external_review'
+        ? `${externalId}.pending-external-review.json`
+        : `${externalId}.json`;
+    return join(this.outboxDir, productSlug, fileName);
   }
 
   async put(intent: Omit<ReviewDispatchIntent, 'updatedAt'>): Promise<ReviewDispatchIntent> {
+    const kind = normalizeKind(intent.kind);
     const dir = join(this.outboxDir, intent.productSlug);
     assertSafeIntentKey(intent.productSlug, intent.externalId);
     await mkdir(dir, { recursive: true });
     const now = new Date().toISOString();
-    const current = await this.get(intent.productSlug, intent.externalId);
+    const current = await this.get(intent.productSlug, intent.externalId, kind);
     const sameDeferredRevision =
-      intent.kind === 'pending_external_review' &&
+      kind === 'pending_external_review' &&
       current?.kind === 'pending_external_review' &&
       current.provider === intent.provider &&
       current.prNumber === intent.prNumber &&
       current.targetRevision === intent.targetRevision;
     const stored: ReviewDispatchIntent = {
       ...intent,
+      kind,
       createdAt: sameDeferredRevision ? (current.createdAt ?? now) : (intent.createdAt ?? now),
       updatedAt: now,
     };
-    await writeJsonAtomic(this.intentPath(intent.productSlug, intent.externalId), stored);
+    await writeJsonAtomic(this.intentPath(intent.productSlug, intent.externalId, kind), stored);
     return { ...stored };
   }
 
-  async get(productSlug: string, externalId: string): Promise<ReviewDispatchIntent | null> {
-    const intent = await readJson<ReviewDispatchIntent>(this.intentPath(productSlug, externalId));
+  async get(
+    productSlug: string,
+    externalId: string,
+    kind: ReviewDispatchIntentKind = 'review_dispatch',
+  ): Promise<ReviewDispatchIntent | null> {
+    const intent = await readJson<ReviewDispatchIntent>(
+      this.intentPath(productSlug, externalId, kind),
+    );
     return intent ? { ...intent } : null;
   }
 
@@ -79,22 +102,33 @@ export class ReviewDispatchOutbox {
   async removeIfMatches(
     productSlug: string,
     externalId: string,
-    expected: Pick<ReviewDispatchIntent, 'updatedAt' | 'targetRevision'>,
+    expected: Pick<ReviewDispatchIntent, 'updatedAt' | 'targetRevision'> & {
+      kind?: ReviewDispatchIntentKind;
+    },
   ): Promise<boolean> {
-    const current = await this.get(productSlug, externalId);
+    const kind = normalizeKind(expected.kind);
+    const current = await this.get(productSlug, externalId, kind);
     if (!current) return false;
     if (current.updatedAt !== expected.updatedAt) return false;
     if ((current.targetRevision ?? null) !== (expected.targetRevision ?? null)) return false;
-    await unlink(this.intentPath(productSlug, externalId)).catch((err: NodeJS.ErrnoException) => {
-      if (err.code !== 'ENOENT') throw err;
-    });
+    await unlink(this.intentPath(productSlug, externalId, kind)).catch(
+      (err: NodeJS.ErrnoException) => {
+        if (err.code !== 'ENOENT') throw err;
+      },
+    );
     return true;
   }
 
-  async remove(productSlug: string, externalId: string): Promise<void> {
-    await unlink(this.intentPath(productSlug, externalId)).catch((err: NodeJS.ErrnoException) => {
-      if (err.code !== 'ENOENT') throw err;
-    });
+  async remove(
+    productSlug: string,
+    externalId: string,
+    kind: ReviewDispatchIntentKind = 'review_dispatch',
+  ): Promise<void> {
+    await unlink(this.intentPath(productSlug, externalId, kind)).catch(
+      (err: NodeJS.ErrnoException) => {
+        if (err.code !== 'ENOENT') throw err;
+      },
+    );
   }
 
   async findPendingExternalReview(input: {
@@ -104,7 +138,7 @@ export class ReviewDispatchOutbox {
     prNumber: number;
     targetRevision: string;
   }): Promise<PendingExternalReviewIntent | null> {
-    const intent = await this.get(input.productSlug, input.externalId);
+    const intent = await this.get(input.productSlug, input.externalId, 'pending_external_review');
     if (!intent) return null;
     if (intent.kind !== 'pending_external_review') return null;
     if (intent.provider !== input.provider) return null;
@@ -113,6 +147,30 @@ export class ReviewDispatchOutbox {
     if (intent.targetRevision !== input.targetRevision) return null;
     if (!intent.createdAt || !intent.expiresAt) return null;
     return intent as PendingExternalReviewIntent;
+  }
+
+  /**
+   * Match a readiness signal that lacks PR metadata (common for check_run
+   * payloads with an empty `pull_requests` array) by exact revision + provider.
+   */
+  async findPendingExternalReviewByRevision(input: {
+    productSlug: string;
+    provider: string;
+    targetRevision: string;
+  }): Promise<PendingExternalReviewIntent | null> {
+    const intents = await this.list();
+    const matches = intents.filter(
+      (intent): intent is PendingExternalReviewIntent =>
+        intent.kind === 'pending_external_review' &&
+        intent.productSlug === input.productSlug &&
+        intent.provider === input.provider &&
+        intent.reason === 'analysis_pending' &&
+        intent.targetRevision === input.targetRevision &&
+        typeof intent.prNumber === 'number' &&
+        typeof intent.createdAt === 'string' &&
+        typeof intent.expiresAt === 'string',
+    );
+    return matches.length === 1 ? matches[0]! : null;
   }
 
   async list(): Promise<ReviewDispatchIntent[]> {

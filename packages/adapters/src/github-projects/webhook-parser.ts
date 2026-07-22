@@ -230,16 +230,18 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
         checkRun.app?.slug,
         checkRun.app?.name,
       );
+      if (!provider) return { type: 'unknown', raw: rawEvent };
       const pr = checkRun.pull_requests?.[0];
-      if (!provider || !pr) return { type: 'unknown', raw: rawEvent };
+      // GitHub often omits pull_requests on check_run; still emit readiness so
+      // the webhook route can match a pending intent by head SHA alone.
       return {
         type: 'external_review_ready',
         provider,
         owner: parsed.data.repository?.owner.login ?? null,
         repo: parsed.data.repository?.name ?? null,
-        prNumber: pr.number,
+        ...(pr?.number !== undefined ? { prNumber: pr.number } : {}),
         targetRevision: checkRun.head_sha,
-        headRef: pr.head?.ref,
+        ...(pr?.head?.ref ? { headRef: pr.head.ref } : {}),
         timestamp,
       };
     }

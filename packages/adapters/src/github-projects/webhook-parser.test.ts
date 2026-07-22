@@ -304,6 +304,32 @@ describe('parseGitHubWebhook', () => {
       });
     });
 
+    it('check_run.completed success without pull_requests still emits readiness by SHA', () => {
+      const result = parseGitHubWebhook(
+        ctx('check_run', {
+          action: 'completed',
+          check_run: {
+            name: 'Haystack / Review',
+            status: 'completed',
+            conclusion: 'success',
+            head_sha: 'abc123',
+            app: { slug: 'haystack' },
+            pull_requests: [],
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result).toEqual({
+        type: 'external_review_ready',
+        provider: 'haystack',
+        owner: 'owner',
+        repo: 'repo',
+        targetRevision: 'abc123',
+        timestamp: expect.any(String),
+      });
+    });
+
     it('check_run.completed action_required remains unknown', () => {
       const result = parseGitHubWebhook(
         ctx('check_run', {

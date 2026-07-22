@@ -13,7 +13,10 @@ import { readGitHubTokenFromEnv } from '../lib/github-token.js';
 import type { Job } from './job-store.js';
 import type { ItemState } from './types.js';
 import { EXTERNAL_ID_REGEX } from './types.js';
-import { getReviewDispatchOutbox } from './review-dispatch-outbox.js';
+import {
+  getReviewDispatchOutbox,
+  type PendingExternalReviewIntent,
+} from './review-dispatch-outbox.js';
 import { resolveOpenPrMetadata } from './github-pr.js';
 
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
@@ -117,8 +120,43 @@ export async function resumePendingExternalReview(input: {
   if (!intent) {
     return { scheduled: false, reason: 'No matching pending external review' };
   }
+  return finalizePendingExternalReviewResume(outbox, intent, input.triggeredBy);
+}
+
+/** Look up a pending intent by SHA without scheduling (for webhook preconditions). */
+export async function peekPendingExternalReviewByRevision(input: {
+  productSlug: string;
+  provider: string;
+  targetRevision: string;
+}): Promise<PendingExternalReviewIntent | null> {
+  const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
+  return outbox.findPendingExternalReviewByRevision(input);
+}
+
+/** Resume when readiness has a SHA but no PR metadata (empty check_run.pull_requests). */
+export async function resumePendingExternalReviewByRevision(input: {
+  productSlug: string;
+  provider: string;
+  targetRevision: string;
+  triggeredBy: string;
+}): Promise<ScheduleItemDispatchResult & { externalId?: string }> {
+  const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
+  const intent = await outbox.findPendingExternalReviewByRevision(input);
+  if (!intent) {
+    return { scheduled: false, reason: 'No matching pending external review' };
+  }
+  const outcome = await finalizePendingExternalReviewResume(outbox, intent, input.triggeredBy);
+  return { ...outcome, externalId: intent.externalId };
+}
+
+async function finalizePendingExternalReviewResume(
+  outbox: Awaited<ReturnType<typeof getReviewDispatchOutbox>>,
+  intent: PendingExternalReviewIntent,
+  triggeredBy: string,
+): Promise<ScheduleItemDispatchResult> {
   if (Date.parse(intent.expiresAt) <= Date.now()) {
     await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+      kind: 'pending_external_review',
       updatedAt: intent.updatedAt,
       targetRevision: intent.targetRevision,
     });
@@ -131,10 +169,11 @@ export async function resumePendingExternalReview(input: {
     specialistId: 'reviewer-fanout',
     targetRevision: intent.targetRevision,
     prNumber: intent.prNumber,
-    triggeredBy: input.triggeredBy,
+    triggeredBy,
   });
   if (outcome.scheduled || outcome.reason === 'Duplicate target revision') {
     await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+      kind: 'pending_external_review',
       updatedAt: intent.updatedAt,
       targetRevision: intent.targetRevision,
     });

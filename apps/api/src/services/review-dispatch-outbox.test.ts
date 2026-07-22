@@ -128,4 +128,37 @@ describe('ReviewDispatchOutbox', () => {
       }),
     ).resolves.toBeNull();
   });
+
+  it('keeps review_dispatch and pending_external_review intents side by side', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    const dispatch = await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      prNumber: 42,
+      targetRevision: 'sha-dispatch',
+      triggeredBy: 'test:dispatch',
+    });
+    const pending = await outbox.put({
+      kind: 'pending_external_review',
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      provider: 'haystack',
+      reason: 'analysis_pending',
+      prNumber: 42,
+      targetRevision: 'sha-pending',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      triggeredBy: 'test:defer',
+    });
+
+    expect(await outbox.get('helm', 'issue_78', 'review_dispatch')).toEqual(dispatch);
+    expect(await outbox.get('helm', 'issue_78', 'pending_external_review')).toEqual(pending);
+    await expect(
+      outbox.findPendingExternalReviewByRevision({
+        productSlug: 'helm',
+        provider: 'haystack',
+        targetRevision: 'sha-pending',
+      }),
+    ).resolves.toEqual(pending);
+  });
 });

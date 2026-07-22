@@ -93,7 +93,8 @@ export type NormalizedEvent =
       provider: string;
       owner: string | null;
       repo: string | null;
-      prNumber: number;
+      /** Present when the check_run payload includes pull_requests; may be absent. */
+      prNumber?: number;
       targetRevision: string;
       headRef?: string;
       timestamp: string;

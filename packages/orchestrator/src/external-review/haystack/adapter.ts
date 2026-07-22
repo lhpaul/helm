@@ -66,6 +66,7 @@ export class HaystackExternalReviewAdapter implements ExternalReviewAdapter {
     if (pollResult.kind !== 'completed') {
       return mapPollFailureToExternalResult(
         pollResult as Exclude<PollHaystackTriageResult, { kind: 'completed' }>,
+        config,
       );
     }
 

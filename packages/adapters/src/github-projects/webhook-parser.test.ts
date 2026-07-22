@@ -275,6 +275,134 @@ describe('parseGitHubWebhook', () => {
     });
   });
 
+  describe('external review readiness events', () => {
+    it('check_run.completed success for Haystack emits external_review_ready', () => {
+      const result = parseGitHubWebhook(
+        ctx('check_run', {
+          action: 'completed',
+          check_run: {
+            name: 'Haystack / Review',
+            status: 'completed',
+            conclusion: 'success',
+            head_sha: 'abc123',
+            app: { slug: 'haystack-code-reviewer-pr-hook' },
+            pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result).toEqual({
+        type: 'external_review_ready',
+        provider: 'haystack',
+        owner: 'owner',
+        repo: 'repo',
+        prNumber: 42,
+        targetRevision: 'abc123',
+        headRef: 'helm/impl/issue_42',
+        timestamp: expect.any(String),
+      });
+    });
+
+    it('check_run.completed success without pull_requests still emits readiness by SHA', () => {
+      const result = parseGitHubWebhook(
+        ctx('check_run', {
+          action: 'completed',
+          check_run: {
+            name: 'Haystack / Review',
+            status: 'completed',
+            conclusion: 'success',
+            head_sha: 'abc123',
+            app: {
+              slug: 'haystack-code-reviewer-pr-hook',
+              name: 'Haystack Code Reviewer - PR Hook',
+            },
+            pull_requests: [],
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result).toEqual({
+        type: 'external_review_ready',
+        provider: 'haystack',
+        owner: 'owner',
+        repo: 'repo',
+        targetRevision: 'abc123',
+        timestamp: expect.any(String),
+      });
+    });
+
+    it('rejects check names that only substring-match haystack', () => {
+      const result = parseGitHubWebhook(
+        ctx('check_run', {
+          action: 'completed',
+          check_run: {
+            name: 'my-haystack-helper',
+            status: 'completed',
+            conclusion: 'success',
+            head_sha: 'abc123',
+            app: { slug: 'haystack-code-reviewer-pr-hook' },
+            pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('rejects matching check name without a trusted GitHub App identity', () => {
+      const result = parseGitHubWebhook(
+        ctx('check_run', {
+          action: 'completed',
+          check_run: {
+            name: 'Haystack / Review',
+            status: 'completed',
+            conclusion: 'success',
+            head_sha: 'abc123',
+            app: { slug: 'spoofed-haystack' },
+            pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('check_run.completed action_required remains unknown', () => {
+      const result = parseGitHubWebhook(
+        ctx('check_run', {
+          action: 'completed',
+          check_run: {
+            name: 'Haystack / Review',
+            status: 'completed',
+            conclusion: 'action_required',
+            head_sha: 'abc123',
+            app: { slug: 'haystack-code-reviewer-pr-hook' },
+            pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
+          },
+        }),
+      );
+
+      expect(result.type).toBe('unknown');
+    });
+
+    it('status.success is not treated as external-review readiness (Option B)', () => {
+      const result = parseGitHubWebhook(
+        ctx('status', {
+          context: 'Haystack / Review',
+          state: 'success',
+          sha: 'abc123',
+          target_url: 'https://github.com/owner/repo/pull/42/checks',
+          branches: [{ name: 'helm/impl/issue_42' }],
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result.type).toBe('unknown');
+    });
+  });
+
   describe('unknown / malformed inputs', () => {
     it('unknown event type → unknown', () => {
       expect(parseGitHubWebhook(ctx('push', {}))).toMatchObject({ type: 'unknown' });

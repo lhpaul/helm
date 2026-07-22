@@ -12,7 +12,10 @@ import {
   handleImplementerResult,
   type ImplementerPublishOptions,
 } from './specialists/implementer.js';
-import { runCodeReviewLoop } from './review-loop/code-review-loop.js';
+import {
+  runCodeReviewLoop,
+  type DeferredExternalReviewIntent,
+} from './review-loop/code-review-loop.js';
 import type { StopRuleEscalationReason } from './review-loop/stop-rule.js';
 import type { StoredResolvedProductDecision } from './review-loop/adjudication.js';
 import { provisionCodeWorkspace, artifactsDirFor } from './specialists/code-workspace.js';
@@ -59,7 +62,7 @@ export type DispatchInput = {
 
 export type DispatchResult = {
   specialistId: string;
-  status: 'done' | 'error' | 'cancelled';
+  status: 'done' | 'error' | 'cancelled' | 'deferred';
   newStage?: WorkflowStage;
   costUsd: number;
   durationMs: number;
@@ -70,6 +73,7 @@ export type DispatchResult = {
   escalated?: boolean;
   escalationReason?: StopRuleEscalationReason;
   cyclesCompleted?: number;
+  deferredExternalReview?: DeferredExternalReviewIntent;
 };
 
 export type DispatchOptions = {
@@ -129,6 +133,8 @@ export type DispatchOptions = {
    * static snapshot when a review job may span multiple cycles.
    */
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
+  targetRevision?: string;
+  onExternalReviewDeferred?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
 };
 
 // ── Status resolution ─────────────────────────────────────────────────────────
@@ -598,6 +604,8 @@ export async function dispatchStageHandler(
       fetchFn: options.fetchFn,
       resolvedProductDecisions: options.resolvedProductDecisions,
       loadResolvedProductDecisions: options.loadResolvedProductDecisions,
+      targetRevision: options.targetRevision,
+      onExternalReviewDeferred: options.onExternalReviewDeferred,
     });
 
     return {
@@ -611,6 +619,7 @@ export async function dispatchStageHandler(
       escalated: loopResult.escalated,
       escalationReason: loopResult.escalationReason,
       cyclesCompleted: loopResult.cyclesCompleted,
+      deferredExternalReview: loopResult.deferredExternalReview,
     };
   }
 

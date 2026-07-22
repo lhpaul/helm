@@ -21,6 +21,10 @@ const {
   mockEnsureSubStages,
   mockScheduleItemDispatch,
   mockPersistReviewDispatchIntent,
+  mockPeekPendingExternalReviewByRevision,
+  mockClearPendingExternalReview,
+  mockResumePendingExternalReview,
+  mockResumePendingExternalReviewByRevision,
   mockResolveOpenPrMetadata,
   mockAuthorHasWriteAccess,
   mockGetPrimaryCodeRepo,
@@ -37,6 +41,10 @@ const {
   mockEnsureSubStages: vi.fn(),
   mockScheduleItemDispatch: vi.fn(),
   mockPersistReviewDispatchIntent: vi.fn(),
+  mockPeekPendingExternalReviewByRevision: vi.fn(),
+  mockClearPendingExternalReview: vi.fn(),
+  mockResumePendingExternalReview: vi.fn(),
+  mockResumePendingExternalReviewByRevision: vi.fn(),
   mockResolveOpenPrMetadata: vi.fn(),
   mockAuthorHasWriteAccess: vi.fn(),
   mockGetPrimaryCodeRepo: vi.fn(),
@@ -47,6 +55,10 @@ const {
 vi.mock('../services/dispatch-scheduler.js', () => ({
   scheduleItemDispatch: mockScheduleItemDispatch,
   persistReviewDispatchIntent: mockPersistReviewDispatchIntent,
+  peekPendingExternalReviewByRevision: mockPeekPendingExternalReviewByRevision,
+  clearPendingExternalReview: mockClearPendingExternalReview,
+  resumePendingExternalReview: mockResumePendingExternalReview,
+  resumePendingExternalReviewByRevision: mockResumePendingExternalReviewByRevision,
 }));
 
 vi.mock('../services/github-pr.js', () => ({
@@ -167,6 +179,64 @@ function prCommentPayload(
   });
 }
 
+function haystackCheckRunPayload(
+  opts: {
+    conclusion?: string;
+    prNumber?: number;
+    headSha?: string;
+    headRef?: string;
+    noPullRequests?: boolean;
+    owner?: string;
+    repo?: string;
+  } = {},
+): string {
+  return JSON.stringify({
+    action: 'completed',
+    check_run: {
+      name: 'Haystack / Review',
+      status: 'completed',
+      conclusion: opts.conclusion ?? 'success',
+      head_sha: opts.headSha ?? 'sha-42',
+      app: { slug: 'haystack-code-reviewer-pr-hook' },
+      pull_requests: opts.noPullRequests
+        ? []
+        : [
+            {
+              number: opts.prNumber ?? 42,
+              head: { ref: opts.headRef ?? 'helm/impl/issue_42' },
+            },
+          ],
+    },
+    repository: {
+      name: opts.repo ?? 'test-repo',
+      owner: { login: opts.owner ?? 'test-org' },
+    },
+  });
+}
+
+function haystackStatusPayload(
+  opts: {
+    targetRevision?: string;
+    prNumber?: number;
+    headRef?: string;
+    owner?: string;
+    repo?: string;
+  } = {},
+): string {
+  const prNumber = opts.prNumber ?? 42;
+  return JSON.stringify({
+    context: 'Haystack / Review',
+    state: 'success',
+    sha: opts.targetRevision ?? 'sha-42',
+    target_url: `https://github.com/${opts.owner ?? 'test-org'}/${opts.repo ?? 'test-repo'}/pull/${prNumber}/checks`,
+    branches: [{ name: opts.headRef ?? 'helm/impl/issue_42' }],
+    repository: {
+      name: opts.repo ?? 'test-repo',
+      owner: { login: opts.owner ?? 'test-org' },
+    },
+  });
+}
+
 const MARKDOWN_DECISION = [
   '<!-- helm:product-decision -->',
   '- **product_decision** · Pick direction',
@@ -231,6 +301,12 @@ describe('POST /api/webhooks/github', () => {
     mockSetSubStage.mockResolvedValue(undefined);
     mockScheduleItemDispatch.mockResolvedValue({ scheduled: true, jobId: 'job-sync-1' });
     mockPersistReviewDispatchIntent.mockResolvedValue(undefined);
+    mockResumePendingExternalReview.mockResolvedValue({ scheduled: true, jobId: 'job-resume-1' });
+    mockResumePendingExternalReviewByRevision.mockResolvedValue({
+      scheduled: true,
+      jobId: 'job-resume-by-revision-1',
+      externalId: 'issue_42',
+    });
     mockGetPrimaryCodeRepo.mockReturnValue({ owner: 'test-org', repo: 'test-repo' });
     mockAuthorHasWriteAccess.mockResolvedValue(true);
     mockResolveOpenPrMetadata.mockResolvedValue({
@@ -1038,6 +1114,294 @@ describe('POST /api/webhooks/github', () => {
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
+    });
+
+    it('resumes deferred external review from a matching Haystack check run', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+      } as never);
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(haystackCheckRunPayload(), 'check_run');
+
+      expect(res.status).toBe(200);
+      expect(mockResumePendingExternalReview).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        triggeredBy: 'webhook:external-review-ready',
+      });
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ignores generic status success events as readiness (Option B)', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+      } as never);
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(haystackStatusPayload(), 'status');
+
+      expect(res.status).toBe(200);
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+      expect(mockResumePendingExternalReviewByRevision).not.toHaveBeenCalled();
+      expect(mockClearPendingExternalReview).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('resumes by revision first when check run includes PR metadata', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+      } as never);
+      mockPeekPendingExternalReviewByRevision.mockResolvedValue({
+        kind: 'pending_external_review',
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        provider: 'haystack',
+        reason: 'analysis_pending',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        createdAt: '2026-07-22T10:00:00.000Z',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        triggeredBy: 'test',
+        updatedAt: '2026-07-22T10:00:00.000Z',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(haystackCheckRunPayload(), 'check_run');
+
+      expect(res.status).toBe(200);
+      expect(mockResumePendingExternalReviewByRevision).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        provider: 'haystack',
+        targetRevision: 'sha-42',
+        triggeredBy: 'webhook:external-review-ready',
+      });
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+    });
+
+    it('resumes deferred external review by revision when check run omits PR metadata', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+      } as never);
+      mockPeekPendingExternalReviewByRevision.mockResolvedValue({
+        kind: 'pending_external_review',
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        provider: 'haystack',
+        reason: 'analysis_pending',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        createdAt: '2026-07-22T10:00:00.000Z',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        triggeredBy: 'test',
+        updatedAt: '2026-07-22T10:00:00.000Z',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(haystackCheckRunPayload({ noPullRequests: true }), 'check_run');
+
+      expect(res.status).toBe(200);
+      expect(mockPeekPendingExternalReviewByRevision).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        provider: 'haystack',
+        targetRevision: 'sha-42',
+      });
+      expect(mockResumePendingExternalReviewByRevision).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        provider: 'haystack',
+        targetRevision: 'sha-42',
+        triggeredBy: 'webhook:external-review-ready',
+      });
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ignores external review readiness for a non-impl branch', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+      } as never);
+
+      const res = await post(
+        haystackCheckRunPayload({ headRef: 'helm/spec/issue_42' }),
+        'check_run',
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+    });
+
+    it('clears matching pending external review when readiness arrives after code-review', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+      } as never);
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'merged',
+        history: [],
+      });
+
+      const res = await post(haystackCheckRunPayload(), 'check_run');
+
+      expect(res.status).toBe(200);
+      expect(mockClearPendingExternalReview).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+      });
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+    });
+
+    it('ignores status success after code-review under Option B (no readiness path)', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+      } as never);
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'merged',
+        history: [],
+      });
+
+      const res = await post(haystackStatusPayload(), 'status');
+
+      expect(res.status).toBe(200);
+      expect(mockClearPendingExternalReview).not.toHaveBeenCalled();
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+    });
+
+    it('rejects readiness when headRef steers a different item than the revision match', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+      } as never);
+      mockPeekPendingExternalReviewByRevision.mockResolvedValue({
+        kind: 'pending_external_review',
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        provider: 'haystack',
+        reason: 'analysis_pending',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        createdAt: '2026-07-22T10:00:00.000Z',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        triggeredBy: 'test',
+        updatedAt: '2026-07-22T10:00:00.000Z',
+      });
+
+      const res = await post(
+        haystackCheckRunPayload({ headRef: 'helm/impl/issue_99' }),
+        'check_run',
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+      expect(mockResumePendingExternalReviewByRevision).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
     });
 
     // ── Non-actionable PR actions ─────────────────────────────────────────────

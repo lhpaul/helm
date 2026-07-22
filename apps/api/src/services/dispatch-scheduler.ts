@@ -1,6 +1,10 @@
 import { join } from 'node:path';
 import { GitHubNotFoundError, LinearNotFoundError } from '@helm/adapters';
-import { dispatchStageHandler, resolveSpecialistId } from '@helm/orchestrator';
+import {
+  dispatchStageHandler,
+  resolveSpecialistId,
+  type DeferredExternalReviewIntent,
+} from '@helm/orchestrator';
 import type { Product } from '@helm/shared';
 import { createRuntimeForProduct } from './runtime-factory.js';
 import { transitionItem } from './item-service.js';
@@ -9,7 +13,10 @@ import { readGitHubTokenFromEnv } from '../lib/github-token.js';
 import type { Job } from './job-store.js';
 import type { ItemState } from './types.js';
 import { EXTERNAL_ID_REGEX } from './types.js';
-import { getReviewDispatchOutbox } from './review-dispatch-outbox.js';
+import {
+  getReviewDispatchOutbox,
+  type PendingExternalReviewIntent,
+} from './review-dispatch-outbox.js';
 import { resolveOpenPrMetadata } from './github-pr.js';
 
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
@@ -52,10 +59,35 @@ async function persistPendingReviewDispatch(input: {
 }): Promise<void> {
   const outbox = await getReviewDispatchOutbox(input.dataRoot);
   await outbox.put({
+    kind: 'review_dispatch',
     productSlug: input.productSlug,
     externalId: input.externalId,
     prNumber: input.prNumber,
     targetRevision: input.targetRevision,
+    triggeredBy: input.triggeredBy,
+  });
+}
+
+async function persistPendingExternalReview(input: {
+  dataRoot: string;
+  intent: DeferredExternalReviewIntent;
+  triggeredBy: string;
+}): Promise<void> {
+  if (!input.intent.targetRevision) {
+    throw new Error('Cannot persist pending external review without target revision');
+  }
+  const outbox = await getReviewDispatchOutbox(input.dataRoot);
+  const now = Date.now();
+  await outbox.put({
+    kind: 'pending_external_review',
+    productSlug: input.intent.productSlug,
+    externalId: input.intent.externalId,
+    prNumber: input.intent.prNumber,
+    targetRevision: input.intent.targetRevision,
+    provider: input.intent.provider,
+    reason: input.intent.reason,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + input.intent.maxDeferSec * 1000).toISOString(),
     triggeredBy: input.triggeredBy,
   });
 }
@@ -74,6 +106,165 @@ export async function persistReviewDispatchIntent(input: {
   });
 }
 
+export async function resumePendingExternalReview(input: {
+  productSlug: string;
+  externalId: string;
+  provider: string;
+  prNumber: number;
+  targetRevision: string;
+  triggeredBy: string;
+}): Promise<ScheduleItemDispatchResult> {
+  const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
+  const intent = await outbox.findPendingExternalReview(input);
+  if (!intent) {
+    return { scheduled: false, reason: 'No matching pending external review' };
+  }
+  return finalizePendingExternalReviewResume(outbox, intent, input.triggeredBy);
+}
+
+/** Look up a pending intent by SHA without scheduling (for webhook preconditions). */
+export async function peekPendingExternalReviewByRevision(input: {
+  productSlug: string;
+  provider: string;
+  targetRevision: string;
+}): Promise<PendingExternalReviewIntent | null> {
+  const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
+  return outbox.findPendingExternalReviewByRevision(input);
+}
+
+/** Resume when readiness has a SHA but no PR metadata (empty check_run.pull_requests). */
+export async function resumePendingExternalReviewByRevision(input: {
+  productSlug: string;
+  provider: string;
+  targetRevision: string;
+  triggeredBy: string;
+}): Promise<ScheduleItemDispatchResult & { externalId?: string }> {
+  const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
+  const intent = await outbox.findPendingExternalReviewByRevision(input);
+  if (!intent) {
+    return { scheduled: false, reason: 'No matching pending external review' };
+  }
+  const outcome = await finalizePendingExternalReviewResume(outbox, intent, input.triggeredBy);
+  return { ...outcome, externalId: intent.externalId };
+}
+
+export async function clearPendingExternalReview(input: {
+  productSlug: string;
+  externalId?: string;
+  provider: string;
+  prNumber?: number;
+  targetRevision: string;
+}): Promise<boolean> {
+  const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
+  const intent =
+    input.externalId !== undefined && input.prNumber !== undefined
+      ? await outbox.findPendingExternalReview({
+          productSlug: input.productSlug,
+          externalId: input.externalId,
+          provider: input.provider,
+          prNumber: input.prNumber,
+          targetRevision: input.targetRevision,
+        })
+      : await outbox.findPendingExternalReviewByRevision({
+          productSlug: input.productSlug,
+          provider: input.provider,
+          targetRevision: input.targetRevision,
+        });
+  if (!intent) return false;
+  if (input.externalId !== undefined && intent.externalId !== input.externalId) return false;
+  if (input.prNumber !== undefined && intent.prNumber !== input.prNumber) return false;
+  return outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+    kind: 'pending_external_review',
+    updatedAt: intent.updatedAt,
+    targetRevision: intent.targetRevision,
+    provider: intent.provider,
+    reason: intent.reason,
+    prNumber: intent.prNumber,
+  });
+}
+
+/** Minimum gap between opportunistic expiry sweeps on the dispatch hot path. */
+const PENDING_EXTERNAL_SWEEP_MIN_INTERVAL_MS = 60_000;
+let lastPendingExternalSweepAt = 0;
+
+export async function sweepExpiredPendingExternalReviews(): Promise<number> {
+  const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
+  return outbox.removeExpiredPendingExternalReviews();
+}
+
+async function maybeSweepExpiredPendingExternalReviews(): Promise<void> {
+  const now = Date.now();
+  if (now - lastPendingExternalSweepAt < PENDING_EXTERNAL_SWEEP_MIN_INTERVAL_MS) return;
+  lastPendingExternalSweepAt = now;
+  await sweepExpiredPendingExternalReviews();
+}
+
+async function finalizePendingExternalReviewResume(
+  outbox: Awaited<ReturnType<typeof getReviewDispatchOutbox>>,
+  intent: PendingExternalReviewIntent,
+  triggeredBy: string,
+): Promise<ScheduleItemDispatchResult> {
+  if (Date.parse(intent.expiresAt) <= Date.now()) {
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+      kind: 'pending_external_review',
+      updatedAt: intent.updatedAt,
+      targetRevision: intent.targetRevision,
+      provider: intent.provider,
+      reason: intent.reason,
+      prNumber: intent.prNumber,
+    });
+    return { scheduled: false, reason: 'Pending external review expired' };
+  }
+
+  const outcome = await scheduleItemDispatch({
+    productSlug: intent.productSlug,
+    externalId: intent.externalId,
+    specialistId: 'reviewer-fanout',
+    targetRevision: intent.targetRevision,
+    prNumber: intent.prNumber,
+    triggeredBy,
+  });
+  if (outcome.scheduled || outcome.reason === 'Duplicate target revision') {
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+      kind: 'pending_external_review',
+      updatedAt: intent.updatedAt,
+      targetRevision: intent.targetRevision,
+      provider: intent.provider,
+      reason: intent.reason,
+      prNumber: intent.prNumber,
+    });
+    return outcome;
+  }
+
+  // Readiness arrived while another job is still running (often the deferred
+  // job exiting). Park a review_dispatch intent so the post-job replay path
+  // schedules fanout after the conflict clears — do not drop the signal.
+  if (outcome.reason === DISPATCH_UNAVAILABLE) {
+    await persistPendingReviewDispatch({
+      dataRoot: dataRootFromEnv(),
+      productSlug: intent.productSlug,
+      externalId: intent.externalId,
+      prNumber: intent.prNumber,
+      targetRevision: intent.targetRevision,
+      triggeredBy: `${triggeredBy}:awaiting-job-exit`,
+    });
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+      kind: 'pending_external_review',
+      updatedAt: intent.updatedAt,
+      targetRevision: intent.targetRevision,
+      provider: intent.provider,
+      reason: intent.reason,
+      prNumber: intent.prNumber,
+    });
+    return {
+      scheduled: false,
+      reason: 'Job already running — queued review dispatch for replay after exit',
+    };
+  }
+
+  return outcome;
+}
+
 async function replayPendingReviewDispatch(input: {
   product: Product;
   productSlug: string;
@@ -85,6 +276,7 @@ async function replayPendingReviewDispatch(input: {
   const outbox = await getReviewDispatchOutbox(input.dataRoot);
   const intent = await outbox.get(input.productSlug, input.externalId);
   if (!intent) return;
+  if ((intent.kind ?? 'review_dispatch') !== 'review_dispatch') return;
 
   let targetRevision = intent.targetRevision;
   if (intent.prNumber !== undefined) {
@@ -261,6 +453,14 @@ export async function runDispatchJob(
           }
           return [...(latest.resolvedProductDecisions ?? [])];
         },
+        targetRevision: job.targetRevision,
+        onExternalReviewDeferred: async (intent) => {
+          await persistPendingExternalReview({
+            dataRoot: ctx.dataRoot,
+            intent,
+            triggeredBy: 'external-review:analysis-pending',
+          });
+        },
       },
     );
 
@@ -284,6 +484,8 @@ export async function runDispatchJob(
           githubToken: ctx.githubToken,
         });
       }
+      // Always replay parked review_dispatch intents — including after a
+      // deferred external-review job — so readiness that raced the exit is not lost.
       await replayPendingReviewDispatch({
         product: ctx.product,
         productSlug: ctx.item.productSlug,
@@ -336,6 +538,8 @@ export async function scheduleItemDispatch(input: {
     console.info('[dispatch-scheduler] skip: unsafe path segment in dispatch request');
     return { scheduled: false, reason: DISPATCH_UNAVAILABLE };
   }
+
+  await maybeSweepExpiredPendingExternalReviews();
 
   const products = await getProductRegistry();
   const product = products.find((p) => p.product.slug === input.productSlug);

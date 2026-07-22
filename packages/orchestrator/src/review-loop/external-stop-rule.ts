@@ -4,6 +4,11 @@ import type { StopRuleEscalationReason } from './stop-rule.js';
 
 export type ExternalReviewStopDecision =
   | { action: 'continue'; result: ExternalReviewResult }
+  | {
+      action: 'defer';
+      reason: 'analysis_pending';
+      providerReason?: string;
+    }
   | { action: 'retry'; skipAttempt: number }
   | {
       action: 'escalate';
@@ -34,6 +39,14 @@ export function evaluateExternalReviewStopRule(input: {
       skipAttempt,
       externalReason: result.reason,
       evidence: evidence ?? undefined,
+    };
+  }
+
+  if (result.status === 'deferred') {
+    return {
+      action: 'defer',
+      reason: result.reason,
+      providerReason: result.providerReason,
     };
   }
 

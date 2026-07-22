@@ -88,6 +88,17 @@ export type NormalizedEvent =
       authorLogin: string | null;
       timestamp: string;
     }
+  | {
+      type: 'external_review_ready';
+      provider: string;
+      owner: string | null;
+      repo: string | null;
+      /** Present when the check_run payload includes pull_requests; may be absent. */
+      prNumber?: number;
+      targetRevision: string;
+      headRef?: string;
+      timestamp: string;
+    }
   /**
    * A GitHub release was published (release event, action: 'published').
    * Repo-level and tracker-agnostic — like pull_request_merged, the webhook

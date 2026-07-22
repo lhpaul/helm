@@ -91,6 +91,7 @@ export async function pollHaystackTriage(
 
 export function mapPollFailureToExternalResult(
   failure: Exclude<PollHaystackTriageResult, { kind: 'completed' }>,
+  config?: Pick<HaystackReviewConfig, 'deferWhenPending'>,
 ): ExternalReviewResult {
   switch (failure.kind) {
     case 'unavailable':
@@ -98,6 +99,13 @@ export function mapPollFailureToExternalResult(
     case 'auth_error':
       return { status: 'skipped', reason: 'unavailable' };
     case 'pending_timeout':
+      if (config?.deferWhenPending ?? true) {
+        return {
+          status: 'deferred',
+          reason: 'analysis_pending',
+          providerReason: 'pending_timeout',
+        };
+      }
       return { status: 'escalate', reason: 'haystack pending_timeout' };
     case 'call_timeout':
       return { status: 'escalate', reason: 'haystack timeout' };

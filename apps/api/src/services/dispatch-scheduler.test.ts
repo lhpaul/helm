@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { GitHubNotFoundError, LinearNotFoundError } from '@helm/adapters';
 
@@ -32,9 +35,17 @@ vi.mock('@helm/orchestrator', () => ({
   resolveSpecialistId: vi.fn(),
 }));
 
-import { runDispatchJob, scheduleItemDispatch } from './dispatch-scheduler.js';
+import {
+  clearPendingExternalReview,
+  resumePendingExternalReview,
+  resumePendingExternalReviewByRevision,
+  runDispatchJob,
+  scheduleItemDispatch,
+  sweepExpiredPendingExternalReviews,
+} from './dispatch-scheduler.js';
 import { dispatchStageHandler, resolveSpecialistId } from '@helm/orchestrator';
 import { getItemStore, getProductRegistry } from './index.js';
+import { getReviewDispatchOutbox } from './review-dispatch-outbox.js';
 
 const baseProduct = {
   product: { slug: 'test-product', name: 'Test Product' },
@@ -484,6 +495,271 @@ describe('scheduleItemDispatch', () => {
     ).resolves.toEqual({
       scheduled: false,
       reason: 'Unable to schedule dispatch',
+    });
+  });
+});
+
+describe('pending external review readiness cleanup', () => {
+  let dataRoot: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    dataRoot = await mkdtemp(join(tmpdir(), 'helm-dispatch-scheduler-'));
+    process.env.HELM_DATA_DIR = dataRoot;
+    process.env.GITHUB_TOKEN = 'test-github-token';
+    vi.mocked(getProductRegistry).mockResolvedValue([baseProduct]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'code-review',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockReturnValue('reviewer-fanout');
+  });
+
+  afterEach(async () => {
+    delete process.env.HELM_DATA_DIR;
+    delete process.env.GITHUB_TOKEN;
+    await rm(dataRoot, { recursive: true, force: true });
+  });
+
+  async function putPending(expiresAt = '2099-01-01T00:00:00.000Z') {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    const intent = await outbox.put({
+      kind: 'pending_external_review',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      provider: 'haystack',
+      reason: 'analysis_pending',
+      prNumber: 42,
+      targetRevision: 'sha-1',
+      expiresAt,
+      triggeredBy: 'test',
+    });
+    return { outbox, intent };
+  }
+
+  it('clears a matching pending external review intent without scheduling', async () => {
+    const { outbox } = await putPending();
+
+    await expect(
+      clearPendingExternalReview({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-1',
+      }),
+    ).resolves.toBe(true);
+
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+  });
+
+  it('does not clear a pending external review intent for the wrong revision', async () => {
+    const { outbox, intent } = await putPending();
+
+    await expect(
+      clearPendingExternalReview({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-2',
+      }),
+    ).resolves.toBe(false);
+
+    await expect(outbox.get('test-product', 'LEA-1', 'pending_external_review')).resolves.toEqual(
+      intent,
+    );
+  });
+
+  it('removes expired pending external review intents on readiness', async () => {
+    const { outbox } = await putPending('2000-01-01T00:00:00.000Z');
+
+    await expect(
+      resumePendingExternalReview({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready',
+      }),
+    ).resolves.toEqual({ scheduled: false, reason: 'Pending external review expired' });
+
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+  });
+
+  it('sweeps expired pending external review intents without a readiness webhook', async () => {
+    const { outbox } = await putPending('2000-01-01T00:00:00.000Z');
+
+    await expect(sweepExpiredPendingExternalReviews()).resolves.toBe(1);
+
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+  });
+
+  it('resumes pending external review by revision when PR metadata is unavailable', async () => {
+    const { outbox } = await putPending();
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      job: {
+        jobId: '00000000-0000-4000-8000-000000000001',
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        specialistId: 'reviewer-fanout',
+        status: 'running',
+        targetRevision: 'sha-1',
+        startedAt: '2026-07-22T10:00:00.000Z',
+      },
+    });
+
+    await expect(
+      resumePendingExternalReviewByRevision({
+        productSlug: 'test-product',
+        provider: 'haystack',
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready',
+      }),
+    ).resolves.toEqual({
+      scheduled: true,
+      jobId: '00000000-0000-4000-8000-000000000001',
+      externalId: 'LEA-1',
+    });
+
+    expect(mockCreateJobIfNoRunning).toHaveBeenCalledWith({
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'reviewer-fanout',
+      targetRevision: 'sha-1',
+    });
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+  });
+
+  it('removes pending external review after duplicate readiness delivery', async () => {
+    const { outbox } = await putPending();
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      duplicate: true,
+      existingJobId: 'job-existing',
+    });
+
+    await expect(
+      resumePendingExternalReview({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready',
+      }),
+    ).resolves.toEqual({ scheduled: false, reason: 'Duplicate target revision' });
+
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+  });
+
+  it('handles concurrent duplicate readiness notifications with one scheduled job', async () => {
+    const { outbox } = await putPending();
+    let firstRelease: (() => void) | undefined;
+    let secondRelease: (() => void) | undefined;
+    const entered: Array<() => void> = [];
+    mockCreateJobIfNoRunning.mockImplementation(async () => {
+      const callNumber = entered.length + 1;
+      await new Promise<void>((resolve) => {
+        entered.push(resolve);
+        if (callNumber === 1) firstRelease = resolve;
+        if (callNumber === 2) secondRelease = resolve;
+      });
+      if (callNumber === 1) {
+        return {
+          job: {
+            jobId: '00000000-0000-4000-8000-000000000001',
+            productSlug: 'test-product',
+            externalId: 'LEA-1',
+            specialistId: 'reviewer-fanout',
+            status: 'running',
+            targetRevision: 'sha-1',
+            startedAt: '2026-07-22T10:00:00.000Z',
+          },
+        };
+      }
+      return { duplicate: true, existingJobId: '00000000-0000-4000-8000-000000000001' };
+    });
+
+    const outcomesPromise = Promise.all([
+      resumePendingExternalReviewByRevision({
+        productSlug: 'test-product',
+        provider: 'haystack',
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready:a',
+      }),
+      resumePendingExternalReviewByRevision({
+        productSlug: 'test-product',
+        provider: 'haystack',
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready:b',
+      }),
+    ]);
+
+    await vi.waitFor(() => expect(entered).toHaveLength(2));
+    firstRelease?.();
+    secondRelease?.();
+
+    const outcomes = await outcomesPromise;
+
+    expect(outcomes.filter((outcome) => outcome.scheduled)).toHaveLength(1);
+    expect(
+      outcomes.filter(
+        (outcome) => !outcome.scheduled && outcome.reason === 'Duplicate target revision',
+      ),
+    ).toHaveLength(1);
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+  });
+
+  it('parks a review_dispatch intent when readiness races a running job', async () => {
+    const { outbox } = await putPending();
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      conflict: true,
+      runningJobId: 'job-running',
+      runningTargetRevision: 'sha-1',
+    });
+
+    await expect(
+      resumePendingExternalReview({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready',
+      }),
+    ).resolves.toEqual({
+      scheduled: false,
+      reason: 'Job already running — queued review dispatch for replay after exit',
+    });
+
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+    const parked = await outbox.get('test-product', 'LEA-1', 'review_dispatch');
+    expect(parked).toMatchObject({
+      kind: 'review_dispatch',
+      targetRevision: 'sha-1',
+      prNumber: 42,
+      triggeredBy: 'test:ready:awaiting-job-exit',
     });
   });
 });

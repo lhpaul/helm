@@ -48,6 +48,7 @@ export type HaystackReviewConfig = {
   majorIsBlocking: boolean;
   pollIntervalSec: number;
   timeoutSec: number;
+  deferWhenPending: boolean;
 };
 
 export type RunHaystack = (

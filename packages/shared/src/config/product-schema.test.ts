@@ -364,7 +364,13 @@ describe('ProductSchema — review loop (ADR-036)', () => {
   it('parses external haystack provider, loop overrides, and adjudication config', () => {
     const result = ProductSchema.safeParse(
       withReview({
-        external: { provider: 'haystack', haystack: { major_is_blocking: true } },
+        external: {
+          provider: 'haystack',
+          defer_when_pending: false,
+          resume_on_check_run: false,
+          max_defer_sec: 900,
+          haystack: { major_is_blocking: true },
+        },
         loop: {
           max_cycles: 3,
           adjudication: { enabled: false },
@@ -375,6 +381,9 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.review?.external?.provider).toBe('haystack');
+      expect(result.data.review?.external?.defer_when_pending).toBe(false);
+      expect(result.data.review?.external?.resume_on_check_run).toBe(false);
+      expect(result.data.review?.external?.max_defer_sec).toBe(900);
       expect(result.data.review?.loop?.max_cycles).toBe(3);
       expect(result.data.review?.loop?.adjudication?.enabled).toBe(false);
     }
@@ -442,6 +451,9 @@ describe('ProductSchema — review loop (ADR-036)', () => {
         poll_interval_sec: 15,
         timeout_sec: 120,
       });
+      expect(result.data.review?.external?.defer_when_pending).toBeUndefined();
+      expect(result.data.review?.external?.resume_on_check_run).toBeUndefined();
+      expect(result.data.review?.external?.max_defer_sec).toBeUndefined();
       expect(result.data.review?.loop?.max_cycles).toBe(5);
       expect(result.data.review?.loop?.stop_rule?.no_progress_cycles).toBe(2);
     }

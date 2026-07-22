@@ -61,6 +61,57 @@ const ReleaseWebhookSchema = z.object({
   release: z.object({ tag_name: z.string() }),
 });
 
+const CheckRunWebhookSchema = z.object({
+  action: z.string(),
+  check_run: z.object({
+    name: z.string(),
+    status: z.string().optional(),
+    conclusion: z.string().nullable().optional(),
+    head_sha: z.string(),
+    app: z.object({ slug: z.string().optional(), name: z.string().optional() }).optional(),
+    pull_requests: z
+      .array(
+        z.object({
+          number: z.number().int().positive(),
+          head: z.object({ ref: z.string().optional(), sha: z.string().optional() }).optional(),
+        }),
+      )
+      .optional(),
+  }),
+  repository: z
+    .object({
+      name: z.string(),
+      owner: z.object({ login: z.string() }),
+    })
+    .optional(),
+});
+
+/** Exact check-run name allowlist — never substring-match provider identity. */
+const HAYSTACK_CHECK_NAMES = new Set(['haystack / review']);
+
+/**
+ * Trusted Haystack GitHub App identities (slug or display name).
+ * Option B trust boundary: readiness requires provider-owned app identity,
+ * not a human-readable check name alone.
+ */
+const HAYSTACK_APP_IDENTITIES = new Set([
+  'haystack-code-reviewer-pr-hook',
+  'haystack code reviewer - pr hook',
+]);
+
+function providerFromTrustedCheckRun(
+  name: string,
+  appSlug?: string,
+  appName?: string,
+): string | null {
+  const normalizedName = name.trim().toLowerCase();
+  if (!HAYSTACK_CHECK_NAMES.has(normalizedName)) return null;
+  const identities = [appSlug, appName]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map((value) => value.trim().toLowerCase());
+  return identities.some((identity) => HAYSTACK_APP_IDENTITIES.has(identity)) ? 'haystack' : null;
+}
+
 // ── Pure parser (handles issues.* and issue_comment.*) ───────────────────────
 
 /**
@@ -161,6 +212,43 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
       if (action === 'published') {
         return { type: 'release_published', tag: release.tag_name, timestamp };
       }
+      return { type: 'unknown', raw: rawEvent };
+    }
+
+    if (eventType === 'check_run') {
+      const parsed = CheckRunWebhookSchema.safeParse(payload);
+      if (!parsed.success) return { type: 'unknown', raw: rawEvent };
+      const { action, check_run: checkRun } = parsed.data;
+      if (action !== 'completed' || checkRun.status !== 'completed') {
+        return { type: 'unknown', raw: rawEvent };
+      }
+      if (!['success', 'neutral'].includes(checkRun.conclusion ?? '')) {
+        return { type: 'unknown', raw: rawEvent };
+      }
+      const provider = providerFromTrustedCheckRun(
+        checkRun.name,
+        checkRun.app?.slug,
+        checkRun.app?.name,
+      );
+      if (!provider) return { type: 'unknown', raw: rawEvent };
+      const pr = checkRun.pull_requests?.[0];
+      // GitHub often omits pull_requests on check_run; still emit readiness so
+      // the webhook route can match a pending intent by head SHA alone.
+      return {
+        type: 'external_review_ready',
+        provider,
+        owner: parsed.data.repository?.owner.login ?? null,
+        repo: parsed.data.repository?.name ?? null,
+        ...(pr?.number !== undefined ? { prNumber: pr.number } : {}),
+        targetRevision: checkRun.head_sha,
+        ...(pr?.head?.ref ? { headRef: pr.head.ref } : {}),
+        timestamp,
+      };
+    }
+
+    if (eventType === 'status') {
+      // Option B: generic commit statuses lack provider-owned app identity —
+      // never treat them as external-review readiness signals.
       return { type: 'unknown', raw: rawEvent };
     }
 

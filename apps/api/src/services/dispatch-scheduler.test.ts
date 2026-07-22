@@ -671,11 +671,17 @@ describe('pending external review readiness cleanup', () => {
 
   it('handles concurrent duplicate readiness notifications with one scheduled job', async () => {
     const { outbox } = await putPending();
-    let calls = 0;
+    let firstRelease: (() => void) | undefined;
+    let secondRelease: (() => void) | undefined;
+    const entered: Array<() => void> = [];
     mockCreateJobIfNoRunning.mockImplementation(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      calls += 1;
-      if (calls === 1) {
+      const callNumber = entered.length + 1;
+      await new Promise<void>((resolve) => {
+        entered.push(resolve);
+        if (callNumber === 1) firstRelease = resolve;
+        if (callNumber === 2) secondRelease = resolve;
+      });
+      if (callNumber === 1) {
         return {
           job: {
             jobId: '00000000-0000-4000-8000-000000000001',
@@ -691,7 +697,7 @@ describe('pending external review readiness cleanup', () => {
       return { duplicate: true, existingJobId: '00000000-0000-4000-8000-000000000001' };
     });
 
-    const outcomes = await Promise.all([
+    const outcomesPromise = Promise.all([
       resumePendingExternalReviewByRevision({
         productSlug: 'test-product',
         provider: 'haystack',
@@ -705,6 +711,12 @@ describe('pending external review readiness cleanup', () => {
         triggeredBy: 'test:ready:b',
       }),
     ]);
+
+    await vi.waitFor(() => expect(entered).toHaveLength(2));
+    firstRelease?.();
+    secondRelease?.();
+
+    const outcomes = await outcomesPromise;
 
     expect(outcomes.filter((outcome) => outcome.scheduled)).toHaveLength(1);
     expect(

@@ -427,6 +427,26 @@ export async function runCodeReviewLoop(
           error: 'External review deferred but review identity could not be resolved',
         };
       }
+      if (!params.targetRevision) {
+        return {
+          status: 'error',
+          prUrl: fanout.prUrl,
+          costUsd: totalCost,
+          durationMs: maxDuration,
+          cyclesCompleted: cycle,
+          error: 'External review deferred but target revision was not recorded',
+        };
+      }
+      if (!params.onExternalReviewDeferred) {
+        return {
+          status: 'error',
+          prUrl: fanout.prUrl,
+          costUsd: totalCost,
+          durationMs: maxDuration,
+          cyclesCompleted: cycle,
+          error: 'External review deferred but persistence hook is not configured',
+        };
+      }
       const deferredExternalReview: DeferredExternalReviewIntent = {
         productSlug: params.product.product.slug,
         externalId: params.externalId,
@@ -437,7 +457,20 @@ export async function runCodeReviewLoop(
         targetRevision: params.targetRevision,
         maxDeferSec: externalMaxDeferSec(params.product),
       };
-      await params.onExternalReviewDeferred?.(deferredExternalReview);
+      try {
+        await params.onExternalReviewDeferred(deferredExternalReview);
+      } catch (err) {
+        return {
+          status: 'error',
+          prUrl: fanout.prUrl,
+          costUsd: totalCost,
+          durationMs: maxDuration,
+          cyclesCompleted: cycle,
+          error: `External review deferred but intent persistence failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        };
+      }
       return {
         status: 'deferred',
         prUrl: fanout.prUrl,

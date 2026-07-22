@@ -74,8 +74,7 @@ async function persistPendingExternalReview(input: {
   triggeredBy: string;
 }): Promise<void> {
   if (!input.intent.targetRevision) {
-    console.info('[dispatch-scheduler] external review deferral skipped — missing target revision');
-    return;
+    throw new Error('Cannot persist pending external review without target revision');
   }
   const outbox = await getReviewDispatchOutbox(input.dataRoot);
   const now = Date.now();
@@ -178,6 +177,9 @@ export async function clearPendingExternalReview(input: {
     kind: 'pending_external_review',
     updatedAt: intent.updatedAt,
     targetRevision: intent.targetRevision,
+    provider: intent.provider,
+    reason: intent.reason,
+    prNumber: intent.prNumber,
   });
 }
 
@@ -196,6 +198,9 @@ async function finalizePendingExternalReviewResume(
       kind: 'pending_external_review',
       updatedAt: intent.updatedAt,
       targetRevision: intent.targetRevision,
+      provider: intent.provider,
+      reason: intent.reason,
+      prNumber: intent.prNumber,
     });
     return { scheduled: false, reason: 'Pending external review expired' };
   }
@@ -213,6 +218,9 @@ async function finalizePendingExternalReviewResume(
       kind: 'pending_external_review',
       updatedAt: intent.updatedAt,
       targetRevision: intent.targetRevision,
+      provider: intent.provider,
+      reason: intent.reason,
+      prNumber: intent.prNumber,
     });
   }
   return outcome;

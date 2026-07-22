@@ -104,6 +104,9 @@ export class ReviewDispatchOutbox {
     externalId: string,
     expected: Pick<ReviewDispatchIntent, 'updatedAt' | 'targetRevision'> & {
       kind?: ReviewDispatchIntentKind;
+      provider?: string;
+      reason?: 'analysis_pending';
+      prNumber?: number;
     },
   ): Promise<boolean> {
     const kind = normalizeKind(expected.kind);
@@ -111,6 +114,9 @@ export class ReviewDispatchOutbox {
     if (!current) return false;
     if (current.updatedAt !== expected.updatedAt) return false;
     if ((current.targetRevision ?? null) !== (expected.targetRevision ?? null)) return false;
+    if (expected.provider !== undefined && current.provider !== expected.provider) return false;
+    if (expected.reason !== undefined && current.reason !== expected.reason) return false;
+    if (expected.prNumber !== undefined && current.prNumber !== expected.prNumber) return false;
     await unlink(this.intentPath(productSlug, externalId, kind)).catch(
       (err: NodeJS.ErrnoException) => {
         if (err.code !== 'ENOENT') throw err;
@@ -142,6 +148,9 @@ export class ReviewDispatchOutbox {
         kind: 'pending_external_review',
         updatedAt: intent.updatedAt,
         targetRevision: intent.targetRevision,
+        provider: intent.provider,
+        reason: intent.reason,
+        prNumber: intent.prNumber,
       });
       if (didRemove) removed += 1;
     }

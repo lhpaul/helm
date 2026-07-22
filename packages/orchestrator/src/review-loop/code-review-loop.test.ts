@@ -474,7 +474,7 @@ describe('runCodeReviewLoop', () => {
   });
 
   it('defers analysis-pending external review without posting escalation', async () => {
-    const product: Product = {
+    const product = {
       ...baseProduct,
       review: {
         external: {
@@ -483,7 +483,7 @@ describe('runCodeReviewLoop', () => {
           haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 5 },
         },
       },
-    };
+    } as Product;
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'deferred',
       reason: 'analysis_pending',
@@ -520,6 +520,81 @@ describe('runCodeReviewLoop', () => {
     });
     expect(onExternalReviewDeferred).toHaveBeenCalledWith(result.deferredExternalReview);
     expect(postPRComment).not.toHaveBeenCalled();
+  });
+
+  it('fails deferred external review when the target revision is missing', async () => {
+    const product = {
+      ...baseProduct,
+      review: {
+        external: {
+          provider: 'haystack',
+          max_defer_sec: 600,
+          haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 5 },
+        },
+      },
+    } as Product;
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'deferred',
+      reason: 'analysis_pending',
+    });
+    const onExternalReviewDeferred = vi.fn();
+
+    const result = await runCodeReviewLoop({
+      externalId: 'issue_1',
+      product,
+      prUrl: PR_URL,
+      codeRepo: product.code_repos[0]!,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+      onExternalReviewDeferred,
+    });
+
+    expect(result).toMatchObject({
+      status: 'error',
+      cyclesCompleted: 1,
+      error: 'External review deferred but target revision was not recorded',
+    });
+    expect(onExternalReviewDeferred).not.toHaveBeenCalled();
+  });
+
+  it('fails deferred external review when intent persistence fails', async () => {
+    const product = {
+      ...baseProduct,
+      review: {
+        external: {
+          provider: 'haystack',
+          max_defer_sec: 600,
+          haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 5 },
+        },
+      },
+    } as Product;
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'deferred',
+      reason: 'analysis_pending',
+    });
+    const onExternalReviewDeferred = vi.fn().mockRejectedValue(new Error('outbox unavailable'));
+
+    const result = await runCodeReviewLoop({
+      externalId: 'issue_1',
+      product,
+      prUrl: PR_URL,
+      codeRepo: product.code_repos[0]!,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+      targetRevision: 'sha-42',
+      onExternalReviewDeferred,
+    });
+
+    expect(result).toMatchObject({
+      status: 'error',
+      cyclesCompleted: 1,
+      error: 'External review deferred but intent persistence failed: outbox unavailable',
+    });
+    expect(onExternalReviewDeferred).toHaveBeenCalledTimes(1);
   });
 
   it('escalates when external review skips with Haystack evidence', async () => {

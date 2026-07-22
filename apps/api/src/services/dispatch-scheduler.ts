@@ -181,6 +181,11 @@ export async function clearPendingExternalReview(input: {
   });
 }
 
+export async function sweepExpiredPendingExternalReviews(): Promise<number> {
+  const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
+  return outbox.removeExpiredPendingExternalReviews();
+}
+
 async function finalizePendingExternalReviewResume(
   outbox: Awaited<ReturnType<typeof getReviewDispatchOutbox>>,
   intent: PendingExternalReviewIntent,
@@ -486,6 +491,8 @@ export async function scheduleItemDispatch(input: {
     console.info('[dispatch-scheduler] skip: unsafe path segment in dispatch request');
     return { scheduled: false, reason: DISPATCH_UNAVAILABLE };
   }
+
+  await sweepExpiredPendingExternalReviews();
 
   const products = await getProductRegistry();
   const product = products.find((p) => p.product.slug === input.productSlug);

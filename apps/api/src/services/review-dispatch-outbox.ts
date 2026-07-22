@@ -131,6 +131,23 @@ export class ReviewDispatchOutbox {
     );
   }
 
+  async removeExpiredPendingExternalReviews(now = new Date()): Promise<number> {
+    const nowMs = now.getTime();
+    const intents = await this.list();
+    let removed = 0;
+    for (const intent of intents) {
+      if (intent.kind !== 'pending_external_review') continue;
+      if (!intent.expiresAt || Date.parse(intent.expiresAt) > nowMs) continue;
+      const didRemove = await this.removeIfMatches(intent.productSlug, intent.externalId, {
+        kind: 'pending_external_review',
+        updatedAt: intent.updatedAt,
+        targetRevision: intent.targetRevision,
+      });
+      if (didRemove) removed += 1;
+    }
+    return removed;
+  }
+
   async findPendingExternalReview(input: {
     productSlug: string;
     externalId: string;

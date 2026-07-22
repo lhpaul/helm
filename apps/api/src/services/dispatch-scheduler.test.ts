@@ -38,8 +38,10 @@ vi.mock('@helm/orchestrator', () => ({
 import {
   clearPendingExternalReview,
   resumePendingExternalReview,
+  resumePendingExternalReviewByRevision,
   runDispatchJob,
   scheduleItemDispatch,
+  sweepExpiredPendingExternalReviews,
 } from './dispatch-scheduler.js';
 import { dispatchStageHandler, resolveSpecialistId } from '@helm/orchestrator';
 import { getItemStore, getProductRegistry } from './index.js';
@@ -595,6 +597,55 @@ describe('pending external review readiness cleanup', () => {
     expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
   });
 
+  it('sweeps expired pending external review intents without a readiness webhook', async () => {
+    const { outbox } = await putPending('2000-01-01T00:00:00.000Z');
+
+    await expect(sweepExpiredPendingExternalReviews()).resolves.toBe(1);
+
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+  });
+
+  it('resumes pending external review by revision when PR metadata is unavailable', async () => {
+    const { outbox } = await putPending();
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      job: {
+        jobId: '00000000-0000-4000-8000-000000000001',
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        specialistId: 'reviewer-fanout',
+        status: 'running',
+        targetRevision: 'sha-1',
+        startedAt: '2026-07-22T10:00:00.000Z',
+      },
+    });
+
+    await expect(
+      resumePendingExternalReviewByRevision({
+        productSlug: 'test-product',
+        provider: 'haystack',
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready',
+      }),
+    ).resolves.toEqual({
+      scheduled: true,
+      jobId: '00000000-0000-4000-8000-000000000001',
+      externalId: 'LEA-1',
+    });
+
+    expect(mockCreateJobIfNoRunning).toHaveBeenCalledWith({
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'reviewer-fanout',
+      targetRevision: 'sha-1',
+    });
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+  });
+
   it('removes pending external review after duplicate readiness delivery', async () => {
     const { outbox } = await putPending();
     mockCreateJobIfNoRunning.mockResolvedValue({
@@ -613,6 +664,54 @@ describe('pending external review readiness cleanup', () => {
       }),
     ).resolves.toEqual({ scheduled: false, reason: 'Duplicate target revision' });
 
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+  });
+
+  it('handles concurrent duplicate readiness notifications with one scheduled job', async () => {
+    const { outbox } = await putPending();
+    let calls = 0;
+    mockCreateJobIfNoRunning.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      calls += 1;
+      if (calls === 1) {
+        return {
+          job: {
+            jobId: '00000000-0000-4000-8000-000000000001',
+            productSlug: 'test-product',
+            externalId: 'LEA-1',
+            specialistId: 'reviewer-fanout',
+            status: 'running',
+            targetRevision: 'sha-1',
+            startedAt: '2026-07-22T10:00:00.000Z',
+          },
+        };
+      }
+      return { duplicate: true, existingJobId: '00000000-0000-4000-8000-000000000001' };
+    });
+
+    const outcomes = await Promise.all([
+      resumePendingExternalReviewByRevision({
+        productSlug: 'test-product',
+        provider: 'haystack',
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready:a',
+      }),
+      resumePendingExternalReviewByRevision({
+        productSlug: 'test-product',
+        provider: 'haystack',
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready:b',
+      }),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.scheduled)).toHaveLength(1);
+    expect(
+      outcomes.filter(
+        (outcome) => !outcome.scheduled && outcome.reason === 'Duplicate target revision',
+      ),
+    ).toHaveLength(1);
     await expect(
       outbox.get('test-product', 'LEA-1', 'pending_external_review'),
     ).resolves.toBeNull();

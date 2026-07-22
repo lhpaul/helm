@@ -25,6 +25,7 @@ import {
   peekPendingExternalReviewByRevision,
   clearPendingExternalReview,
   resumePendingExternalReview,
+  resumePendingExternalReviewByRevision,
 } from '../services/dispatch-scheduler.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
 import {
@@ -366,6 +367,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
 
       let externalId: string | null = null;
       let prNumber: number | null = event.prNumber ?? null;
+      let matchedByRevision = false;
 
       if (event.headRef) {
         const parsed = parseArtifactBranch(event.headRef);
@@ -389,6 +391,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         }
         externalId = matched.externalId;
         prNumber = matched.prNumber;
+        matchedByRevision = true;
       }
 
       if (prNumber === null || externalId === null) {
@@ -410,14 +413,21 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         );
         return c.json({ processed: true });
       }
-      const outcome = await resumePendingExternalReview({
-        productSlug: config.product.slug,
-        externalId,
-        provider: event.provider,
-        prNumber,
-        targetRevision: event.targetRevision,
-        triggeredBy: 'webhook:external-review-ready',
-      });
+      const outcome = matchedByRevision
+        ? await resumePendingExternalReviewByRevision({
+            productSlug: config.product.slug,
+            provider: event.provider,
+            targetRevision: event.targetRevision,
+            triggeredBy: 'webhook:external-review-ready',
+          })
+        : await resumePendingExternalReview({
+            productSlug: config.product.slug,
+            externalId,
+            provider: event.provider,
+            prNumber,
+            targetRevision: event.targetRevision,
+            triggeredBy: 'webhook:external-review-ready',
+          });
       if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
         console.info(
           `[webhooks/github] external review readiness did not resume ${externalId}: ${outcome.reason}`,

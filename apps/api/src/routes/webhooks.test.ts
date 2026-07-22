@@ -25,6 +25,7 @@ const {
   mockAuthorHasWriteAccess,
   mockGetPrimaryCodeRepo,
   mockListPrIssueComments,
+  mockUpsertResolvedProductDecision,
 } = vi.hoisted(() => ({
   mockParseWebhook: vi.fn(),
   mockCreate: vi.fn(),
@@ -40,6 +41,7 @@ const {
   mockAuthorHasWriteAccess: vi.fn(),
   mockGetPrimaryCodeRepo: vi.fn(),
   mockListPrIssueComments: vi.fn(),
+  mockUpsertResolvedProductDecision: vi.fn(),
 }));
 
 vi.mock('../services/dispatch-scheduler.js', () => ({
@@ -74,6 +76,7 @@ vi.mock('../services/index.js', async (importOriginal) => {
       transitionIfCurrentStage: mockTransitionIfCurrentStage,
       list: mockList,
       get: mockGet,
+      upsertResolvedProductDecision: mockUpsertResolvedProductDecision,
     }),
     getProductConfig: vi.fn().mockResolvedValue({
       product: { slug: 'test-app', name: 'Test' },
@@ -239,6 +242,7 @@ describe('POST /api/webhooks/github', () => {
       htmlUrl: 'https://github.com/test-org/test-repo/pull/42',
     });
     mockListPrIssueComments.mockResolvedValue([{ id: 1, body: HUMAN_REQUIRED_ADJUDICATION }]);
+    mockUpsertResolvedProductDecision.mockResolvedValue({ inserted: true, state: {} });
     mockGet.mockResolvedValue(null);
     vi.mocked(getIssueTrackerAdapter).mockResolvedValue({
       setSubStage: mockSetSubStage,
@@ -434,6 +438,24 @@ describe('POST /api/webhooks/github', () => {
         prNumber: 42,
         triggeredBy: 'webhook:pr-decision-comment',
       });
+      expect(mockUpsertResolvedProductDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          decision: expect.objectContaining({
+            conflictKind: 'product_decision',
+            conflictTitle: 'Pick direction',
+            chosenOption: 'Option A',
+            source: expect.objectContaining({
+              provider: 'github',
+              owner: 'test-org',
+              repo: 'test-repo',
+              prNumber: 42,
+              authorLogin: 'maintainer',
+            }),
+          }),
+          triggeredBy: 'webhook:pr-decision-comment',
+        }),
+      );
     });
 
     it('preserves fallback parsing for legacy structured decisions', async () => {
@@ -474,6 +496,27 @@ describe('POST /api/webhooks/github', () => {
       );
     });
 
+    it('keeps duplicate decisions idempotent before redispatching', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      mockUpsertResolvedProductDecision.mockResolvedValue({ inserted: false, state: {} });
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockUpsertResolvedProductDecision).toHaveBeenCalledTimes(1);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          specialistId: 'reviewer-fanout',
+        }),
+      );
+    });
+
     it('ignores structured decisions that do not match the latest adjudication record', async () => {
       mockGet.mockResolvedValue({
         externalId: 'issue_42',
@@ -502,6 +545,7 @@ describe('POST /api/webhooks/github', () => {
 
       expect(res.status).toBe(200);
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockUpsertResolvedProductDecision).not.toHaveBeenCalled();
     });
 
     it('returns 503 when structured decision processing unexpectedly fails', async () => {

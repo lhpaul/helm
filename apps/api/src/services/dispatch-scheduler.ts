@@ -247,6 +247,7 @@ export async function runDispatchJob(
         githubToken: ctx.githubToken,
         fetchTask,
         feedback: ctx.feedback,
+        resolvedProductDecisions: ctx.item.resolvedProductDecisions ?? [],
       },
     );
 

@@ -144,6 +144,51 @@ describe('runDispatchJob lifecycle', () => {
     );
   });
 
+  it('passes persisted product decisions into dispatch context', async () => {
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+
+    await runDispatchJob({ jobId: 'job-1' } as never, {
+      product: { product: { slug: 'test' } } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test',
+        currentStage: 'code-review',
+        resolvedProductDecisions: [
+          {
+            fingerprint: 'kind=product_decision|title=pick direction|paths=|markers=',
+            conflictKind: 'product_decision',
+            conflictTitle: 'Pick direction',
+            scope: { paths: [], markers: [] },
+            chosenOption: 'Option A',
+            recordedAt: '2026-07-22T12:00:00.000Z',
+            source: {
+              provider: 'github',
+              owner: 'o',
+              repo: 'r',
+              prNumber: 42,
+              authorLogin: 'maintainer',
+            },
+          },
+        ],
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot: '/tmp/data',
+      specialistId: 'reviewer-fanout',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+      resolvedProductDecisions?: unknown[];
+    };
+    expect(options.resolvedProductDecisions).toEqual([
+      expect.objectContaining({
+        fingerprint: 'kind=product_decision|title=pick direction|paths=|markers=',
+        chosenOption: 'Option A',
+      }),
+    ]);
+  });
+
   it('records an error job when dispatchStageHandler throws', async () => {
     vi.mocked(dispatchStageHandler).mockRejectedValue(new Error('dispatch failed'));
 

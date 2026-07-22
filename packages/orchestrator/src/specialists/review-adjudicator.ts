@@ -15,6 +15,7 @@ import { isEnoentError } from '../lib/fs-errors.js';
 import {
   ADJUDICATION_MD_FORMAT,
   parseAdjudicationBody,
+  type StoredResolvedProductDecision,
   type ParsedAdjudication,
 } from '../review-loop/adjudication.js';
 
@@ -35,7 +36,7 @@ export function buildReviewAdjudicatorParams(
   workspacePath: string,
   prUrl: string,
   findingsByKind: Map<ReviewerKind, string>,
-  options: { spec?: string } = {},
+  options: { spec?: string; resolvedProductDecisions?: StoredResolvedProductDecision[] } = {},
 ): SpawnParams {
   const specialistCfg = product.specialists['review-adjudicator'];
   if (!specialistCfg) {
@@ -54,6 +55,9 @@ export function buildReviewAdjudicatorParams(
   }
 
   const specSection = options.spec ? ['', '## Spec', '', options.spec, ''].join('\n') : '';
+  const settledDecisionSection = formatSettledDecisionSection(
+    options.resolvedProductDecisions ?? [],
+  );
   const hintsSection = buildExtraHintsSection(specialistCfg.extra_hints);
   const artifactPath = artifactFileFor(workspacePath, 'review-adjudicator');
 
@@ -77,6 +81,7 @@ export function buildReviewAdjudicatorParams(
     '- Identify **doc_conflict** (ADR vs spec vs CLAUDE.md vs reviewer) — resolve using hierarchy ADR > spec > CLAUDE.md, or mark HUMAN_REQUIRED.',
     '- Mark findings as **DEFERRED** when they need design judgment and are not safe to auto-fix.',
     '- Do NOT modify source files. Do NOT commit or push.',
+    settledDecisionSection,
     '',
     '## Output format',
     '',
@@ -99,6 +104,30 @@ export function buildReviewAdjudicatorParams(
     permissionMode: 'acceptEdits',
     timeoutMs: REVIEW_ADJUDICATOR_TIMEOUT_MS,
   };
+}
+
+function formatSettledDecisionSection(decisions: StoredResolvedProductDecision[]): string {
+  if (decisions.length === 0) return '';
+  return [
+    '## Previously Settled Product Decisions',
+    '',
+    ...decisions.map((decision) =>
+      [
+        `- **${decision.conflictKind}** · ${decision.conflictTitle}`,
+        `  - Fingerprint: ${decision.fingerprint}`,
+        `  - Chosen option: ${decision.chosenOption}`,
+        `  - Recorded at: ${decision.recordedAt} by ${decision.source.authorLogin}`,
+        decision.scope.paths.length > 0 ? `  - Paths: ${decision.scope.paths.join(', ')}` : '',
+        decision.scope.markers.length > 0
+          ? `  - Scope markers: ${decision.scope.markers.join(', ')}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    ),
+    '',
+    'If a current conflict has the same fingerprint, treat the human choice as settled and include any remaining mechanical work in the unified remediation plan instead of asking for the same decision again.',
+  ].join('\n');
 }
 
 export async function handleReviewAdjudicatorResult(

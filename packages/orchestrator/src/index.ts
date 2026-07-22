@@ -17,6 +17,16 @@ export { CodexRuntime } from './runtimes/codex.js';
 
 export { dispatchStageHandler, resolveSpecialistId } from './dispatcher.js';
 export type { DispatchInput, DispatchResult, DispatchOptions } from './dispatcher.js';
+export {
+  decisionMatchesLatestAdjudication,
+  parseHumanProductDecisionComment,
+  suppressSettledConflicts,
+} from './review-loop/adjudication.js';
+export type {
+  AdjudicationConflict,
+  NormalizedProductDecision,
+  StoredResolvedProductDecision,
+} from './review-loop/adjudication.js';
 
 // Product-readiness gate (ADR-026)
 export { checkProductReadiness } from './readiness.js';

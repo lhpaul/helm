@@ -5,7 +5,7 @@ import { INITIAL_STAGE, validateTransition } from '@helm/workflow';
 import type { WorkflowStage } from '@helm/workflow';
 import { ItemAlreadyExistsError, ItemNotFoundError, StageMismatchError } from './errors.js';
 import { EXTERNAL_ID_REGEX } from './types.js';
-import type { ItemState, WorkflowEvent } from './types.js';
+import type { ItemState, ResolvedProductDecision, WorkflowEvent } from './types.js';
 
 /**
  * File-based persistence for item workflow state.
@@ -193,6 +193,47 @@ export class ItemStore {
     }
 
     return this.applyTransition(current, input);
+  }
+
+  async upsertResolvedProductDecision(input: {
+    externalId: string;
+    decision: Omit<ResolvedProductDecision, 'recordedAt'> & { recordedAt?: string };
+    triggeredBy: string;
+  }): Promise<{ state: ItemState; inserted: boolean }> {
+    return this.withItemLock(input.externalId, async () => {
+      const current = await readJson<ItemState>(this.itemPath(input.externalId));
+      if (current === null) {
+        throw new ItemNotFoundError(input.externalId);
+      }
+
+      const existing = current.resolvedProductDecisions ?? [];
+      if (existing.some((decision) => decision.fingerprint === input.decision.fingerprint)) {
+        return { state: current, inserted: false };
+      }
+
+      const now = new Date().toISOString();
+      const decision: ResolvedProductDecision = {
+        ...input.decision,
+        recordedAt: input.decision.recordedAt ?? now,
+      };
+      const auditEvent: WorkflowEvent = {
+        fromStage: current.currentStage,
+        toStage: current.currentStage,
+        triggeredBy: input.triggeredBy,
+        at: now,
+        note: `resolved_product_decision:${decision.fingerprint}: chose ${decision.chosenOption}`,
+        idempotencyKey: `resolved-product-decision:${decision.fingerprint}`,
+      };
+      const updated: ItemState = {
+        ...current,
+        resolvedProductDecisions: [...existing, decision],
+        history: [...current.history, auditEvent],
+        updatedAt: now,
+      };
+
+      await writeJsonAtomic(this.itemPath(current.externalId), updated);
+      return { state: updated, inserted: true };
+    });
   }
 
   /**

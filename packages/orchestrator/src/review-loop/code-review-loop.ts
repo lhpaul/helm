@@ -51,6 +51,7 @@ import {
   recordStickyImprovement,
 } from './finding-fingerprint.js';
 import { isEnoentError } from '../lib/fs-errors.js';
+import { suppressSettledConflicts, type StoredResolvedProductDecision } from './adjudication.js';
 
 export type CodeReviewLoopResult = {
   status: 'done' | 'error';
@@ -77,6 +78,7 @@ export type RunCodeReviewLoopParams = {
   externalReviewDeps?: RunExternalReviewDeps;
   sleep?: (ms: number) => Promise<void>;
   fetchFn?: FetchFn;
+  resolvedProductDecisions?: StoredResolvedProductDecision[];
 };
 
 function escalationMessage(
@@ -345,6 +347,7 @@ export async function runCodeReviewLoop(
         maxDuration,
         loopConfig,
         fetchFn: params.fetchFn,
+        resolvedProductDecisions: params.resolvedProductDecisions,
       });
       ranRemediation = true;
       totalCost = remediationOutcome.totalCost;
@@ -438,6 +441,7 @@ export async function runCodeReviewLoop(
         externalFindingsBody: formatExternalBlockersForRemediation(external.blockers),
         loopConfig,
         fetchFn: params.fetchFn,
+        resolvedProductDecisions: params.resolvedProductDecisions,
       });
       ranRemediation = true;
       totalCost = remediationOutcome.totalCost;
@@ -565,6 +569,7 @@ async function runAdjudicationPass(input: {
   maxDuration: number;
   externalFindingsBody?: string;
   fetchFn?: FetchFn;
+  resolvedProductDecisions?: StoredResolvedProductDecision[];
 }): Promise<AdjudicationPassOutcome> {
   let workspacePath = '';
   try {
@@ -601,7 +606,7 @@ async function runAdjudicationPass(input: {
       workspacePath,
       input.prUrl,
       findingsByKind,
-      { spec },
+      { spec, resolvedProductDecisions: input.resolvedProductDecisions },
     );
     const session = await input.runtime.spawn(params);
     const agentResult = await session.wait();
@@ -626,7 +631,12 @@ async function runAdjudicationPass(input: {
       };
     }
 
-    if (adjudicationResult.parsed.status === 'HUMAN_REQUIRED') {
+    const parsed = suppressSettledConflicts(
+      adjudicationResult.parsed,
+      input.resolvedProductDecisions ?? [],
+    );
+
+    if (parsed.status === 'HUMAN_REQUIRED') {
       return {
         status: 'human_required',
         totalCost,
@@ -640,7 +650,7 @@ async function runAdjudicationPass(input: {
       status: 'auto_remediate',
       totalCost,
       maxDuration,
-      unifiedPlan: adjudicationResult.parsed.unifiedPlan,
+      unifiedPlan: parsed.unifiedPlan,
     };
   } catch (err) {
     console.error(
@@ -709,6 +719,7 @@ async function runAdjudicationIfEnabled(input: {
   externalFindingsBody?: string;
   fetchFn?: FetchFn;
   loopConfig: ReviewLoopConfig;
+  resolvedProductDecisions?: StoredResolvedProductDecision[];
 }): Promise<AdjudicationPassOutcome> {
   if (!input.loopConfig.adjudicationEnabled) {
     return { status: 'skipped' };
@@ -753,6 +764,7 @@ async function runRemediationPass(input: {
   externalFindingsBody?: string;
   loopConfig: ReviewLoopConfig;
   fetchFn?: FetchFn;
+  resolvedProductDecisions?: StoredResolvedProductDecision[];
 }): Promise<RemediationPassOutcome> {
   let totalCost = input.totalCost;
   let maxDuration = input.maxDuration;
@@ -772,6 +784,7 @@ async function runRemediationPass(input: {
     externalFindingsBody: input.externalFindingsBody,
     fetchFn: input.fetchFn,
     loopConfig: input.loopConfig,
+    resolvedProductDecisions: input.resolvedProductDecisions,
   });
 
   if (adjudication.status === 'human_required') {

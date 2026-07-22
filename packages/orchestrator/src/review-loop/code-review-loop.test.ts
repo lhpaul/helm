@@ -676,6 +676,15 @@ describe('runCodeReviewLoop', () => {
         unifiedPlan: '',
         body: '# Review Adjudication\n\n## Status\nHUMAN_REQUIRED',
         conflictsSection: '- **product_decision** · Vacancy semantics',
+        conflicts: [
+          {
+            conflictKind: 'product_decision',
+            conflictTitle: 'Vacancy semantics',
+            scope: { paths: [], markers: [] },
+            fingerprint: 'kind=product_decision|title=vacancy semantics|paths=|markers=',
+            body: '- **product_decision** · Vacancy semantics',
+          },
+        ],
       },
     });
 
@@ -688,6 +697,80 @@ describe('runCodeReviewLoop', () => {
     });
     expect(buildRemediationParams).not.toHaveBeenCalled();
     expect(postPRComment).toHaveBeenCalled();
+  });
+
+  it('uses stored product decisions instead of re-escalating the same conflict', async () => {
+    const product: Product = {
+      ...baseProduct,
+      specialists: {
+        ...baseProduct.specialists,
+        'review-adjudicator': { runtime: 'claude_code', model: 'm' },
+      },
+    };
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+    vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+      status: 'done',
+      costUsd: 0.01,
+      durationMs: 100,
+      commentPosted: true,
+      parsed: {
+        status: 'HUMAN_REQUIRED',
+        unifiedPlan: '- **DEFERRED** · Vacancy semantics — awaiting human decision',
+        body: '# Review Adjudication\n\n## Status\nHUMAN_REQUIRED',
+        conflictsSection: '- **product_decision** · Vacancy semantics',
+        conflicts: [
+          {
+            conflictKind: 'product_decision',
+            conflictTitle: 'Vacancy semantics',
+            scope: { paths: [], markers: [] },
+            fingerprint: 'kind=product_decision|title=vacancy semantics|paths=|markers=',
+            body: '- **product_decision** · Vacancy semantics',
+          },
+        ],
+      },
+    });
+
+    const result = await runCodeReviewLoop({
+      externalId: 'issue_1',
+      product,
+      prUrl: PR_URL,
+      codeRepo: product.code_repos[0]!,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+      resolvedProductDecisions: [
+        {
+          fingerprint: 'kind=product_decision|title=vacancy semantics|paths=|markers=',
+          conflictKind: 'product_decision',
+          conflictTitle: 'Vacancy semantics',
+          scope: { paths: [], markers: [] },
+          chosenOption: 'Option A',
+          recordedAt: '2026-07-22T12:00:00.000Z',
+          source: {
+            provider: 'github',
+            owner: 'o',
+            repo: 'r',
+            prNumber: 42,
+            authorLogin: 'maintainer',
+          },
+        },
+      ],
+    });
+
+    expect(result.status).toBe('done');
+    expect(result.escalated).toBeUndefined();
+    expect(buildRemediationParams).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Object),
+      expect.any(String),
+      expect.any(String),
+      expect.any(Map),
+      expect.stringContaining('SETTLED'),
+    );
   });
 
   it('passes unified adjudication plan to code-remediator on AUTO_REMEDIATE (ADR-037)', async () => {
@@ -721,6 +804,7 @@ describe('runCodeReviewLoop', () => {
         unifiedPlan: '- **AUTO** · Add CSRF guard on POST /api/sync',
         body: '# Review Adjudication\n\n## Status\nAUTO_REMEDIATE',
         conflictsSection: '',
+        conflicts: [],
       },
     });
 
@@ -810,6 +894,7 @@ describe('runCodeReviewLoop', () => {
         unifiedPlan: '- **AUTO** · Fix',
         body: '# Review Adjudication\n\n## Status\nAUTO_REMEDIATE',
         conflictsSection: '',
+        conflicts: [],
       },
     });
 

@@ -61,6 +61,27 @@ export type WorkflowEvent = {
   idempotencyKey?: string;
 };
 
+export type ResolvedProductDecision = {
+  fingerprint: string;
+  conflictKind: 'product_decision' | 'doc_conflict';
+  conflictTitle: string;
+  scope: {
+    paths: string[];
+    markers: string[];
+  };
+  chosenOption: string;
+  source: {
+    provider: 'github';
+    owner: string;
+    repo: string;
+    prNumber: number;
+    commentId?: number;
+    authorLogin: string;
+  };
+  /** ISO 8601 timestamp */
+  recordedAt: string;
+};
+
 /**
  * The persisted state of a tracked item in Helm's workflow.
  * Written to data/items/{externalId}.json by ItemStore.
@@ -73,6 +94,8 @@ export type ItemState = {
   currentStage: WorkflowStage;
   /** Always contains at least one event (the creation event with fromStage=null) */
   history: WorkflowEvent[];
+  /** Durable ledger of human-resolved review adjudication decisions. */
+  resolvedProductDecisions?: ResolvedProductDecision[];
   /** ISO 8601 — set on creation, never changes */
   createdAt: string;
   /** ISO 8601 — updated on every transition */

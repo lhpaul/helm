@@ -81,6 +81,39 @@ describe('buildReviewAdjudicatorParams', () => {
     expect(params.prompt).toContain(externalBody);
   });
 
+  it('includes persisted settled decisions in the adjudicator context', () => {
+    const params = buildReviewAdjudicatorParams(
+      'LEA-192',
+      product,
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      new Map(),
+      {
+        resolvedProductDecisions: [
+          {
+            fingerprint: 'kind=product_decision|title=pick direction|paths=src/a.ts|markers=api',
+            conflictKind: 'product_decision',
+            conflictTitle: 'Pick direction',
+            scope: { paths: ['src/a.ts'], markers: ['api'] },
+            chosenOption: 'Option A',
+            recordedAt: '2026-07-22T12:00:00.000Z',
+            source: {
+              provider: 'github',
+              owner: 'o',
+              repo: 'r',
+              prNumber: 1,
+              authorLogin: 'maintainer',
+            },
+          },
+        ],
+      },
+    );
+
+    expect(params.prompt).toContain('Previously Settled Product Decisions');
+    expect(params.prompt).toContain('Chosen option: Option A');
+    expect(params.prompt).toContain('kind=product_decision|title=pick direction');
+  });
+
   it('throws when review-adjudicator is not configured', () => {
     const { 'review-adjudicator': _reviewAdjudicator, ...specialists } = product.specialists;
     void _reviewAdjudicator;

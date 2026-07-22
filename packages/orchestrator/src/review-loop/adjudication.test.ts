@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseAdjudicationBody } from './adjudication.js';
+import {
+  decisionMatchesLatestAdjudication,
+  parseAdjudicationBody,
+  parseHumanProductDecisionComment,
+  suppressSettledConflicts,
+} from './adjudication.js';
 
 describe('parseAdjudicationBody', () => {
   it('parses AUTO_REMEDIATE with unified plan', () => {
@@ -72,5 +77,102 @@ AUTO_REMEDIATE`;
     ).toMatchObject({
       status: 'HUMAN_REQUIRED',
     });
+  });
+});
+
+describe('product decision parsing and fingerprints', () => {
+  const adjudication = `# Review Adjudication: HLM-72
+
+## Conflicts
+- **product_decision** · Pick direction
+  Paths: src/a.ts
+  Scope markers: API
+  Option A: keep the current behavior.
+  Option B: change the behavior.
+
+## Status
+HUMAN_REQUIRED`;
+
+  it('normalizes structured and checklist inputs to the same fingerprint', () => {
+    const structured = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Pick direction
+Affected paths: src/a.ts
+Scope markers: API
+Chosen option: Option A`);
+    const checklist = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+- [x] **product_decision** · Pick direction
+- **Paths:** src/a.ts
+- **Scope:** API
+- **Chosen:** Option A`);
+
+    expect(structured?.fingerprint).toBe(checklist?.fingerprint);
+    expect(structured?.fingerprint).toBe(
+      parseAdjudicationBody(adjudication).conflicts[0]?.fingerprint,
+    );
+  });
+
+  it('rejects malformed comments without a conflict identity or choice', () => {
+    expect(parseHumanProductDecisionComment('<!-- helm:product-decision -->')).toBeNull();
+    expect(
+      parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Pick direction`),
+    ).toBeNull();
+  });
+
+  it('matches only the latest human-required adjudication for the same fingerprint and choice', () => {
+    const decision = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Pick direction
+Affected paths: src/a.ts
+Scope markers: API
+Chosen option: Option A`)!;
+
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'HLM-72',
+        decision,
+        adjudicationBodies: [adjudication],
+      }),
+    ).toBe(true);
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'HLM-72',
+        decision: { ...decision, chosenOption: 'Option C' },
+        adjudicationBodies: [adjudication],
+      }),
+    ).toBe(false);
+  });
+
+  it('suppresses settled conflicts while leaving unrelated conflicts human-required', () => {
+    const parsed = parseAdjudicationBody(`# Review Adjudication: HLM-72
+
+## Conflicts
+- **product_decision** · Pick direction
+  Paths: src/a.ts
+  Scope markers: API
+  Option A: keep the current behavior.
+  Option B: change the behavior.
+
+- **product_decision** · Other direction
+  Option A: one.
+  Option B: two.
+
+## Status
+HUMAN_REQUIRED`);
+    const settled = parsed.conflicts[0]!;
+
+    const result = suppressSettledConflicts(parsed, [
+      {
+        fingerprint: settled.fingerprint,
+        chosenOption: 'Option A',
+      },
+    ]);
+
+    expect(result.status).toBe('HUMAN_REQUIRED');
+    expect(result.conflicts).toHaveLength(1);
+    expect(result.conflicts[0]?.conflictTitle).toBe('Other direction');
+    expect(result.unifiedPlan).toContain('SETTLED');
   });
 });

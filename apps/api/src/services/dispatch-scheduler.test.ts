@@ -246,6 +246,45 @@ describe('runDispatchJob lifecycle', () => {
     expect(options.resolvedProductDecisions).toEqual([decision]);
     expect(typeof options.loadResolvedProductDecisions).toBe('function');
     await expect(options.loadResolvedProductDecisions?.()).resolves.toEqual([decision]);
+    // Defensive copy: mutating the returned array must not touch store state.
+    const loaded = await options.loadResolvedProductDecisions!();
+    loaded.push({ ...decision, fingerprint: 'mutated' });
+    await expect(options.loadResolvedProductDecisions?.()).resolves.toEqual([decision]);
+  });
+
+  it('fails closed when the live decision reload cannot find the item', async () => {
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({
+        externalId: 'LEA-1',
+        productSlug: 'test',
+        currentStage: 'code-review',
+        resolvedProductDecisions: [],
+      })
+      .mockResolvedValueOnce(null);
+    vi.mocked(getItemStore).mockResolvedValue({ get } as never);
+
+    await runDispatchJob({ jobId: 'job-1' } as never, {
+      product: { product: { slug: 'test' } } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test',
+        currentStage: 'code-review',
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot: '/tmp/data',
+      specialistId: 'reviewer-fanout',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+      loadResolvedProductDecisions?: () => Promise<unknown[]>;
+    };
+    await expect(options.loadResolvedProductDecisions?.()).rejects.toThrow(
+      /Item not found while reloading settled decisions/,
+    );
   });
 
   it('records an error job when dispatchStageHandler throws', async () => {

@@ -850,6 +850,52 @@ describe('runCodeReviewLoop', () => {
     );
   });
 
+  it('fails closed when loadResolvedProductDecisions throws instead of using a stale snapshot', async () => {
+    const product: Product = {
+      ...baseProduct,
+      specialists: {
+        ...baseProduct.specialists,
+        'review-adjudicator': { runtime: 'claude_code', model: 'm' },
+      },
+    };
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+
+    const result = await runCodeReviewLoop({
+      externalId: 'issue_1',
+      product,
+      prUrl: PR_URL,
+      codeRepo: product.code_repos[0]!,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+      resolvedProductDecisions: [
+        {
+          fingerprint: 'kind=product_decision|title=stale|paths=|markers=',
+          conflictKind: 'product_decision',
+          conflictTitle: 'Stale',
+          scope: { paths: [], markers: [] },
+          chosenOption: 'Option A',
+          recordedAt: '2026-07-22T12:00:00.000Z',
+          source: {
+            provider: 'github',
+            owner: 'o',
+            repo: 'r',
+            prNumber: 42,
+            authorLogin: 'maintainer',
+          },
+        },
+      ],
+      loadResolvedProductDecisions: vi.fn().mockRejectedValue(new Error('disk read failed')),
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Failed to reload settled product decisions');
+    expect(result.error).toContain('disk read failed');
+    expect(handleReviewAdjudicatorResult).not.toHaveBeenCalled();
+  });
+
   it('passes unified adjudication plan to code-remediator on AUTO_REMEDIATE (ADR-037)', async () => {
     const product: Product = {
       ...baseProduct,

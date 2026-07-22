@@ -251,10 +251,15 @@ export async function runDispatchJob(
         githubToken: ctx.githubToken,
         fetchTask,
         feedback: ctx.feedback,
-        resolvedProductDecisions: freshItem.resolvedProductDecisions ?? [],
+        resolvedProductDecisions: [...(freshItem.resolvedProductDecisions ?? [])],
         loadResolvedProductDecisions: async () => {
-          const latest = (await store.get(freshItem.externalId)) ?? freshItem;
-          return latest.resolvedProductDecisions ?? [];
+          const latest = await store.get(freshItem.externalId);
+          if (latest === null) {
+            throw new Error(
+              `Item not found while reloading settled decisions: ${freshItem.externalId}`,
+            );
+          }
+          return [...(latest.resolvedProductDecisions ?? [])];
         },
       },
     );

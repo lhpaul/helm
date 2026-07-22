@@ -716,13 +716,12 @@ async function resolveSettledDecisions(input: {
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
 }): Promise<StoredResolvedProductDecision[]> {
   if (input.loadResolvedProductDecisions) {
-    try {
-      return await input.loadResolvedProductDecisions();
-    } catch {
-      // Fall back to the dispatch-time snapshot when the live reload fails.
-    }
+    // Fail closed: never fall back to the enqueue-time snapshot after a live
+    // reload error — that would reopen conflicts already settled on disk.
+    const decisions = await input.loadResolvedProductDecisions();
+    return [...decisions];
   }
-  return input.resolvedProductDecisions ?? [];
+  return [...(input.resolvedProductDecisions ?? [])];
 }
 
 async function runAdjudicationIfEnabled(input: {
@@ -746,7 +745,19 @@ async function runAdjudicationIfEnabled(input: {
   if (!input.loopConfig.adjudicationEnabled) {
     return { status: 'skipped' };
   }
-  const resolvedProductDecisions = await resolveSettledDecisions(input);
+  let resolvedProductDecisions: StoredResolvedProductDecision[];
+  try {
+    resolvedProductDecisions = await resolveSettledDecisions(input);
+  } catch (err) {
+    return {
+      status: 'error',
+      totalCost: input.totalCost,
+      maxDuration: input.maxDuration,
+      error: `Failed to reload settled product decisions: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
   return runAdjudicationPass({ ...input, resolvedProductDecisions });
 }
 

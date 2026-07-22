@@ -285,7 +285,7 @@ describe('parseGitHubWebhook', () => {
             status: 'completed',
             conclusion: 'success',
             head_sha: 'abc123',
-            app: { slug: 'haystack' },
+            app: { slug: 'haystack-code-reviewer-pr-hook' },
             pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
           },
           repository: { name: 'repo', owner: { login: 'owner' } },
@@ -313,7 +313,10 @@ describe('parseGitHubWebhook', () => {
             status: 'completed',
             conclusion: 'success',
             head_sha: 'abc123',
-            app: { slug: 'haystack' },
+            app: {
+              slug: 'haystack-code-reviewer-pr-hook',
+              name: 'Haystack Code Reviewer - PR Hook',
+            },
             pull_requests: [],
           },
           repository: { name: 'repo', owner: { login: 'owner' } },
@@ -339,7 +342,25 @@ describe('parseGitHubWebhook', () => {
             status: 'completed',
             conclusion: 'success',
             head_sha: 'abc123',
-            app: { slug: 'other-app' },
+            app: { slug: 'haystack-code-reviewer-pr-hook' },
+            pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('rejects matching check name without a trusted GitHub App identity', () => {
+      const result = parseGitHubWebhook(
+        ctx('check_run', {
+          action: 'completed',
+          check_run: {
+            name: 'Haystack / Review',
+            status: 'completed',
+            conclusion: 'success',
+            head_sha: 'abc123',
+            app: { slug: 'spoofed-haystack' },
             pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
           },
           repository: { name: 'repo', owner: { login: 'owner' } },
@@ -357,6 +378,7 @@ describe('parseGitHubWebhook', () => {
             status: 'completed',
             conclusion: 'action_required',
             head_sha: 'abc123',
+            app: { slug: 'haystack-code-reviewer-pr-hook' },
             pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
           },
         }),
@@ -365,7 +387,7 @@ describe('parseGitHubWebhook', () => {
       expect(result.type).toBe('unknown');
     });
 
-    it('status.success with Haystack context and PR target emits external_review_ready', () => {
+    it('status.success is not treated as external-review readiness (Option B)', () => {
       const result = parseGitHubWebhook(
         ctx('status', {
           context: 'Haystack / Review',
@@ -377,59 +399,7 @@ describe('parseGitHubWebhook', () => {
         }),
       );
 
-      expect(result).toMatchObject({
-        type: 'external_review_ready',
-        provider: 'haystack',
-        prNumber: 42,
-        targetRevision: 'abc123',
-        headRef: 'helm/impl/issue_42',
-      });
-    });
-
-    it('status.success chooses the matching impl branch instead of branches[0]', () => {
-      const result = parseGitHubWebhook(
-        ctx('status', {
-          context: 'Haystack / Review',
-          state: 'success',
-          sha: 'abc123',
-          target_url: 'https://github.com/owner/repo/pull/42/checks',
-          branches: [
-            { name: 'main' },
-            { name: 'helm/spec/issue_42' },
-            { name: 'helm/impl/issue_42' },
-          ],
-          repository: { name: 'repo', owner: { login: 'owner' } },
-        }),
-      );
-
-      expect(result).toMatchObject({
-        type: 'external_review_ready',
-        provider: 'haystack',
-        prNumber: 42,
-        targetRevision: 'abc123',
-        headRef: 'helm/impl/issue_42',
-      });
-    });
-
-    it('status.success without an impl branch omits headRef', () => {
-      const result = parseGitHubWebhook(
-        ctx('status', {
-          context: 'Haystack / Review',
-          state: 'success',
-          sha: 'abc123',
-          target_url: 'https://github.com/owner/repo/pull/42/checks',
-          branches: [{ name: 'main' }, { name: 'feature/other' }],
-          repository: { name: 'repo', owner: { login: 'owner' } },
-        }),
-      );
-
-      expect(result).toMatchObject({
-        type: 'external_review_ready',
-        provider: 'haystack',
-        prNumber: 42,
-        targetRevision: 'abc123',
-      });
-      expect(result).not.toHaveProperty('headRef');
+      expect(result.type).toBe('unknown');
     });
   });
 

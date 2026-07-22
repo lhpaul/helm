@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { parseArtifactBranch } from '@helm/shared';
 import type { NormalizedEvent } from '../types.js';
 
 // ── Context schema ────────────────────────────────────────────────────────────
@@ -87,36 +86,30 @@ const CheckRunWebhookSchema = z.object({
     .optional(),
 });
 
-const StatusWebhookSchema = z.object({
-  context: z.string(),
-  state: z.string(),
-  sha: z.string(),
-  target_url: z.string().nullable().optional(),
-  branches: z.array(z.object({ name: z.string() })).optional(),
-  repository: z
-    .object({
-      name: z.string(),
-      owner: z.object({ login: z.string() }),
-    })
-    .optional(),
-});
-
-/** Exact check/status name allowlist — never substring-match provider identity. */
+/** Exact check-run name allowlist — never substring-match provider identity. */
 const HAYSTACK_CHECK_NAMES = new Set(['haystack / review']);
 
-function providerFromGitHubCheck(name: string): string | null {
+/**
+ * Trusted Haystack GitHub App identities (slug or display name).
+ * Option B trust boundary: readiness requires provider-owned app identity,
+ * not a human-readable check name alone.
+ */
+const HAYSTACK_APP_IDENTITIES = new Set([
+  'haystack-code-reviewer-pr-hook',
+  'haystack code reviewer - pr hook',
+]);
+
+function providerFromTrustedCheckRun(
+  name: string,
+  appSlug?: string,
+  appName?: string,
+): string | null {
   const normalizedName = name.trim().toLowerCase();
-  return HAYSTACK_CHECK_NAMES.has(normalizedName) ? 'haystack' : null;
-}
-
-function prNumberFromUrl(value: string | null | undefined): number | null {
-  const match = value?.match(/\/pull\/(\d+)(?:\D|$)/);
-  if (!match) return null;
-  return Number.parseInt(match[1]!, 10);
-}
-
-function findImplBranchRef(branches: Array<{ name: string }> | undefined): string | undefined {
-  return branches?.find((branch) => parseArtifactBranch(branch.name)?.kind === 'impl')?.name;
+  if (!HAYSTACK_CHECK_NAMES.has(normalizedName)) return null;
+  const identities = [appSlug, appName]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map((value) => value.trim().toLowerCase());
+  return identities.some((identity) => HAYSTACK_APP_IDENTITIES.has(identity)) ? 'haystack' : null;
 }
 
 // ── Pure parser (handles issues.* and issue_comment.*) ───────────────────────
@@ -232,7 +225,11 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
       if (!['success', 'neutral'].includes(checkRun.conclusion ?? '')) {
         return { type: 'unknown', raw: rawEvent };
       }
-      const provider = providerFromGitHubCheck(checkRun.name);
+      const provider = providerFromTrustedCheckRun(
+        checkRun.name,
+        checkRun.app?.slug,
+        checkRun.app?.name,
+      );
       if (!provider) return { type: 'unknown', raw: rawEvent };
       const pr = checkRun.pull_requests?.[0];
       // GitHub often omits pull_requests on check_run; still emit readiness so
@@ -250,24 +247,9 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
     }
 
     if (eventType === 'status') {
-      const parsed = StatusWebhookSchema.safeParse(payload);
-      if (!parsed.success) return { type: 'unknown', raw: rawEvent };
-      const provider = providerFromGitHubCheck(parsed.data.context);
-      const prNumber = prNumberFromUrl(parsed.data.target_url);
-      if (!provider || parsed.data.state !== 'success' || prNumber === null) {
-        return { type: 'unknown', raw: rawEvent };
-      }
-      const headRef = findImplBranchRef(parsed.data.branches);
-      return {
-        type: 'external_review_ready',
-        provider,
-        owner: parsed.data.repository?.owner.login ?? null,
-        repo: parsed.data.repository?.name ?? null,
-        prNumber,
-        targetRevision: parsed.data.sha,
-        ...(headRef ? { headRef } : {}),
-        timestamp,
-      };
+      // Option B: generic commit statuses lack provider-owned app identity —
+      // never treat them as external-review readiness signals.
+      return { type: 'unknown', raw: rawEvent };
     }
 
     return { type: 'unknown', raw: rawEvent };

@@ -369,7 +369,35 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       let prNumber: number | null = event.prNumber ?? null;
       let matchedByRevision = false;
 
-      if (event.headRef) {
+      // Revision-first: locate the pending intent by SHA, then validate optional
+      // branch/PR metadata against that match so multi-PR payloads cannot steer.
+      const matched = await peekPendingExternalReviewByRevision({
+        productSlug: config.product.slug,
+        provider: event.provider,
+        targetRevision: event.targetRevision,
+      });
+      if (matched) {
+        if (event.headRef) {
+          const parsed = parseArtifactBranch(event.headRef);
+          if (parsed?.kind !== 'impl') {
+            console.info('[webhooks/github] external review readiness ignored — non-impl ref');
+            return c.json({ processed: true });
+          }
+          if (parsed.externalId !== matched.externalId) {
+            console.info(
+              '[webhooks/github] external review readiness ignored — headRef/item mismatch',
+            );
+            return c.json({ processed: true });
+          }
+        }
+        if (event.prNumber !== undefined && event.prNumber !== matched.prNumber) {
+          console.info('[webhooks/github] external review readiness ignored — PR/intent mismatch');
+          return c.json({ processed: true });
+        }
+        externalId = matched.externalId;
+        prNumber = matched.prNumber;
+        matchedByRevision = true;
+      } else if (event.headRef) {
         const parsed = parseArtifactBranch(event.headRef);
         if (parsed?.kind !== 'impl') {
           console.info('[webhooks/github] external review readiness ignored — non-impl ref');
@@ -377,21 +405,10 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         }
         externalId = parsed.externalId;
       } else {
-        // check_run often omits pull_requests — match pending intent by SHA first.
-        const matched = await peekPendingExternalReviewByRevision({
-          productSlug: config.product.slug,
-          provider: event.provider,
-          targetRevision: event.targetRevision,
-        });
-        if (!matched) {
-          console.info(
-            '[webhooks/github] external review readiness ignored — no pending intent for revision',
-          );
-          return c.json({ processed: true });
-        }
-        externalId = matched.externalId;
-        prNumber = matched.prNumber;
-        matchedByRevision = true;
+        console.info(
+          '[webhooks/github] external review readiness ignored — no pending intent for revision',
+        );
+        return c.json({ processed: true });
       }
 
       if (prNumber === null || externalId === null) {

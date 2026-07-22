@@ -394,14 +394,40 @@ describe('upsertResolvedProductDecision', () => {
     const finalState = await store.get('HLM-1');
     expect(finalState?.currentStage).toBe('spec-ready');
     expect(finalState?.resolvedProductDecisions).toEqual([decision]);
-    // Both writers completed without clobbering each other.
-    expect(
-      transitioned.currentStage === 'spec-ready' || upserted.state.currentStage === 'spec-ready',
-    ).toBe(true);
-    expect(
-      transitioned.resolvedProductDecisions?.length === 1 ||
-        upserted.state.resolvedProductDecisions?.length === 1,
-    ).toBe(true);
+    // Serialized writers: final disk state is the source of truth.
+    expect(transitioned.currentStage).toBe('spec-ready');
+    expect(upserted.state.resolvedProductDecisions).toEqual([decision]);
+  });
+
+  it('serializes concurrent upserts so distinct decision fingerprints both persist', async () => {
+    await store.create(BASE_INPUT);
+    const otherDecision = {
+      ...decision,
+      fingerprint: 'kind=product_decision|title=other direction|paths=src/b.ts|markers=api',
+      conflictTitle: 'Other direction',
+      scope: { paths: ['src/b.ts'], markers: ['api'] },
+      chosenOption: 'Option B',
+    };
+
+    const [first, second] = await Promise.all([
+      store.upsertResolvedProductDecision({
+        externalId: 'HLM-1',
+        decision,
+        triggeredBy: 'webhook:pr-decision-comment',
+      }),
+      store.upsertResolvedProductDecision({
+        externalId: 'HLM-1',
+        decision: otherDecision,
+        triggeredBy: 'webhook:pr-decision-comment',
+      }),
+    ]);
+
+    const finalState = await store.get('HLM-1');
+    expect(finalState?.resolvedProductDecisions).toHaveLength(2);
+    expect(finalState?.resolvedProductDecisions?.map((d) => d.fingerprint).sort()).toEqual(
+      [decision.fingerprint, otherDecision.fingerprint].sort(),
+    );
+    expect(first.inserted && second.inserted).toBe(true);
   });
 
   it('survives a stage move then re-dispatch-style reload of the decision ledger', async () => {

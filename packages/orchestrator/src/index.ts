@@ -19,6 +19,7 @@ export { dispatchStageHandler, resolveSpecialistId } from './dispatcher.js';
 export type { DispatchInput, DispatchResult, DispatchOptions } from './dispatcher.js';
 export {
   decisionMatchesLatestAdjudication,
+  parseAdjudicationBody,
   parseHumanProductDecisionComment,
   suppressSettledConflicts,
 } from './review-loop/adjudication.js';

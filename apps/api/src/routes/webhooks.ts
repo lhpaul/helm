@@ -234,7 +234,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           return c.json({ processed: true });
         }
 
-        await itemStore.upsertResolvedProductDecision({
+        const { state: afterDecision } = await itemStore.upsertResolvedProductDecision({
           externalId: parsed.externalId,
           decision: {
             fingerprint: decision.fingerprint,
@@ -253,9 +253,11 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           triggeredBy: 'webhook:pr-decision-comment',
         });
 
-        if (item.currentStage !== 'code-review') {
+        // Gate dispatch on the post-upsert stage so a concurrent transition out
+        // of code-review cannot enqueue a stale reviewer-fanout job.
+        if (afterDecision.currentStage !== 'code-review') {
           console.info(
-            `[webhooks/github] PR decision recorded without dispatch — item stage '${item.currentStage}'`,
+            `[webhooks/github] PR decision recorded without dispatch — item stage '${afterDecision.currentStage}'`,
           );
           return c.json({ processed: true });
         }

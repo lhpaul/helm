@@ -224,13 +224,87 @@ Chosen option: Option C`)!;
     ).toBe(false);
   });
 
-  it('rejects choices that are only substrings of conflict text', () => {
-    const decision = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+  it('matches declared option labels and full option value text', () => {
+    const byLabel = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Pick direction
+Affected paths: src/a.ts
+Scope markers: API
+Chosen option: Option A`)!;
+    const byValue = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
 Conflict kind: product_decision
 Conflict title: Pick direction
 Affected paths: src/a.ts
 Scope markers: API
 Chosen option: keep the current behavior`)!;
+
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'HLM-72',
+        decision: byLabel,
+        adjudicationBodies: [adjudication],
+      }),
+    ).toBe(true);
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'HLM-72',
+        decision: byValue,
+        adjudicationBodies: [adjudication],
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects partial substrings of option text that are not declared choices', () => {
+    const decision = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Pick direction
+Affected paths: src/a.ts
+Scope markers: API
+Chosen option: current behavior`)!;
+
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'HLM-72',
+        decision,
+        adjudicationBodies: [adjudication],
+      }),
+    ).toBe(false);
+  });
+
+  it('parses checklist and numbered conflict headers in adjudication bodies', () => {
+    const checklistBody = `# Review Adjudication: HLM-72
+
+## Conflicts
+- [x] **product_decision** · Pick direction
+  Paths: src/a.ts
+  Scope markers: API
+  Option A: keep the current behavior.
+  Option B: change the behavior.
+
+1. **doc_conflict** - Resolve docs
+  Option A: follow ADR.
+
+## Status
+HUMAN_REQUIRED`;
+    const parsed = parseAdjudicationBody(checklistBody);
+    expect(parsed.conflicts).toHaveLength(2);
+    expect(parsed.conflicts[0]).toMatchObject({
+      conflictKind: 'product_decision',
+      conflictTitle: 'Pick direction',
+    });
+    expect(parsed.conflicts[1]).toMatchObject({
+      conflictKind: 'doc_conflict',
+      conflictTitle: 'Resolve docs',
+    });
+  });
+
+  it('rejects choices that do not match any declared option', () => {
+    const decision = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Pick direction
+Affected paths: src/a.ts
+Scope markers: API
+Chosen option: Option C`)!;
 
     expect(
       decisionMatchesLatestAdjudication({

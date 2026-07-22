@@ -142,11 +142,11 @@ export function decisionMatchesLatestAdjudication(input: {
     .find((record) => record.externalId === input.externalId);
   if (!latest || latest.parsed.status !== 'HUMAN_REQUIRED') return false;
 
-  const chosen = normalizeText(input.decision.chosenOption);
+  const chosen = normalizeChoice(input.decision.chosenOption);
   return latest.parsed.conflicts.some((conflict) => {
     return (
       conflict.fingerprint === input.decision.fingerprint &&
-      declaredConflictChoices(conflict.body).some((choice) => normalizeText(choice) === chosen)
+      declaredConflictChoices(conflict.body).some((choice) => normalizeChoice(choice) === chosen)
     );
   });
 }
@@ -221,7 +221,12 @@ function parseAdjudicationConflicts(conflictsSection: string): AdjudicationConfl
   };
 
   for (const line of lines) {
-    const match = line.match(/^\s*[-*]\s*\*\*(product_decision|doc_conflict)\*\*\s*·\s*(.+?)\s*$/i);
+    // Accept bullets, numbered lists, and checklist variants:
+    // `- **product_decision** · Title`, `- [x] **product_decision** · Title`,
+    // `1. **doc_conflict** - Title`, `* **product_decision**: Title`.
+    const match = line.match(
+      /^\s*(?:[-*]|\d+[.)])\s*(?:\[[ xX]\]\s*)?\*\*(product_decision|doc_conflict)\*\*\s*(?:·|-|:)\s*(.+?)\s*$/i,
+    );
     if (match) {
       flush();
       const conflictKind = normalizeConflictKind(match[1]);
@@ -303,10 +308,16 @@ function declaredConflictChoices(body: string): string[] {
   const choices: string[] = [];
   for (const line of body.split(/\r?\n/u)) {
     const match = line.match(
-      /^\s*(?:[-*]\s*)?(?:\[[ xX]\]\s*)?(?:\*\*)?(Option\s+[A-Za-z0-9][\w .-]*?)(?:\*\*)?\s*:/iu,
+      /^\s*(?:[-*]\s*)?(?:\[[ xX]\]\s*)?(?:\*\*)?(Option\s+[A-Za-z0-9][\w .-]*?)(?:\*\*)?\s*:\s*(.*)$/iu,
     );
-    const choice = match?.[1]?.trim();
-    if (choice) choices.push(choice);
+    if (!match) continue;
+    const label = match[1]?.trim();
+    const value = match[2]?.trim();
+    // Accept either the option label ("Option A"), the declared value text
+    // ("keep the current behavior"), or the combined form.
+    if (label) choices.push(label);
+    if (value) choices.push(value);
+    if (label && value) choices.push(`${label}: ${value}`);
   }
   return choices;
 }
@@ -381,4 +392,9 @@ function escapeRegExp(value: string): string {
 
 function normalizeText(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/** Choice matching: ignore trailing punctuation so "Option A." / "keep X." still match. */
+function normalizeChoice(value: string): string {
+  return normalizeText(value).replace(/[.:;,\s]+$/u, '');
 }

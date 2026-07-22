@@ -242,7 +242,10 @@ describe('POST /api/webhooks/github', () => {
       htmlUrl: 'https://github.com/test-org/test-repo/pull/42',
     });
     mockListPrIssueComments.mockResolvedValue([{ id: 1, body: HUMAN_REQUIRED_ADJUDICATION }]);
-    mockUpsertResolvedProductDecision.mockResolvedValue({ inserted: true, state: {} });
+    mockUpsertResolvedProductDecision.mockResolvedValue({
+      inserted: true,
+      state: { currentStage: 'code-review' },
+    });
     mockGet.mockResolvedValue(null);
     vi.mocked(getIssueTrackerAdapter).mockResolvedValue({
       setSubStage: mockSetSubStage,
@@ -503,7 +506,10 @@ describe('POST /api/webhooks/github', () => {
         currentStage: 'code-review',
         history: [],
       });
-      mockUpsertResolvedProductDecision.mockResolvedValue({ inserted: false, state: {} });
+      mockUpsertResolvedProductDecision.mockResolvedValue({
+        inserted: false,
+        state: { currentStage: 'code-review' },
+      });
 
       const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
 
@@ -524,6 +530,10 @@ describe('POST /api/webhooks/github', () => {
         currentStage: 'merged',
         history: [],
       });
+      mockUpsertResolvedProductDecision.mockResolvedValue({
+        inserted: true,
+        state: { currentStage: 'merged' },
+      });
 
       const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
 
@@ -534,6 +544,26 @@ describe('POST /api/webhooks/github', () => {
           triggeredBy: 'webhook:pr-decision-comment',
         }),
       );
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
+    });
+
+    it('uses the post-upsert stage so a concurrent advance past code-review skips fanout', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      mockUpsertResolvedProductDecision.mockResolvedValue({
+        inserted: true,
+        state: { currentStage: 'merged' },
+      });
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockUpsertResolvedProductDecision).toHaveBeenCalled();
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
       expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
     });
@@ -761,18 +791,22 @@ describe('POST /api/webhooks/github', () => {
       expect(mockSetSubStage).toHaveBeenCalledWith('issue_42', 'spec-ready');
     });
 
-    it('returns 200 on WorkflowTransitionError for spec merge (item already past spec-draft)', async () => {
+    it('returns 200 when spec merge is already past spec-draft (idempotent no-op)', async () => {
       const body = mergedPrPayload('helm/spec/issue_42');
-      mockGet.mockResolvedValue({
-        externalId: 'issue_42',
-        productSlug: 'test-app',
-        currentStage: 'spec-ready',
-        history: [],
+      mockTransitionIfCurrentStage.mockResolvedValue({
+        state: { externalId: 'issue_42', currentStage: 'spec-ready', history: [] },
+        applied: false,
       });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransitionIfCurrentStage).not.toHaveBeenCalled();
+      expect(mockTransitionIfCurrentStage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          fromStage: 'spec-draft',
+          toStage: 'spec-ready',
+        }),
+      );
     });
 
     it('returns 200 on ItemNotFoundError for spec merge (item not in this Helm instance)', async () => {
@@ -818,18 +852,22 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
-    it('returns 200 on WorkflowTransitionError for plan merge (item already past plan-draft)', async () => {
+    it('returns 200 when plan merge is already past plan-draft (idempotent no-op)', async () => {
       const body = mergedPrPayload('helm/plan/issue_42');
-      mockGet.mockResolvedValue({
-        externalId: 'issue_42',
-        productSlug: 'test-app',
-        currentStage: 'plan-ready',
-        history: [],
+      mockTransitionIfCurrentStage.mockResolvedValue({
+        state: { externalId: 'issue_42', currentStage: 'plan-ready', history: [] },
+        applied: false,
       });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransitionIfCurrentStage).not.toHaveBeenCalled();
+      expect(mockTransitionIfCurrentStage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          fromStage: 'plan-draft',
+          toStage: 'plan-ready',
+        }),
+      );
     });
 
     it('returns 200 on ItemNotFoundError for plan merge (item not in this Helm instance)', async () => {
@@ -883,18 +921,22 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
-    it('returns 200 on WorkflowTransitionError for impl merge (item already past code-review)', async () => {
+    it('returns 200 when impl merge is already past code-review (idempotent no-op)', async () => {
       const body = mergedPrPayload('helm/impl/issue_42');
-      mockGet.mockResolvedValue({
-        externalId: 'issue_42',
-        productSlug: 'test-app',
-        currentStage: 'merged',
-        history: [],
+      mockTransitionIfCurrentStage.mockResolvedValue({
+        state: { externalId: 'issue_42', currentStage: 'merged', history: [] },
+        applied: false,
       });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockTransitionIfCurrentStage).not.toHaveBeenCalled();
+      expect(mockTransitionIfCurrentStage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          fromStage: 'code-review',
+          toStage: 'merged',
+        }),
+      );
     });
 
     it('returns 200 on ItemNotFoundError for impl merge (item not in this Helm instance)', async () => {

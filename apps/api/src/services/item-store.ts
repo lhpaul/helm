@@ -5,7 +5,7 @@ import { INITIAL_STAGE, validateTransition } from '@helm/workflow';
 import type { WorkflowStage } from '@helm/workflow';
 import { ItemAlreadyExistsError, ItemNotFoundError, StageMismatchError } from './errors.js';
 import { EXTERNAL_ID_REGEX } from './types.js';
-import type { ItemState, WorkflowEvent } from './types.js';
+import type { ItemState, ResolvedProductDecision, WorkflowEvent } from './types.js';
 
 /**
  * File-based persistence for item workflow state.
@@ -88,12 +88,8 @@ export class ItemStore {
   /**
    * Advances an item to a new workflow stage.
    *
-   * NOTE: This implementation has no concurrency control. If two callers
-   * invoke transition() on the same externalId concurrently, the last write
-   * wins and the intermediate transition is lost silently. This is acceptable
-   * for v0 (single-process, single-user). Address with file locking or
-   * optimistic versioning when parallel agents become real (target: Session 8+
-   * with parallel reviewers).
+   * Concurrent writers for the same externalId are serialized via withItemLock
+   * (same queue as transitionIfCurrentStage / upsertResolvedProductDecision).
    *
    * Throws ItemNotFoundError if the item does not exist.
    * Throws WorkflowTransitionError if the transition is not permitted.
@@ -104,16 +100,18 @@ export class ItemStore {
     triggeredBy: string;
     note?: string;
   }): Promise<ItemState> {
-    const current = await readJson<ItemState>(this.itemPath(input.externalId));
-    if (current === null) {
-      throw new ItemNotFoundError(input.externalId);
-    }
+    return this.withItemLock(input.externalId, async () => {
+      const current = await readJson<ItemState>(this.itemPath(input.externalId));
+      if (current === null) {
+        throw new ItemNotFoundError(input.externalId);
+      }
 
-    // Throws WorkflowTransitionError if the transition is not in VALID_TRANSITIONS.
-    // The file is NOT written until after this check — invalid transitions are a no-op.
-    validateTransition(current.currentStage, input.toStage);
+      // Throws WorkflowTransitionError if the transition is not in VALID_TRANSITIONS.
+      // The file is NOT written until after this check — invalid transitions are a no-op.
+      validateTransition(current.currentStage, input.toStage);
 
-    return this.applyTransition(current, input);
+      return this.applyTransition(current, input);
+    });
   }
 
   /**
@@ -183,16 +181,59 @@ export class ItemStore {
     triggeredBy: string;
     note?: string;
   }): Promise<ItemState> {
-    const current = await readJson<ItemState>(this.itemPath(input.externalId));
-    if (current === null) {
-      throw new ItemNotFoundError(input.externalId);
-    }
+    return this.withItemLock(input.externalId, async () => {
+      const current = await readJson<ItemState>(this.itemPath(input.externalId));
+      if (current === null) {
+        throw new ItemNotFoundError(input.externalId);
+      }
 
-    if (current.currentStage !== input.fromStage) {
-      throw new StageMismatchError(input.externalId, input.fromStage, current.currentStage);
-    }
+      if (current.currentStage !== input.fromStage) {
+        throw new StageMismatchError(input.externalId, input.fromStage, current.currentStage);
+      }
 
-    return this.applyTransition(current, input);
+      return this.applyTransition(current, input);
+    });
+  }
+
+  async upsertResolvedProductDecision(input: {
+    externalId: string;
+    decision: Omit<ResolvedProductDecision, 'recordedAt'> & { recordedAt?: string };
+    triggeredBy: string;
+  }): Promise<{ state: ItemState; inserted: boolean }> {
+    return this.withItemLock(input.externalId, async () => {
+      const current = await readJson<ItemState>(this.itemPath(input.externalId));
+      if (current === null) {
+        throw new ItemNotFoundError(input.externalId);
+      }
+
+      const existing = current.resolvedProductDecisions ?? [];
+      if (existing.some((decision) => decision.fingerprint === input.decision.fingerprint)) {
+        return { state: structuredClone(current), inserted: false };
+      }
+
+      const now = new Date().toISOString();
+      const decision: ResolvedProductDecision = {
+        ...input.decision,
+        recordedAt: input.decision.recordedAt ?? now,
+      };
+      const auditEvent: WorkflowEvent = {
+        fromStage: current.currentStage,
+        toStage: current.currentStage,
+        triggeredBy: input.triggeredBy,
+        at: now,
+        note: `resolved_product_decision:${decision.fingerprint}: chose ${decision.chosenOption}`,
+        idempotencyKey: `resolved-product-decision:${decision.fingerprint}`,
+      };
+      const updated: ItemState = {
+        ...current,
+        resolvedProductDecisions: [...existing, decision],
+        history: [...current.history, auditEvent],
+        updatedAt: now,
+      };
+
+      await writeJsonAtomic(this.itemPath(current.externalId), updated);
+      return { state: structuredClone(updated), inserted: true };
+    });
   }
 
   /**

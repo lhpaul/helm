@@ -298,6 +298,158 @@ describe('forceTransition', () => {
   });
 });
 
+describe('upsertResolvedProductDecision', () => {
+  const decision = {
+    fingerprint: 'kind=product_decision|title=pick direction|paths=src/a.ts|markers=api',
+    conflictKind: 'product_decision' as const,
+    conflictTitle: 'Pick direction',
+    scope: { paths: ['src/a.ts'], markers: ['api'] },
+    chosenOption: 'Option A',
+    recordedAt: '2026-07-22T12:00:00.000Z',
+    source: {
+      provider: 'github' as const,
+      owner: 'test-org',
+      repo: 'test-repo',
+      prNumber: 42,
+      authorLogin: 'maintainer',
+    },
+  };
+
+  it('persists a resolved decision with audit history', async () => {
+    await store.create(BASE_INPUT);
+
+    const { state, inserted } = await store.upsertResolvedProductDecision({
+      externalId: 'HLM-1',
+      decision,
+      triggeredBy: 'webhook:pr-decision-comment',
+    });
+
+    expect(inserted).toBe(true);
+    expect(state.resolvedProductDecisions).toEqual([decision]);
+    expect(state.history.at(-1)).toMatchObject({
+      fromStage: 'discovery',
+      toStage: 'discovery',
+      triggeredBy: 'webhook:pr-decision-comment',
+      idempotencyKey: `resolved-product-decision:${decision.fingerprint}`,
+    });
+    expect(state.history.at(-1)?.note).toContain('resolved_product_decision');
+  });
+
+  it('does not duplicate the same decision fingerprint', async () => {
+    await store.create(BASE_INPUT);
+    await store.upsertResolvedProductDecision({
+      externalId: 'HLM-1',
+      decision,
+      triggeredBy: 'webhook:pr-decision-comment',
+    });
+
+    const replay = await store.upsertResolvedProductDecision({
+      externalId: 'HLM-1',
+      decision: { ...decision, chosenOption: 'Option A again' },
+      triggeredBy: 'webhook:pr-decision-comment',
+    });
+
+    expect(replay.inserted).toBe(false);
+    expect(replay.state.resolvedProductDecisions).toHaveLength(1);
+    expect(
+      replay.state.history.filter((event) => event.note?.includes(decision.fingerprint)),
+    ).toHaveLength(1);
+  });
+
+  it('reloads the decision ledger from disk after a restart-style re-read', async () => {
+    await store.create(BASE_INPUT);
+    await store.upsertResolvedProductDecision({
+      externalId: 'HLM-1',
+      decision,
+      triggeredBy: 'webhook:pr-decision-comment',
+    });
+
+    const restartedStore = new ItemStore(itemsDir);
+    const state = await restartedStore.get('HLM-1');
+
+    expect(state?.resolvedProductDecisions?.[0]).toEqual(decision);
+  });
+
+  it('preserves decisions across concurrent transition and upsert writers', async () => {
+    await store.create(BASE_INPUT);
+    await store.transition({
+      externalId: 'HLM-1',
+      toStage: 'spec-draft',
+      triggeredBy: 'agent:spec-writer',
+    });
+
+    const [transitioned, upserted] = await Promise.all([
+      store.transition({
+        externalId: 'HLM-1',
+        toStage: 'spec-ready',
+        triggeredBy: 'agent:spec-reviewer',
+      }),
+      store.upsertResolvedProductDecision({
+        externalId: 'HLM-1',
+        decision,
+        triggeredBy: 'webhook:pr-decision-comment',
+      }),
+    ]);
+
+    const finalState = await store.get('HLM-1');
+    expect(finalState?.currentStage).toBe('spec-ready');
+    expect(finalState?.resolvedProductDecisions).toEqual([decision]);
+    // Serialized writers: final disk state is the source of truth.
+    expect(transitioned.currentStage).toBe('spec-ready');
+    expect(upserted.state.resolvedProductDecisions).toEqual([decision]);
+  });
+
+  it('serializes concurrent upserts so distinct decision fingerprints both persist', async () => {
+    await store.create(BASE_INPUT);
+    const otherDecision = {
+      ...decision,
+      fingerprint: 'kind=product_decision|title=other direction|paths=src/b.ts|markers=api',
+      conflictTitle: 'Other direction',
+      scope: { paths: ['src/b.ts'], markers: ['api'] },
+      chosenOption: 'Option B',
+    };
+
+    const [first, second] = await Promise.all([
+      store.upsertResolvedProductDecision({
+        externalId: 'HLM-1',
+        decision,
+        triggeredBy: 'webhook:pr-decision-comment',
+      }),
+      store.upsertResolvedProductDecision({
+        externalId: 'HLM-1',
+        decision: otherDecision,
+        triggeredBy: 'webhook:pr-decision-comment',
+      }),
+    ]);
+
+    const finalState = await store.get('HLM-1');
+    expect(finalState?.resolvedProductDecisions).toHaveLength(2);
+    expect(finalState?.resolvedProductDecisions?.map((d) => d.fingerprint).sort()).toEqual(
+      [decision.fingerprint, otherDecision.fingerprint].sort(),
+    );
+    expect(first.inserted && second.inserted).toBe(true);
+  });
+
+  it('survives a stage move then re-dispatch-style reload of the decision ledger', async () => {
+    await store.create(BASE_INPUT);
+    await store.upsertResolvedProductDecision({
+      externalId: 'HLM-1',
+      decision,
+      triggeredBy: 'webhook:pr-decision-comment',
+    });
+    await store.transition({
+      externalId: 'HLM-1',
+      toStage: 'spec-draft',
+      triggeredBy: 'agent:spec-writer',
+    });
+
+    // Simulate dispatch-scheduler refreshing item state from disk at job start.
+    const dispatchRead = await new ItemStore(itemsDir).get('HLM-1');
+    expect(dispatchRead?.currentStage).toBe('spec-draft');
+    expect(dispatchRead?.resolvedProductDecisions).toEqual([decision]);
+  });
+});
+
 describe('list', () => {
   it('returns empty array when items directory is empty', async () => {
     expect(await store.list()).toEqual([]);

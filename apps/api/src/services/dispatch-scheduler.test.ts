@@ -46,6 +46,9 @@ describe('runDispatchJob fetchTask', () => {
     vi.clearAllMocks();
     mockGetIssueTrackerAdapter.mockResolvedValue({ getItem: mockGetItem });
     vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue(null),
+    } as never);
   });
 
   it('returns null when the tracker item is missing', async () => {
@@ -116,6 +119,9 @@ describe('runDispatchJob lifecycle', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetIssueTrackerAdapter.mockResolvedValue({ getItem: mockGetItem });
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue(null),
+    } as never);
   });
 
   it('records a done job when dispatchStageHandler succeeds', async () => {
@@ -141,6 +147,143 @@ describe('runDispatchJob lifecycle', () => {
         result: expect.objectContaining({ status: 'done' }),
         finishedAt: expect.any(String),
       }),
+    );
+  });
+
+  it('passes persisted product decisions into dispatch context', async () => {
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue(null),
+    } as never);
+
+    await runDispatchJob({ jobId: 'job-1' } as never, {
+      product: { product: { slug: 'test' } } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test',
+        currentStage: 'code-review',
+        resolvedProductDecisions: [
+          {
+            fingerprint: 'kind=product_decision|title=pick direction|paths=|markers=',
+            conflictKind: 'product_decision',
+            conflictTitle: 'Pick direction',
+            scope: { paths: [], markers: [] },
+            chosenOption: 'Option A',
+            recordedAt: '2026-07-22T12:00:00.000Z',
+            source: {
+              provider: 'github',
+              owner: 'o',
+              repo: 'r',
+              prNumber: 42,
+              authorLogin: 'maintainer',
+            },
+          },
+        ],
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot: '/tmp/data',
+      specialistId: 'reviewer-fanout',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+      resolvedProductDecisions?: unknown[];
+    };
+    expect(options.resolvedProductDecisions).toEqual([
+      expect.objectContaining({
+        fingerprint: 'kind=product_decision|title=pick direction|paths=|markers=',
+        chosenOption: 'Option A',
+      }),
+    ]);
+  });
+
+  it('reloads decisions from ItemStore when the queued snapshot is stale', async () => {
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+    const decision = {
+      fingerprint: 'kind=product_decision|title=pick direction|paths=|markers=',
+      conflictKind: 'product_decision' as const,
+      conflictTitle: 'Pick direction',
+      scope: { paths: [] as string[], markers: [] as string[] },
+      chosenOption: 'Option A',
+      recordedAt: '2026-07-22T12:00:00.000Z',
+      source: {
+        provider: 'github' as const,
+        owner: 'o',
+        repo: 'r',
+        prNumber: 42,
+        authorLogin: 'maintainer',
+      },
+    };
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test',
+        currentStage: 'code-review',
+        resolvedProductDecisions: [decision],
+      }),
+    } as never);
+
+    // Queued snapshot has no ledger — decision was persisted after enqueue.
+    await runDispatchJob({ jobId: 'job-1' } as never, {
+      product: { product: { slug: 'test' } } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test',
+        currentStage: 'code-review',
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot: '/tmp/data',
+      specialistId: 'reviewer-fanout',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+      resolvedProductDecisions?: unknown[];
+      loadResolvedProductDecisions?: () => Promise<unknown[]>;
+    };
+    expect(options.resolvedProductDecisions).toEqual([decision]);
+    expect(typeof options.loadResolvedProductDecisions).toBe('function');
+    await expect(options.loadResolvedProductDecisions?.()).resolves.toEqual([decision]);
+    // Defensive copy: mutating the returned array must not touch store state.
+    const loaded = await options.loadResolvedProductDecisions!();
+    loaded.push({ ...decision, fingerprint: 'mutated' });
+    await expect(options.loadResolvedProductDecisions?.()).resolves.toEqual([decision]);
+  });
+
+  it('fails closed when the live decision reload cannot find the item', async () => {
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({
+        externalId: 'LEA-1',
+        productSlug: 'test',
+        currentStage: 'code-review',
+        resolvedProductDecisions: [],
+      })
+      .mockResolvedValueOnce(null);
+    vi.mocked(getItemStore).mockResolvedValue({ get } as never);
+
+    await runDispatchJob({ jobId: 'job-1' } as never, {
+      product: { product: { slug: 'test' } } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test',
+        currentStage: 'code-review',
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot: '/tmp/data',
+      specialistId: 'reviewer-fanout',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+      loadResolvedProductDecisions?: () => Promise<unknown[]>;
+    };
+    await expect(options.loadResolvedProductDecisions?.()).rejects.toThrow(
+      /Item not found while reloading settled decisions/,
     );
   });
 
@@ -349,6 +492,9 @@ describe('runDispatchJob failure handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetIssueTrackerAdapter.mockResolvedValue({ getItem: mockGetItem });
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue(null),
+    } as never);
   });
 
   it('still completes when jobStore.updateJob fails in the error branch', async () => {

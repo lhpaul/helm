@@ -231,11 +231,15 @@ export async function runDispatchJob(
       }
     };
 
+    // Re-read item state so decisions recorded after enqueue are visible in this run.
+    const store = await getItemStore();
+    const freshItem = (await store.get(ctx.item.externalId)) ?? ctx.item;
+
     const result = await dispatchStageHandler(
       {
-        externalId: ctx.item.externalId,
-        productSlug: ctx.item.productSlug,
-        currentStage: ctx.item.currentStage,
+        externalId: freshItem.externalId,
+        productSlug: freshItem.productSlug,
+        currentStage: freshItem.currentStage,
       },
       ctx.product,
       runtime,
@@ -247,6 +251,16 @@ export async function runDispatchJob(
         githubToken: ctx.githubToken,
         fetchTask,
         feedback: ctx.feedback,
+        resolvedProductDecisions: [...(freshItem.resolvedProductDecisions ?? [])],
+        loadResolvedProductDecisions: async () => {
+          const latest = await store.get(freshItem.externalId);
+          if (latest === null) {
+            throw new Error(
+              `Item not found while reloading settled decisions: ${freshItem.externalId}`,
+            );
+          }
+          return [...(latest.resolvedProductDecisions ?? [])];
+        },
       },
     );
 

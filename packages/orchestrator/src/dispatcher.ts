@@ -14,6 +14,7 @@ import {
 } from './specialists/implementer.js';
 import { runCodeReviewLoop } from './review-loop/code-review-loop.js';
 import type { StopRuleEscalationReason } from './review-loop/stop-rule.js';
+import type { StoredResolvedProductDecision } from './review-loop/adjudication.js';
 import { provisionCodeWorkspace, artifactsDirFor } from './specialists/code-workspace.js';
 import {
   fetchProductContext,
@@ -118,6 +119,16 @@ export type DispatchOptions = {
    * (1..10000 chars); the dispatcher re-checks for non-empty as defense-in-depth.
    */
   feedback?: string;
+  /**
+   * Persisted human choices for previously escalated product decisions. Used by
+   * review loops to avoid reopening the same settled conflict.
+   */
+  resolvedProductDecisions?: StoredResolvedProductDecision[];
+  /**
+   * Optional live loader for the settled-decision ledger. Prefer this over the
+   * static snapshot when a review job may span multiple cycles.
+   */
+  loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
 };
 
 // ── Status resolution ─────────────────────────────────────────────────────────
@@ -585,6 +596,8 @@ export async function dispatchStageHandler(
       runGit: options.runGit,
       runGh: options.runGh,
       fetchFn: options.fetchFn,
+      resolvedProductDecisions: options.resolvedProductDecisions,
+      loadResolvedProductDecisions: options.loadResolvedProductDecisions,
     });
 
     return {

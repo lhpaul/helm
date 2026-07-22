@@ -5,6 +5,10 @@ import {
   parseGitHubWebhook,
   type NormalizedEvent,
 } from '@helm/adapters';
+import {
+  decisionMatchesLatestAdjudication,
+  parseHumanProductDecisionComment,
+} from '@helm/orchestrator';
 import { WorkflowTransitionError } from '@helm/workflow';
 import { parseArtifactBranch } from '@helm/shared';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
@@ -34,167 +38,6 @@ const ORCHESTRATOR_SENDER_LOGINS = new Set(['helm-bot']);
 
 function isOrchestratorSender(login: string | null): boolean {
   return login !== null && ORCHESTRATOR_SENDER_LOGINS.has(login);
-}
-
-const PRODUCT_DECISION_MARKER = '<!-- helm:product-decision -->';
-
-type ProductDecisionComment = {
-  conflictKind: string;
-  conflictTitle: string;
-  chosenOption: string;
-};
-
-type AdjudicationConflictRecord = ProductDecisionComment & {
-  body: string;
-};
-
-function fieldFromDecisionBody(body: string, names: string[]): string | null {
-  for (const name of names) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const match = body.match(
-      new RegExp(
-        `^\\s*(?:[-*]\\s*)?(?:\\*\\*)?${escaped}(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?\\s*(.+?)\\s*(?:\\*\\*)?\\s*$`,
-        'im',
-      ),
-    );
-    const value = match?.[1]?.replace(/\*\*$/u, '').trim();
-    if (value) return value;
-  }
-  return null;
-}
-
-function conflictFromDecisionMarkdown(
-  body: string,
-): Pick<ProductDecisionComment, 'conflictKind' | 'conflictTitle'> | null {
-  const match = body.match(/^\s*[-*]\s*\*\*(product_decision|doc_conflict)\*\*\s*·\s*(.+?)\s*$/im);
-  const conflictKind = match?.[1]?.trim();
-  const conflictTitle = match?.[2]?.trim();
-  if (!conflictKind || !conflictTitle) return null;
-  return { conflictKind, conflictTitle };
-}
-
-function conflictFromDecisionField(
-  body: string,
-): Pick<ProductDecisionComment, 'conflictKind' | 'conflictTitle'> | null {
-  const conflict = fieldFromDecisionBody(body, ['Conflict']);
-  const match = conflict?.match(/^(product_decision|doc_conflict)\s*(?:·|-|:)\s*(.+?)$/iu);
-  const conflictKind = match?.[1]?.trim();
-  const conflictTitle = match?.[2]?.trim();
-  if (!conflictKind || !conflictTitle) return null;
-  return { conflictKind, conflictTitle };
-}
-
-function parseProductDecisionComment(body: string): ProductDecisionComment | null {
-  if (!body.includes(PRODUCT_DECISION_MARKER)) return null;
-  const markdownConflict = conflictFromDecisionMarkdown(body);
-  const labeledConflict = conflictFromDecisionField(body);
-  const conflictKind =
-    markdownConflict?.conflictKind ??
-    labeledConflict?.conflictKind ??
-    fieldFromDecisionBody(body, ['Conflict kind', 'conflict_kind']);
-  const conflictTitle =
-    markdownConflict?.conflictTitle ??
-    labeledConflict?.conflictTitle ??
-    fieldFromDecisionBody(body, ['Conflict title', 'conflict_title']);
-  const chosenOption = fieldFromDecisionBody(body, ['Chosen option', 'chosen_option', 'Chosen']);
-  if (!conflictKind || !conflictTitle || !chosenOption) return null;
-  return { conflictKind, conflictTitle, chosenOption };
-}
-
-function normalizeDecisionText(value: string): string {
-  return value.trim().replace(/\s+/g, ' ').toLowerCase();
-}
-
-function extractMarkdownSection(body: string, heading: string): string {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = body.match(
-    new RegExp(`(?:^|\\n)##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, 'i'),
-  );
-  return match?.[1]?.trim() ?? '';
-}
-
-function adjudicationExternalId(body: string): string | null {
-  return body.match(/^#\s+Review Adjudication:\s*(.+?)\s*$/im)?.[1]?.trim() ?? null;
-}
-
-function adjudicationStatus(body: string): string | null {
-  return (
-    extractMarkdownSection(body, 'Status').match(/^(AUTO_REMEDIATE|HUMAN_REQUIRED)\b/i)?.[1] ?? null
-  );
-}
-
-function parseAdjudicationConflicts(body: string): AdjudicationConflictRecord[] {
-  const conflicts = extractMarkdownSection(body, 'Conflicts');
-  if (!conflicts) return [];
-
-  const records: AdjudicationConflictRecord[] = [];
-  const lines = conflicts.split(/\r?\n/);
-  let current: {
-    conflictKind: string;
-    conflictTitle: string;
-    lines: string[];
-  } | null = null;
-
-  const flush = () => {
-    if (!current) return;
-    records.push({
-      conflictKind: current.conflictKind,
-      conflictTitle: current.conflictTitle,
-      chosenOption: '',
-      body: current.lines.join('\n'),
-    });
-  };
-
-  for (const line of lines) {
-    const match = line.match(/^\s*-\s*\*\*(product_decision|doc_conflict)\*\*\s*·\s*(.+?)\s*$/i);
-    if (match) {
-      flush();
-      current = {
-        conflictKind: match[1] ?? '',
-        conflictTitle: match[2]?.trim() ?? '',
-        lines: [line],
-      };
-    } else if (current) {
-      current.lines.push(line);
-    }
-  }
-  flush();
-
-  return records;
-}
-
-function productDecisionMatchesAdjudication(
-  decision: ProductDecisionComment,
-  externalId: string,
-  adjudicationBody: string,
-): boolean {
-  if (adjudicationExternalId(adjudicationBody) !== externalId) return false;
-  if (adjudicationStatus(adjudicationBody)?.toUpperCase() !== 'HUMAN_REQUIRED') return false;
-
-  const expectedKind = normalizeDecisionText(decision.conflictKind);
-  const expectedTitle = normalizeDecisionText(decision.conflictTitle);
-  const expectedOption = normalizeDecisionText(decision.chosenOption);
-
-  return parseAdjudicationConflicts(adjudicationBody).some((record) => {
-    return (
-      normalizeDecisionText(record.conflictKind) === expectedKind &&
-      normalizeDecisionText(record.conflictTitle) === expectedTitle &&
-      normalizeDecisionText(record.body).includes(expectedOption)
-    );
-  });
-}
-
-function hasMatchingLatestAdjudication(
-  decision: ProductDecisionComment,
-  externalId: string,
-  commentBodies: string[],
-): boolean {
-  const latestAdjudication = [...commentBodies]
-    .reverse()
-    .find((body) => adjudicationExternalId(body) === externalId);
-  return latestAdjudication
-    ? productDecisionMatchesAdjudication(decision, externalId, latestAdjudication)
-    : false;
 }
 
 export const webhooksRouter = new Hono();
@@ -316,7 +159,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
   } else if (event.type === 'comment_added') {
     console.info(`[webhooks/github] comment_added on ${event.externalId} — no action in v0`);
   } else if (event.type === 'pull_request_comment_created') {
-    const decision = parseProductDecisionComment(event.body);
+    const decision = parseHumanProductDecisionComment(event.body);
     if (!decision) {
       console.info('[webhooks/github] PR comment ignored — no structured Helm decision');
     } else {
@@ -369,7 +212,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         }
 
         const item = await itemStore.get(parsed.externalId);
-        if (item?.productSlug !== config.product.slug || item.currentStage !== 'code-review') {
+        if (item?.productSlug !== config.product.slug) {
           console.info(
             `[webhooks/github] PR decision ignored — item stage '${item?.currentStage ?? 'missing'}'`,
           );
@@ -381,13 +224,41 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           prNumber: pr.number,
           githubToken,
         });
-        const decisionMatchesRecord = hasMatchingLatestAdjudication(
+        const decisionMatchesRecord = decisionMatchesLatestAdjudication({
           decision,
-          parsed.externalId,
-          comments.map((comment) => comment.body),
-        );
+          externalId: parsed.externalId,
+          adjudicationBodies: comments.map((comment) => comment.body),
+        });
         if (!decisionMatchesRecord) {
           console.info('[webhooks/github] PR decision ignored — no matching adjudication record');
+          return c.json({ processed: true });
+        }
+
+        const { state: afterDecision } = await itemStore.upsertResolvedProductDecision({
+          externalId: parsed.externalId,
+          decision: {
+            fingerprint: decision.fingerprint,
+            conflictKind: decision.conflictKind,
+            conflictTitle: decision.conflictTitle,
+            scope: decision.scope,
+            chosenOption: decision.chosenOption,
+            source: {
+              provider: 'github',
+              owner: event.owner,
+              repo: event.repo,
+              prNumber: event.prNumber,
+              authorLogin: event.authorLogin,
+            },
+          },
+          triggeredBy: 'webhook:pr-decision-comment',
+        });
+
+        // Gate dispatch on the post-upsert stage so a concurrent transition out
+        // of code-review cannot enqueue a stale reviewer-fanout job.
+        if (afterDecision.currentStage !== 'code-review') {
+          console.info(
+            `[webhooks/github] PR decision recorded without dispatch — item stage '${afterDecision.currentStage}'`,
+          );
           return c.json({ processed: true });
         }
 

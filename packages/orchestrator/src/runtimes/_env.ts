@@ -39,14 +39,41 @@ export type SpawnFn = (
 export const GIT_CREDENTIAL_KEYS = ['GITHUB_TOKEN', 'GH_TOKEN'] as const;
 
 /**
+ * Extra secret-bearing keys commonly present in the Helm API process env.
+ * Scrubbed from agent subprocesses so a compromised specialist cannot read
+ * webhook secrets, tracker credentials, or other host secrets via tool calls.
+ */
+export const API_SECRET_KEYS = [
+  ...GIT_CREDENTIAL_KEYS,
+  'GITHUB_WEBHOOK_SECRET',
+  'LINEAR_API_KEY',
+  'LINEAR_WEBHOOK_SECRET',
+  'LINEAR_OAUTH_CLIENT_SECRET',
+  'SENTRY_AUTH_TOKEN',
+  'SENTRY_DSN',
+  'AMPLITUDE_API_KEY',
+  'GROWTHBOOK_CLIENT_KEY',
+  'DATABASE_URL',
+  'BETTER_AUTH_SECRET',
+  'BETTER_AUTH_DATABASE_URL',
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+] as const;
+
+/** Matches common secret-bearing env key suffixes/names beyond the explicit list. */
+export const SECRET_ENV_KEY_PATTERN =
+  /(?:^|_)(TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|API_KEY|DATABASE_URL|SECRET_KEY|ACCESS_KEY|CREDENTIALS)$/i;
+
+/**
  * Builds the subprocess environment from the host `process.env`, applying two
  * transformations:
  *
- *  1. **Credential scrub**: every key in `scrubKeys` is deleted so a compromised
- *     agent subprocess cannot exfiltrate the host's credentials via tool calls.
- *     Defaults to `GIT_CREDENTIAL_KEYS`; runtimes pass a wider list when they
- *     have their own provider credentials to strip (e.g. Codex strips the OpenAI
- *     keys so subscription auth on disk is used and API keys cannot leak).
+ *  1. **Credential scrub**: every key in `scrubKeys` is deleted, and any env
+ *     key matching `SECRET_ENV_KEY_PATTERN` is deleted, so a compromised agent
+ *     subprocess cannot exfiltrate host credentials via tool calls. Defaults to
+ *     `API_SECRET_KEYS` (git tokens plus common API/webhook secrets). Runtimes
+ *     may pass a wider list when they have provider credentials to strip
+ *     (e.g. Codex strips OpenAI keys so subscription auth on disk is used).
  *
  *  2. **Extra env**: caller-provided key/value pairs are merged on top (used by
  *     specialists that need their own env vars).
@@ -57,20 +84,27 @@ export const GIT_CREDENTIAL_KEYS = ['GITHUB_TOKEN', 'GH_TOKEN'] as const;
  * Returns a plain `Record<string, string>` — all values are guaranteed to be
  * strings (undefined entries from `process.env` are filtered out).
  */
+function scrubSecretKeys(env: Record<string, string>, scrubKeys: readonly string[]): void {
+  for (const key of scrubKeys) delete env[key];
+  for (const key of Object.keys(env)) {
+    if (SECRET_ENV_KEY_PATTERN.test(key)) delete env[key];
+  }
+}
+
 export function buildSubprocessEnv(
   extra?: Record<string, string>,
-  scrubKeys: readonly string[] = GIT_CREDENTIAL_KEYS,
+  scrubKeys: readonly string[] = API_SECRET_KEYS,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined) env[k] = v;
   }
   // First scrub: remove credentials from host env before merging overrides.
-  for (const key of scrubKeys) delete env[key];
+  scrubSecretKeys(env, scrubKeys);
   // Merge caller-provided overrides last so they can set whatever the specialist needs.
   if (extra) Object.assign(env, extra);
   // Second scrub: prevent credential re-injection via the `extra` parameter.
-  for (const key of scrubKeys) delete env[key];
+  scrubSecretKeys(env, scrubKeys);
   return env;
 }
 

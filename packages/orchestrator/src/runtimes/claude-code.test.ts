@@ -530,12 +530,36 @@ describe('ClaudeCodeRuntime', () => {
   });
 
   it('buildSubprocessEnv merges extra env on top of scrubbed process.env', () => {
-    const extra = { MY_API_KEY: 'key-abc', CUSTOM_FLAG: '1' };
+    const extra = { HELM_FEATURE_FLAG: 'key-abc', CUSTOM_FLAG: '1' };
     const env = buildSubprocessEnv(extra);
-    expect(env['MY_API_KEY']).toBe('key-abc');
+    expect(env['HELM_FEATURE_FLAG']).toBe('key-abc');
     expect(env['CUSTOM_FLAG']).toBe('1');
     // Scrub still applies even with extra env
     expect(env['GITHUB_TOKEN']).toBeUndefined();
+  });
+
+  it('buildSubprocessEnv scrubs webhook and API secrets by name and pattern', () => {
+    const originalWebhook = process.env['GITHUB_WEBHOOK_SECRET'];
+    const originalLinear = process.env['LINEAR_API_KEY'];
+    const originalCustom = process.env['MY_SERVICE_SECRET'];
+    try {
+      process.env['GITHUB_WEBHOOK_SECRET'] = 'whsec_abc';
+      process.env['LINEAR_API_KEY'] = 'lin_key';
+      process.env['MY_SERVICE_SECRET'] = 'pattern_secret';
+      const env = buildSubprocessEnv({ SAFE_FLAG: '1', OPENAI_API_KEY: 'reinject' });
+      expect(env['GITHUB_WEBHOOK_SECRET']).toBeUndefined();
+      expect(env['LINEAR_API_KEY']).toBeUndefined();
+      expect(env['MY_SERVICE_SECRET']).toBeUndefined();
+      expect(env['OPENAI_API_KEY']).toBeUndefined();
+      expect(env['SAFE_FLAG']).toBe('1');
+    } finally {
+      if (originalWebhook === undefined) delete process.env['GITHUB_WEBHOOK_SECRET'];
+      else process.env['GITHUB_WEBHOOK_SECRET'] = originalWebhook;
+      if (originalLinear === undefined) delete process.env['LINEAR_API_KEY'];
+      else process.env['LINEAR_API_KEY'] = originalLinear;
+      if (originalCustom === undefined) delete process.env['MY_SERVICE_SECRET'];
+      else process.env['MY_SERVICE_SECRET'] = originalCustom;
+    }
   });
 
   it('spawn() passes scrubbed env to spawnFn', async () => {

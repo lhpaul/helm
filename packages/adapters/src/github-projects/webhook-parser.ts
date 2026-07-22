@@ -257,6 +257,7 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
       if (!provider || parsed.data.state !== 'success' || prNumber === null) {
         return { type: 'unknown', raw: rawEvent };
       }
+      const headRef = findImplBranchRef(parsed.data.branches);
       return {
         type: 'external_review_ready',
         provider,
@@ -264,7 +265,7 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
         repo: parsed.data.repository?.name ?? null,
         prNumber,
         targetRevision: parsed.data.sha,
-        headRef: findImplBranchRef(parsed.data.branches),
+        ...(headRef ? { headRef } : {}),
         timestamp,
       };
     }

@@ -183,9 +183,20 @@ export async function clearPendingExternalReview(input: {
   });
 }
 
+/** Minimum gap between opportunistic expiry sweeps on the dispatch hot path. */
+const PENDING_EXTERNAL_SWEEP_MIN_INTERVAL_MS = 60_000;
+let lastPendingExternalSweepAt = 0;
+
 export async function sweepExpiredPendingExternalReviews(): Promise<number> {
   const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
   return outbox.removeExpiredPendingExternalReviews();
+}
+
+async function maybeSweepExpiredPendingExternalReviews(): Promise<void> {
+  const now = Date.now();
+  if (now - lastPendingExternalSweepAt < PENDING_EXTERNAL_SWEEP_MIN_INTERVAL_MS) return;
+  lastPendingExternalSweepAt = now;
+  await sweepExpiredPendingExternalReviews();
 }
 
 async function finalizePendingExternalReviewResume(
@@ -528,7 +539,7 @@ export async function scheduleItemDispatch(input: {
     return { scheduled: false, reason: DISPATCH_UNAVAILABLE };
   }
 
-  await sweepExpiredPendingExternalReviews();
+  await maybeSweepExpiredPendingExternalReviews();
 
   const products = await getProductRegistry();
   const product = products.find((p) => p.product.slug === input.productSlug);

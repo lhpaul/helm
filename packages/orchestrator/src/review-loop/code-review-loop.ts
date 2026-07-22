@@ -79,6 +79,12 @@ export type RunCodeReviewLoopParams = {
   sleep?: (ms: number) => Promise<void>;
   fetchFn?: FetchFn;
   resolvedProductDecisions?: StoredResolvedProductDecision[];
+  /**
+   * Optional per-pass loader for the settled-decision ledger. When provided,
+   * each adjudication/remediation cycle reloads decisions from durable storage
+   * so a human choice recorded while the job is still running is visible.
+   */
+  loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
 };
 
 function escalationMessage(
@@ -348,6 +354,7 @@ export async function runCodeReviewLoop(
         loopConfig,
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,
+        loadResolvedProductDecisions: params.loadResolvedProductDecisions,
       });
       ranRemediation = true;
       totalCost = remediationOutcome.totalCost;
@@ -442,6 +449,7 @@ export async function runCodeReviewLoop(
         loopConfig,
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,
+        loadResolvedProductDecisions: params.loadResolvedProductDecisions,
       });
       ranRemediation = true;
       totalCost = remediationOutcome.totalCost;
@@ -703,6 +711,20 @@ function remediationErrorToLoopResult(
   };
 }
 
+async function resolveSettledDecisions(input: {
+  resolvedProductDecisions?: StoredResolvedProductDecision[];
+  loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
+}): Promise<StoredResolvedProductDecision[]> {
+  if (input.loadResolvedProductDecisions) {
+    try {
+      return await input.loadResolvedProductDecisions();
+    } catch {
+      // Fall back to the dispatch-time snapshot when the live reload fails.
+    }
+  }
+  return input.resolvedProductDecisions ?? [];
+}
+
 async function runAdjudicationIfEnabled(input: {
   externalId: string;
   product: Product;
@@ -719,11 +741,13 @@ async function runAdjudicationIfEnabled(input: {
   fetchFn?: FetchFn;
   loopConfig: ReviewLoopConfig;
   resolvedProductDecisions?: StoredResolvedProductDecision[];
+  loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
 }): Promise<AdjudicationPassOutcome> {
   if (!input.loopConfig.adjudicationEnabled) {
     return { status: 'skipped' };
   }
-  return runAdjudicationPass(input);
+  const resolvedProductDecisions = await resolveSettledDecisions(input);
+  return runAdjudicationPass({ ...input, resolvedProductDecisions });
 }
 
 /**
@@ -764,6 +788,7 @@ async function runRemediationPass(input: {
   loopConfig: ReviewLoopConfig;
   fetchFn?: FetchFn;
   resolvedProductDecisions?: StoredResolvedProductDecision[];
+  loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
 }): Promise<RemediationPassOutcome> {
   let totalCost = input.totalCost;
   let maxDuration = input.maxDuration;
@@ -784,6 +809,7 @@ async function runRemediationPass(input: {
     fetchFn: input.fetchFn,
     loopConfig: input.loopConfig,
     resolvedProductDecisions: input.resolvedProductDecisions,
+    loadResolvedProductDecisions: input.loadResolvedProductDecisions,
   });
 
   if (adjudication.status === 'human_required') {

@@ -341,4 +341,54 @@ HUMAN_REQUIRED`);
     expect(suppressed.body).toContain('SETTLED');
     expect(suppressed.body).toMatch(/## Status\s*\nAUTO_REMEDIATE/);
   });
+
+  it('keeps fingerprints scope-sensitive so path/marker changes do not collide', () => {
+    const base = parseAdjudicationBody(`# Review Adjudication: HLM-72
+
+## Conflicts
+- **product_decision** · Pick direction
+  Paths: src/a.ts
+  Scope markers: API
+  Option A: keep the current behavior.
+  Option B: change the behavior.
+
+## Status
+HUMAN_REQUIRED`);
+    const differentPath = parseAdjudicationBody(`# Review Adjudication: HLM-72
+
+## Conflicts
+- **product_decision** · Pick direction
+  Paths: src/b.ts
+  Scope markers: API
+  Option A: keep the current behavior.
+  Option B: change the behavior.
+
+## Status
+HUMAN_REQUIRED`);
+    const differentMarker = parseAdjudicationBody(`# Review Adjudication: HLM-72
+
+## Conflicts
+- **product_decision** · Pick direction
+  Paths: src/a.ts
+  Scope markers: UI
+  Option A: keep the current behavior.
+  Option B: change the behavior.
+
+## Status
+HUMAN_REQUIRED`);
+
+    const baseFp = base.conflicts[0]!.fingerprint;
+    const pathFp = differentPath.conflicts[0]!.fingerprint;
+    const markerFp = differentMarker.conflicts[0]!.fingerprint;
+
+    expect(baseFp).not.toBe(pathFp);
+    expect(baseFp).not.toBe(markerFp);
+    expect(pathFp).not.toBe(markerFp);
+
+    const suppressedWrongScope = suppressSettledConflicts(differentPath, [
+      { fingerprint: baseFp, chosenOption: 'Option A' },
+    ]);
+    expect(suppressedWrongScope.status).toBe('HUMAN_REQUIRED');
+    expect(suppressedWrongScope.conflicts).toHaveLength(1);
+  });
 });

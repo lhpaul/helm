@@ -208,7 +208,7 @@ export class ItemStore {
 
       const existing = current.resolvedProductDecisions ?? [];
       if (existing.some((decision) => decision.fingerprint === input.decision.fingerprint)) {
-        return { state: current, inserted: false };
+        return { state: structuredClone(current), inserted: false };
       }
 
       const now = new Date().toISOString();
@@ -232,7 +232,7 @@ export class ItemStore {
       };
 
       await writeJsonAtomic(this.itemPath(current.externalId), updated);
-      return { state: updated, inserted: true };
+      return { state: structuredClone(updated), inserted: true };
     });
   }
 

@@ -62,7 +62,7 @@ export const API_SECRET_KEYS = [
 
 /** Matches common secret-bearing env key suffixes/names beyond the explicit list. */
 export const SECRET_ENV_KEY_PATTERN =
-  /(?:^|_)(TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|API_KEY|DATABASE_URL)$/i;
+  /(?:^|_)(TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|API_KEY|DATABASE_URL|SECRET_KEY|ACCESS_KEY|CREDENTIALS)$/i;
 
 /**
  * Builds the subprocess environment from the host `process.env`, applying two

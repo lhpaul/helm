@@ -124,6 +124,11 @@ export type DispatchOptions = {
    * review loops to avoid reopening the same settled conflict.
    */
   resolvedProductDecisions?: StoredResolvedProductDecision[];
+  /**
+   * Optional live loader for the settled-decision ledger. Prefer this over the
+   * static snapshot when a review job may span multiple cycles.
+   */
+  loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
 };
 
 // ── Status resolution ─────────────────────────────────────────────────────────
@@ -592,6 +597,7 @@ export async function dispatchStageHandler(
       runGh: options.runGh,
       fetchFn: options.fetchFn,
       resolvedProductDecisions: options.resolvedProductDecisions,
+      loadResolvedProductDecisions: options.loadResolvedProductDecisions,
     });
 
     return {

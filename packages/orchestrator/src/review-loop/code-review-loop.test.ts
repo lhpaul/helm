@@ -780,6 +780,76 @@ describe('runCodeReviewLoop', () => {
     );
   });
 
+  it('reloads settled decisions via loadResolvedProductDecisions before adjudication', async () => {
+    const product: Product = {
+      ...baseProduct,
+      specialists: {
+        ...baseProduct.specialists,
+        'review-adjudicator': { runtime: 'claude_code', model: 'm' },
+      },
+    };
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+    vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+      status: 'done',
+      costUsd: 0.01,
+      durationMs: 100,
+      commentPosted: true,
+      parsed: {
+        status: 'AUTO_REMEDIATE',
+        unifiedPlan: '- **SETTLED** · Vacancy semantics — using recorded choice: Option A',
+        body: '# Review Adjudication\n\n## Status\nAUTO_REMEDIATE',
+        conflictsSection: '',
+        conflicts: [],
+      },
+    });
+
+    const liveDecision = {
+      fingerprint: 'kind=product_decision|title=vacancy semantics|paths=|markers=',
+      conflictKind: 'product_decision' as const,
+      conflictTitle: 'Vacancy semantics',
+      scope: { paths: [] as string[], markers: [] as string[] },
+      chosenOption: 'Option A',
+      recordedAt: '2026-07-22T12:00:00.000Z',
+      source: {
+        provider: 'github' as const,
+        owner: 'o',
+        repo: 'r',
+        prNumber: 42,
+        authorLogin: 'maintainer',
+      },
+    };
+    const loadResolvedProductDecisions = vi.fn().mockResolvedValue([liveDecision]);
+
+    const result = await runCodeReviewLoop({
+      externalId: 'issue_1',
+      product,
+      prUrl: PR_URL,
+      codeRepo: product.code_repos[0]!,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+      // Stale/empty snapshot at job start — live loader supplies the decision.
+      resolvedProductDecisions: [],
+      loadResolvedProductDecisions,
+    });
+
+    expect(result.status).toBe('done');
+    expect(loadResolvedProductDecisions).toHaveBeenCalled();
+    expect(handleReviewAdjudicatorResult).toHaveBeenCalledWith(
+      'issue_1',
+      expect.anything(),
+      expect.any(String),
+      PR_URL,
+      'token',
+      undefined,
+      [liveDecision],
+    );
+  });
+
   it('passes unified adjudication plan to code-remediator on AUTO_REMEDIATE (ADR-037)', async () => {
     const product: Product = {
       ...baseProduct,
@@ -914,7 +984,7 @@ describe('runCodeReviewLoop', () => {
       '/tmp/ws',
       PR_URL,
       expect.any(Map),
-      { spec: undefined },
+      { spec: undefined, resolvedProductDecisions: [] },
     );
   });
 

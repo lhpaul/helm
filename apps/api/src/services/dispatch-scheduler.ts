@@ -252,6 +252,10 @@ export async function runDispatchJob(
         fetchTask,
         feedback: ctx.feedback,
         resolvedProductDecisions: freshItem.resolvedProductDecisions ?? [],
+        loadResolvedProductDecisions: async () => {
+          const latest = (await store.get(freshItem.externalId)) ?? freshItem;
+          return latest.resolvedProductDecisions ?? [];
+        },
       },
     );
 

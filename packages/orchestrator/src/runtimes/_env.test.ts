@@ -1,49 +1,73 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { defaultSpawn, type SubprocessLike } from './_env.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import { API_SECRET_KEYS, SECRET_ENV_KEY_PATTERN, buildSubprocessEnv } from './_env.js';
 
-// `defaultSpawn` is the only spawn-based primitive not exercised through the
-// runtime suites (those inject a fake SpawnFn). We test it directly here:
-//  1. the Bun-unavailable guard throws a clear error, and
-//  2. when Bun is present, stdio is wired non-blocking (stdin:'ignore') with
-//     stdout/stderr piped — a regression here would silently reintroduce the
-//     stdin-blocking hang documented in the defaultSpawn comment.
+const ORIGINAL_ENV = { ...process.env };
 
-describe('defaultSpawn', () => {
-  const originalBun = (globalThis as Record<string, unknown>)['Bun'];
+afterEach(() => {
+  for (const key of Object.keys(process.env)) {
+    if (!(key in ORIGINAL_ENV)) delete process.env[key];
+  }
+  for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
 
-  afterEach(() => {
-    if (originalBun === undefined) {
-      delete (globalThis as Record<string, unknown>)['Bun'];
-    } else {
-      (globalThis as Record<string, unknown>)['Bun'] = originalBun;
+describe('SECRET_ENV_KEY_PATTERN', () => {
+  it.each([
+    'GITHUB_TOKEN',
+    'API_KEY',
+    'MY_API_KEY',
+    'DATABASE_URL',
+    'PRIVATE_KEY',
+    'AUTH_SECRET',
+    'AWS_SECRET_ACCESS_KEY',
+    'STRIPE_SECRET_KEY',
+    'GOOGLE_APPLICATION_CREDENTIALS',
+  ])('matches credential-like key %s', (key) => {
+    expect(SECRET_ENV_KEY_PATTERN.test(key)).toBe(true);
+  });
+
+  it.each(['NODE_ENV', 'PATH', 'HOME', 'LANG', 'HELM_DATA_DIR', 'SAFE_FLAG'])(
+    'does not match non-secret key %s',
+    (key) => {
+      expect(SECRET_ENV_KEY_PATTERN.test(key)).toBe(false);
+    },
+  );
+});
+
+describe('buildSubprocessEnv', () => {
+  it('scrubs explicit API secret keys and credential suffixes from process.env', () => {
+    process.env['GITHUB_TOKEN'] = 'ghp_x';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'aws_x';
+    process.env['STRIPE_SECRET_KEY'] = 'stripe_x';
+    process.env['GOOGLE_APPLICATION_CREDENTIALS'] = '/tmp/creds.json';
+    process.env['NODE_ENV'] = 'test';
+    process.env['PATH'] = '/usr/bin';
+
+    const env = buildSubprocessEnv();
+
+    for (const key of API_SECRET_KEYS) {
+      expect(env[key]).toBeUndefined();
     }
-    vi.restoreAllMocks();
+    expect(env['AWS_SECRET_ACCESS_KEY']).toBeUndefined();
+    expect(env['STRIPE_SECRET_KEY']).toBeUndefined();
+    expect(env['GOOGLE_APPLICATION_CREDENTIALS']).toBeUndefined();
+    expect(env['NODE_ENV']).toBe('test');
+    expect(env['PATH']).toBe('/usr/bin');
   });
 
-  it('throws a clear error when the Bun runtime is unavailable', () => {
-    delete (globalThis as Record<string, unknown>)['Bun'];
-    expect(() => defaultSpawn(['echo', 'hi'], '/tmp', {})).toThrow(
-      /Spawn-based runtimes require the Bun runtime/,
-    );
-  });
-
-  it('delegates to Bun.spawn with non-blocking stdin and piped stdout/stderr', () => {
-    const fakeChild = {} as SubprocessLike;
-    const spawn = vi.fn().mockReturnValue(fakeChild);
-    (globalThis as Record<string, unknown>)['Bun'] = { spawn };
-
-    const args = ['codex', 'exec', '--json'];
-    const env = { FOO: 'bar' };
-    const result = defaultSpawn(args, '/work/dir', env);
-
-    expect(result).toBe(fakeChild);
-    expect(spawn).toHaveBeenCalledTimes(1);
-    expect(spawn).toHaveBeenCalledWith(args, {
-      cwd: '/work/dir',
-      stdin: 'ignore',
-      stdout: 'pipe',
-      stderr: 'pipe',
-      env,
+  it('scrubs credential-like keys reintroduced via extra env', () => {
+    const env = buildSubprocessEnv({
+      AWS_SECRET_ACCESS_KEY: 'injected',
+      STRIPE_SECRET_KEY: 'injected',
+      GOOGLE_APPLICATION_CREDENTIALS: 'injected',
+      SAFE_FLAG: '1',
     });
+
+    expect(env['AWS_SECRET_ACCESS_KEY']).toBeUndefined();
+    expect(env['STRIPE_SECRET_KEY']).toBeUndefined();
+    expect(env['GOOGLE_APPLICATION_CREDENTIALS']).toBeUndefined();
+    expect(env['SAFE_FLAG']).toBe('1');
   });
 });

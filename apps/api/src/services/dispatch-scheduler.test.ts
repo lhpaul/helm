@@ -241,8 +241,11 @@ describe('runDispatchJob lifecycle', () => {
 
     const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
       resolvedProductDecisions?: unknown[];
+      loadResolvedProductDecisions?: () => Promise<unknown[]>;
     };
     expect(options.resolvedProductDecisions).toEqual([decision]);
+    expect(typeof options.loadResolvedProductDecisions).toBe('function');
+    await expect(options.loadResolvedProductDecisions?.()).resolves.toEqual([decision]);
   });
 
   it('records an error job when dispatchStageHandler throws', async () => {

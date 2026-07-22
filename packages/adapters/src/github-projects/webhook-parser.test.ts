@@ -367,6 +367,31 @@ describe('parseGitHubWebhook', () => {
         headRef: 'helm/impl/issue_42',
       });
     });
+
+    it('status.success chooses the matching impl branch instead of branches[0]', () => {
+      const result = parseGitHubWebhook(
+        ctx('status', {
+          context: 'Haystack / Review',
+          state: 'success',
+          sha: 'abc123',
+          target_url: 'https://github.com/owner/repo/pull/42/checks',
+          branches: [
+            { name: 'main' },
+            { name: 'helm/spec/issue_42' },
+            { name: 'helm/impl/issue_42' },
+          ],
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result).toMatchObject({
+        type: 'external_review_ready',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'abc123',
+        headRef: 'helm/impl/issue_42',
+      });
+    });
   });
 
   describe('unknown / malformed inputs', () => {

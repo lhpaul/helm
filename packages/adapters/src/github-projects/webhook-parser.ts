@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseArtifactBranch } from '@helm/shared';
 import type { NormalizedEvent } from '../types.js';
 
 // ── Context schema ────────────────────────────────────────────────────────────
@@ -110,6 +111,10 @@ function prNumberFromUrl(value: string | null | undefined): number | null {
   const match = value?.match(/\/pull\/(\d+)(?:\D|$)/);
   if (!match) return null;
   return Number.parseInt(match[1]!, 10);
+}
+
+function findImplBranchRef(branches: Array<{ name: string }> | undefined): string | undefined {
+  return branches?.find((branch) => parseArtifactBranch(branch.name)?.kind === 'impl')?.name;
 }
 
 // ── Pure parser (handles issues.* and issue_comment.*) ───────────────────────
@@ -261,7 +266,7 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
         repo: parsed.data.repository?.name ?? null,
         prNumber,
         targetRevision: parsed.data.sha,
-        headRef: parsed.data.branches?.[0]?.name,
+        headRef: findImplBranchRef(parsed.data.branches),
         timestamp,
       };
     }

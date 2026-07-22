@@ -21,6 +21,8 @@ const {
   mockEnsureSubStages,
   mockScheduleItemDispatch,
   mockPersistReviewDispatchIntent,
+  mockPeekPendingExternalReviewByRevision,
+  mockClearPendingExternalReview,
   mockResumePendingExternalReview,
   mockResolveOpenPrMetadata,
   mockAuthorHasWriteAccess,
@@ -38,6 +40,8 @@ const {
   mockEnsureSubStages: vi.fn(),
   mockScheduleItemDispatch: vi.fn(),
   mockPersistReviewDispatchIntent: vi.fn(),
+  mockPeekPendingExternalReviewByRevision: vi.fn(),
+  mockClearPendingExternalReview: vi.fn(),
   mockResumePendingExternalReview: vi.fn(),
   mockResolveOpenPrMetadata: vi.fn(),
   mockAuthorHasWriteAccess: vi.fn(),
@@ -49,6 +53,8 @@ const {
 vi.mock('../services/dispatch-scheduler.js', () => ({
   scheduleItemDispatch: mockScheduleItemDispatch,
   persistReviewDispatchIntent: mockPersistReviewDispatchIntent,
+  peekPendingExternalReviewByRevision: mockPeekPendingExternalReviewByRevision,
+  clearPendingExternalReview: mockClearPendingExternalReview,
   resumePendingExternalReview: mockResumePendingExternalReview,
 }));
 
@@ -1132,6 +1138,40 @@ describe('POST /api/webhooks/github', () => {
       );
 
       expect(res.status).toBe(200);
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+    });
+
+    it('clears matching pending external review when readiness arrives after code-review', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+      } as never);
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'merged',
+        history: [],
+      });
+
+      const res = await post(haystackCheckRunPayload(), 'check_run');
+
+      expect(res.status).toBe(200);
+      expect(mockClearPendingExternalReview).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+      });
       expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
     });
 

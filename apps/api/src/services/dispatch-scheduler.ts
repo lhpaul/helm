@@ -149,6 +149,38 @@ export async function resumePendingExternalReviewByRevision(input: {
   return { ...outcome, externalId: intent.externalId };
 }
 
+export async function clearPendingExternalReview(input: {
+  productSlug: string;
+  externalId?: string;
+  provider: string;
+  prNumber?: number;
+  targetRevision: string;
+}): Promise<boolean> {
+  const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
+  const intent =
+    input.externalId !== undefined && input.prNumber !== undefined
+      ? await outbox.findPendingExternalReview({
+          productSlug: input.productSlug,
+          externalId: input.externalId,
+          provider: input.provider,
+          prNumber: input.prNumber,
+          targetRevision: input.targetRevision,
+        })
+      : await outbox.findPendingExternalReviewByRevision({
+          productSlug: input.productSlug,
+          provider: input.provider,
+          targetRevision: input.targetRevision,
+        });
+  if (!intent) return false;
+  if (input.externalId !== undefined && intent.externalId !== input.externalId) return false;
+  if (input.prNumber !== undefined && intent.prNumber !== input.prNumber) return false;
+  return outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+    kind: 'pending_external_review',
+    updatedAt: intent.updatedAt,
+    targetRevision: intent.targetRevision,
+  });
+}
+
 async function finalizePendingExternalReviewResume(
   outbox: Awaited<ReturnType<typeof getReviewDispatchOutbox>>,
   intent: PendingExternalReviewIntent,

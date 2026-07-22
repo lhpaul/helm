@@ -23,6 +23,7 @@ import {
   scheduleItemDispatch,
   persistReviewDispatchIntent,
   peekPendingExternalReviewByRevision,
+  clearPendingExternalReview,
   resumePendingExternalReview,
 } from '../services/dispatch-scheduler.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
@@ -397,6 +398,13 @@ webhooksRouter.post('/webhooks/github', async (c) => {
 
       const item = await itemStore.get(externalId);
       if (item?.productSlug !== config.product.slug || item.currentStage !== 'code-review') {
+        await clearPendingExternalReview({
+          productSlug: config.product.slug,
+          externalId,
+          provider: event.provider,
+          prNumber: prNumber ?? undefined,
+          targetRevision: event.targetRevision,
+        });
         console.info(
           '[webhooks/github] external review readiness ignored — item not in code-review',
         );

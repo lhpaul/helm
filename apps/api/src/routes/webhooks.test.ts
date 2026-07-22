@@ -624,6 +624,39 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
+    it('persists checklist decisions without the Helm HTML marker', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      const unmarkedChecklist = [
+        '- [x] **product_decision** · Pick direction',
+        '- **Chosen option:** Option A',
+      ].join('\n');
+
+      const res = await post(prCommentPayload(unmarkedChecklist), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockUpsertResolvedProductDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          decision: expect.objectContaining({
+            conflictKind: 'product_decision',
+            conflictTitle: 'Pick direction',
+            chosenOption: 'Option A',
+          }),
+        }),
+      );
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          specialistId: 'reviewer-fanout',
+        }),
+      );
+    });
+
     it('ignores unmarked PR comments', async () => {
       const res = await post(prCommentPayload('LGTM'), 'issue_comment');
 

@@ -95,8 +95,7 @@ export function parseAdjudicationBody(body: string): ParsedAdjudication {
 }
 
 export function parseHumanProductDecisionComment(body: string): NormalizedProductDecision | null {
-  if (!body.includes('<!-- helm:product-decision -->')) return null;
-
+  // Marker is a soft hint only — accept checklist/structured shapes by content.
   const markdownConflict = conflictFromDecisionMarkdown(body);
   const labeledConflict = conflictFromDecisionField(body);
   const conflictKind =

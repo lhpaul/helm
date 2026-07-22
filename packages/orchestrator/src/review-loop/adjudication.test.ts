@@ -112,12 +112,31 @@ Chosen option: Option A`);
     );
   });
 
+  it('accepts checklist-style decisions without the Helm HTML marker', () => {
+    const checklist = parseHumanProductDecisionComment(`- [x] **product_decision** · Pick direction
+- **Paths:** src/a.ts
+- **Scope:** API
+- **Chosen:** Option A`);
+
+    expect(checklist).toMatchObject({
+      conflictKind: 'product_decision',
+      conflictTitle: 'Pick direction',
+      chosenOption: 'Option A',
+    });
+    expect(checklist?.fingerprint).toBe(
+      parseAdjudicationBody(adjudication).conflicts[0]?.fingerprint,
+    );
+  });
+
   it('rejects malformed comments without a conflict identity or choice', () => {
     expect(parseHumanProductDecisionComment('<!-- helm:product-decision -->')).toBeNull();
     expect(
       parseHumanProductDecisionComment(`<!-- helm:product-decision -->
 Conflict kind: product_decision
 Conflict title: Pick direction`),
+    ).toBeNull();
+    expect(
+      parseHumanProductDecisionComment('Random PR comment mentioning Option A casually'),
     ).toBeNull();
   });
 
@@ -285,5 +304,41 @@ HUMAN_REQUIRED`);
     expect(result.body).toMatch(/## Status\s*\nAUTO_REMEDIATE/);
     expect(result.body).toContain('SETTLED');
     expect(result.body).not.toContain('**product_decision**');
+  });
+
+  it('end-to-end: unmarked checklist decision suppresses the same conflict on later adjudication', () => {
+    const decision = parseHumanProductDecisionComment(`- [x] **product_decision** · Pick direction
+- **Paths:** src/a.ts
+- **Scope:** API
+- **Chosen:** Option A`);
+    expect(decision).not.toBeNull();
+
+    const laterAdjudication = parseAdjudicationBody(`# Review Adjudication: HLM-72
+
+## Conflicts
+- **product_decision** · Pick direction
+  Paths: src/a.ts
+  Scope markers: API
+  Option A: keep the current behavior.
+  Option B: change the behavior.
+
+## Unified remediation plan
+- **AUTO** · Apply remaining mechanical fixes
+
+## Status
+HUMAN_REQUIRED`);
+
+    const suppressed = suppressSettledConflicts(laterAdjudication, [
+      {
+        fingerprint: decision!.fingerprint,
+        chosenOption: decision!.chosenOption,
+      },
+    ]);
+
+    expect(decision!.fingerprint).toBe(laterAdjudication.conflicts[0]?.fingerprint);
+    expect(suppressed.status).toBe('AUTO_REMEDIATE');
+    expect(suppressed.conflicts).toHaveLength(0);
+    expect(suppressed.body).toContain('SETTLED');
+    expect(suppressed.body).toMatch(/## Status\s*\nAUTO_REMEDIATE/);
   });
 });

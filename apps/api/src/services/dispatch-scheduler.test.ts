@@ -46,6 +46,9 @@ describe('runDispatchJob fetchTask', () => {
     vi.clearAllMocks();
     mockGetIssueTrackerAdapter.mockResolvedValue({ getItem: mockGetItem });
     vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue(null),
+    } as never);
   });
 
   it('returns null when the tracker item is missing', async () => {
@@ -116,6 +119,9 @@ describe('runDispatchJob lifecycle', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetIssueTrackerAdapter.mockResolvedValue({ getItem: mockGetItem });
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue(null),
+    } as never);
   });
 
   it('records a done job when dispatchStageHandler succeeds', async () => {
@@ -146,6 +152,9 @@ describe('runDispatchJob lifecycle', () => {
 
   it('passes persisted product decisions into dispatch context', async () => {
     vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue(null),
+    } as never);
 
     await runDispatchJob({ jobId: 'job-1' } as never, {
       product: { product: { slug: 'test' } } as never,
@@ -187,6 +196,53 @@ describe('runDispatchJob lifecycle', () => {
         chosenOption: 'Option A',
       }),
     ]);
+  });
+
+  it('reloads decisions from ItemStore when the queued snapshot is stale', async () => {
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+    const decision = {
+      fingerprint: 'kind=product_decision|title=pick direction|paths=|markers=',
+      conflictKind: 'product_decision' as const,
+      conflictTitle: 'Pick direction',
+      scope: { paths: [] as string[], markers: [] as string[] },
+      chosenOption: 'Option A',
+      recordedAt: '2026-07-22T12:00:00.000Z',
+      source: {
+        provider: 'github' as const,
+        owner: 'o',
+        repo: 'r',
+        prNumber: 42,
+        authorLogin: 'maintainer',
+      },
+    };
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test',
+        currentStage: 'code-review',
+        resolvedProductDecisions: [decision],
+      }),
+    } as never);
+
+    // Queued snapshot has no ledger — decision was persisted after enqueue.
+    await runDispatchJob({ jobId: 'job-1' } as never, {
+      product: { product: { slug: 'test' } } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test',
+        currentStage: 'code-review',
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot: '/tmp/data',
+      specialistId: 'reviewer-fanout',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+      resolvedProductDecisions?: unknown[];
+    };
+    expect(options.resolvedProductDecisions).toEqual([decision]);
   });
 
   it('records an error job when dispatchStageHandler throws', async () => {
@@ -394,6 +450,9 @@ describe('runDispatchJob failure handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetIssueTrackerAdapter.mockResolvedValue({ getItem: mockGetItem });
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue(null),
+    } as never);
   });
 
   it('still completes when jobStore.updateJob fails in the error branch', async () => {

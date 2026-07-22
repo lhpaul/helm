@@ -147,7 +147,7 @@ export function decisionMatchesLatestAdjudication(input: {
   return latest.parsed.conflicts.some((conflict) => {
     return (
       conflict.fingerprint === input.decision.fingerprint &&
-      normalizeText(conflict.body).includes(chosen)
+      declaredConflictChoices(conflict.body).some((choice) => normalizeText(choice) === chosen)
     );
   });
 }
@@ -287,6 +287,18 @@ function collectDelimitedValues(body: string, names: string[]): string[] {
     if (field) values.push(...field.split(/[,;]/u));
   }
   return values;
+}
+
+function declaredConflictChoices(body: string): string[] {
+  const choices: string[] = [];
+  for (const line of body.split(/\r?\n/u)) {
+    const match = line.match(
+      /^\s*(?:[-*]\s*)?(?:\[[ xX]\]\s*)?(?:\*\*)?(Option\s+[A-Za-z0-9][\w .-]*?)(?:\*\*)?\s*:/iu,
+    );
+    const choice = match?.[1]?.trim();
+    if (choice) choices.push(choice);
+  }
+  return choices;
 }
 
 function normalizeList(values: string[]): string[] {

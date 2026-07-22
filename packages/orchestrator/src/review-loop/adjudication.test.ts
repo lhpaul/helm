@@ -145,6 +145,23 @@ Chosen option: Option A`)!;
     ).toBe(false);
   });
 
+  it('rejects choices that are only substrings of conflict text', () => {
+    const decision = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Pick direction
+Affected paths: src/a.ts
+Scope markers: API
+Chosen option: keep the current behavior`)!;
+
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'HLM-72',
+        decision,
+        adjudicationBodies: [adjudication],
+      }),
+    ).toBe(false);
+  });
+
   it('suppresses settled conflicts while leaving unrelated conflicts human-required', () => {
     const parsed = parseAdjudicationBody(`# Review Adjudication: HLM-72
 

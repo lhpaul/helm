@@ -517,6 +517,27 @@ describe('POST /api/webhooks/github', () => {
       );
     });
 
+    it('persists structured decisions after code-review without dispatching fanout', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'merged',
+        history: [],
+      });
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockUpsertResolvedProductDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          triggeredBy: 'webhook:pr-decision-comment',
+        }),
+      );
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
+    });
+
     it('ignores structured decisions that do not match the latest adjudication record', async () => {
       mockGet.mockResolvedValue({
         externalId: 'issue_42',

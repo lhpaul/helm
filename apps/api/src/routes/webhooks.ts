@@ -212,7 +212,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         }
 
         const item = await itemStore.get(parsed.externalId);
-        if (item?.productSlug !== config.product.slug || item.currentStage !== 'code-review') {
+        if (item?.productSlug !== config.product.slug) {
           console.info(
             `[webhooks/github] PR decision ignored — item stage '${item?.currentStage ?? 'missing'}'`,
           );
@@ -252,6 +252,13 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           },
           triggeredBy: 'webhook:pr-decision-comment',
         });
+
+        if (item.currentStage !== 'code-review') {
+          console.info(
+            `[webhooks/github] PR decision recorded without dispatch — item stage '${item.currentStage}'`,
+          );
+          return c.json({ processed: true });
+        }
 
         const outcome = await scheduleItemDispatch({
           productSlug: config.product.slug,

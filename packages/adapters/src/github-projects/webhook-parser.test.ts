@@ -330,6 +330,24 @@ describe('parseGitHubWebhook', () => {
       });
     });
 
+    it('rejects check names that only substring-match haystack', () => {
+      const result = parseGitHubWebhook(
+        ctx('check_run', {
+          action: 'completed',
+          check_run: {
+            name: 'my-haystack-helper',
+            status: 'completed',
+            conclusion: 'success',
+            head_sha: 'abc123',
+            app: { slug: 'other-app' },
+            pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
     it('check_run.completed action_required remains unknown', () => {
       const result = parseGitHubWebhook(
         ctx('check_run', {

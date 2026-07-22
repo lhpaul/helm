@@ -222,7 +222,35 @@ async function finalizePendingExternalReviewResume(
       reason: intent.reason,
       prNumber: intent.prNumber,
     });
+    return outcome;
   }
+
+  // Readiness arrived while another job is still running (often the deferred
+  // job exiting). Park a review_dispatch intent so the post-job replay path
+  // schedules fanout after the conflict clears — do not drop the signal.
+  if (outcome.reason === DISPATCH_UNAVAILABLE) {
+    await persistPendingReviewDispatch({
+      dataRoot: dataRootFromEnv(),
+      productSlug: intent.productSlug,
+      externalId: intent.externalId,
+      prNumber: intent.prNumber,
+      targetRevision: intent.targetRevision,
+      triggeredBy: `${triggeredBy}:awaiting-job-exit`,
+    });
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+      kind: 'pending_external_review',
+      updatedAt: intent.updatedAt,
+      targetRevision: intent.targetRevision,
+      provider: intent.provider,
+      reason: intent.reason,
+      prNumber: intent.prNumber,
+    });
+    return {
+      scheduled: false,
+      reason: 'Job already running — queued review dispatch for replay after exit',
+    };
+  }
+
   return outcome;
 }
 
@@ -445,15 +473,15 @@ export async function runDispatchJob(
           githubToken: ctx.githubToken,
         });
       }
-      if (result.status !== 'deferred') {
-        await replayPendingReviewDispatch({
-          product: ctx.product,
-          productSlug: ctx.item.productSlug,
-          externalId: ctx.item.externalId,
-          dataRoot: ctx.dataRoot,
-          githubToken: ctx.githubToken,
-        });
-      }
+      // Always replay parked review_dispatch intents — including after a
+      // deferred external-review job — so readiness that raced the exit is not lost.
+      await replayPendingReviewDispatch({
+        product: ctx.product,
+        productSlug: ctx.item.productSlug,
+        externalId: ctx.item.externalId,
+        dataRoot: ctx.dataRoot,
+        githubToken: ctx.githubToken,
+      });
     } catch (handoffErr) {
       logErrorMetadata('dispatch review handoff', handoffErr);
     }

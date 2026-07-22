@@ -101,10 +101,12 @@ const StatusWebhookSchema = z.object({
     .optional(),
 });
 
-function providerFromGitHubCheck(name: string, appSlug?: string, appName?: string): string | null {
-  const normalized = `${name} ${appSlug ?? ''} ${appName ?? ''}`.toLowerCase();
-  if (normalized.includes('haystack')) return 'haystack';
-  return null;
+/** Exact check/status name allowlist — never substring-match provider identity. */
+const HAYSTACK_CHECK_NAMES = new Set(['haystack / review']);
+
+function providerFromGitHubCheck(name: string): string | null {
+  const normalizedName = name.trim().toLowerCase();
+  return HAYSTACK_CHECK_NAMES.has(normalizedName) ? 'haystack' : null;
 }
 
 function prNumberFromUrl(value: string | null | undefined): number | null {
@@ -230,11 +232,7 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
       if (!['success', 'neutral'].includes(checkRun.conclusion ?? '')) {
         return { type: 'unknown', raw: rawEvent };
       }
-      const provider = providerFromGitHubCheck(
-        checkRun.name,
-        checkRun.app?.slug,
-        checkRun.app?.name,
-      );
+      const provider = providerFromGitHubCheck(checkRun.name);
       if (!provider) return { type: 'unknown', raw: rawEvent };
       const pr = checkRun.pull_requests?.[0];
       // GitHub often omits pull_requests on check_run; still emit readiness so

@@ -129,6 +129,39 @@ describe('ReviewDispatchOutbox', () => {
     ).resolves.toBeNull();
   });
 
+  it('does not match pending external review when the provider differs', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    const stored = await outbox.put({
+      kind: 'pending_external_review',
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      provider: 'haystack',
+      reason: 'analysis_pending',
+      prNumber: 42,
+      targetRevision: 'abc123',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      triggeredBy: 'test',
+    });
+
+    await expect(
+      outbox.findPendingExternalReview({
+        productSlug: 'helm',
+        externalId: 'issue_78',
+        provider: 'coderabbit',
+        prNumber: 42,
+        targetRevision: 'abc123',
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      outbox.findPendingExternalReviewByRevision({
+        productSlug: 'helm',
+        provider: 'coderabbit',
+        targetRevision: 'abc123',
+      }),
+    ).resolves.toBeNull();
+    expect(await outbox.get('helm', 'issue_78', 'pending_external_review')).toEqual(stored);
+  });
+
   it('removeIfMatches keeps a pending external review when full identity differs', async () => {
     const outbox = await getReviewDispatchOutbox(dataRoot);
     const intent = await outbox.put({

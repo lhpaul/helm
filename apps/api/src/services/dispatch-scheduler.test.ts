@@ -728,6 +728,40 @@ describe('pending external review readiness cleanup', () => {
       outbox.get('test-product', 'LEA-1', 'pending_external_review'),
     ).resolves.toBeNull();
   });
+
+  it('parks a review_dispatch intent when readiness races a running job', async () => {
+    const { outbox } = await putPending();
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      conflict: true,
+      runningJobId: 'job-running',
+      runningTargetRevision: 'sha-1',
+    });
+
+    await expect(
+      resumePendingExternalReview({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready',
+      }),
+    ).resolves.toEqual({
+      scheduled: false,
+      reason: 'Job already running — queued review dispatch for replay after exit',
+    });
+
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+    const parked = await outbox.get('test-product', 'LEA-1', 'review_dispatch');
+    expect(parked).toMatchObject({
+      kind: 'review_dispatch',
+      targetRevision: 'sha-1',
+      prNumber: 42,
+      triggeredBy: 'test:ready:awaiting-job-exit',
+    });
+  });
 });
 
 describe('runDispatchJob failure handling', () => {

@@ -7,6 +7,7 @@ import type { RunGit } from '../specialists/git-helpers.js';
 import { MockAgentRuntime } from '../runtimes/mock.js';
 import {
   runCodeReviewLoop,
+  runEarlyArtifactReviewLoop,
   formatExternalBlockersForRemediation,
   buildFindingsByKind,
 } from './code-review-loop.js';
@@ -42,7 +43,11 @@ vi.mock('../specialists/fetch-product-context.js', () => ({
   fetchSpecForPlan: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('../specialists/code-workspace.js', () => ({
-  provisionReviewerWorkspace: vi.fn().mockResolvedValue({ workspacePath: '/tmp/ws' }),
+  provisionReviewerWorkspace: vi.fn().mockResolvedValue({
+    workspacePath: '/tmp/ws',
+    branchName: 'helm/impl/issue_1',
+    artifactsPath: '/tmp/ws-artifacts',
+  }),
   artifactsDirFor: vi.fn((workspacePath: string) => `${workspacePath}-artifacts`),
 }));
 vi.mock('../external-review/run.js', () => ({
@@ -92,13 +97,20 @@ const PR_URL = 'https://github.com/o/r/pull/42';
 const baseProduct = {
   helm_version: '0' as const,
   product: { slug: 'test', name: 'Test' },
-  issue_tracker: { provider: 'github_projects' as const, org: 'o', project_number: 1 },
+  issue_tracker: {
+    provider: 'github_projects' as const,
+    org: 'o',
+    project_number: 1,
+    custom_field_name: 'Helm Stage',
+  },
   code_repos: [{ url: 'https://github.com/o/r', default_branch: 'main', role: 'app' as const }],
   knowledge_repo: { url: 'https://github.com/o/k', default_branch: 'main' },
   workflow: {
     stages_enabled: ['code-review' as const],
     designer_gate: 'skip' as const,
     qa_gate: 'skip' as const,
+    readiness_gate: 'skip' as const,
+    final_stage: 'released' as const,
   },
   specialists: {
     'spec-writer': { runtime: 'claude_code' as const, model: 'm' },
@@ -169,7 +181,11 @@ describe('runCodeReviewLoop', () => {
   });
 
   afterEach(() => {
-    vi.mocked(provisionReviewerWorkspace).mockResolvedValue({ workspacePath: '/tmp/ws' });
+    vi.mocked(provisionReviewerWorkspace).mockResolvedValue({
+      workspacePath: '/tmp/ws',
+      branchName: 'helm/impl/issue_1',
+      artifactsPath: '/tmp/ws-artifacts',
+    });
   });
 
   const runLoop = (product: Product = baseProduct) =>
@@ -197,10 +213,49 @@ describe('runCodeReviewLoop', () => {
     expect(transition).not.toHaveBeenCalled();
   });
 
+  it('runs early artifact remediation without code-review stage transitions', async () => {
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product: baseProduct,
+      prUrl: PR_URL,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(result.newStage).toBeUndefined();
+    expect(transition).not.toHaveBeenCalled();
+    expect(fanoutReviewers).toHaveBeenCalledWith(
+      'issue_1',
+      baseProduct,
+      PR_URL,
+      'token',
+      expect.any(MockAgentRuntime),
+      runGit,
+      undefined,
+    );
+    expect(buildRemediationParams).toHaveBeenCalledWith(
+      'issue_1',
+      baseProduct,
+      '/tmp/ws',
+      PR_URL,
+      expect.any(Map),
+      undefined,
+    );
+  });
+
   it('escalates when max_cycles is reached before another remediation pass', async () => {
     const product: Product = {
       ...baseProduct,
-      review: { loop: { max_cycles: 1 } },
+      review: { loop: { max_cycles: 1, remediate_severity: 'critical_high' } },
     };
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
@@ -221,7 +276,11 @@ describe('runCodeReviewLoop', () => {
     const product: Product = {
       ...baseProduct,
       review: {
-        loop: { max_cycles: 10, stop_rule: { no_progress_cycles: 2 } },
+        loop: {
+          max_cycles: 10,
+          stop_rule: { no_progress_cycles: 2 },
+          remediate_severity: 'critical_high',
+        },
       },
     };
     vi.mocked(shouldRemediate).mockReturnValue(true);
@@ -600,7 +659,12 @@ describe('runCodeReviewLoop', () => {
   it('escalates when external review skips with Haystack evidence', async () => {
     const product: Product = {
       ...baseProduct,
-      review: { external: { provider: 'haystack', haystack: {} } },
+      review: {
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
     };
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'skipped',
@@ -625,8 +689,15 @@ describe('runCodeReviewLoop', () => {
     const product: Product = {
       ...baseProduct,
       review: {
-        external: { provider: 'haystack', haystack: { poll_interval_sec: 1 } },
-        loop: { stop_rule: { no_progress_cycles: 2 } },
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 120 },
+        },
+        loop: {
+          max_cycles: 5,
+          stop_rule: { no_progress_cycles: 2 },
+          remediate_severity: 'critical_high',
+        },
       },
     };
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
@@ -750,7 +821,12 @@ describe('runCodeReviewLoop', () => {
   it('posts Review Loop Summary on clean exit with external advisories', async () => {
     const product: Product = {
       ...baseProduct,
-      review: { external: { provider: 'haystack', haystack: {} } },
+      review: {
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
     };
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'clean',
@@ -1038,7 +1114,7 @@ describe('runCodeReviewLoop', () => {
       workdir: '/tmp/ws',
       productSlug: 'test',
       externalId: 'issue_1',
-      permissionMode: 'default',
+      permissionMode: 'acceptEdits',
       timeoutMs: 1000,
     });
     vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
@@ -1097,7 +1173,7 @@ describe('runCodeReviewLoop', () => {
       workdir: '/tmp/ws',
       productSlug: 'test',
       externalId: 'issue_1',
-      permissionMode: 'default',
+      permissionMode: 'acceptEdits',
       timeoutMs: 1000,
     });
     vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
@@ -1128,7 +1204,7 @@ describe('runCodeReviewLoop', () => {
       workdir: '/tmp/ws',
       productSlug: 'test',
       externalId: 'issue_1',
-      permissionMode: 'default',
+      permissionMode: 'acceptEdits',
       timeoutMs: 1000,
     });
     vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({

@@ -99,6 +99,7 @@ export type RunCodeReviewLoopParams = {
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
   targetRevision?: string;
   onExternalReviewDeferred?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
+  mode?: 'code' | 'early-artifact';
 };
 
 function escalationMessage(
@@ -386,6 +387,7 @@ export async function runCodeReviewLoop(
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,
         loadResolvedProductDecisions: params.loadResolvedProductDecisions,
+        stageTransitions: params.mode === 'early-artifact' ? 'none' : 'code-review',
       });
       ranRemediation = true;
       totalCost = remediationOutcome.totalCost;
@@ -548,6 +550,7 @@ export async function runCodeReviewLoop(
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,
         loadResolvedProductDecisions: params.loadResolvedProductDecisions,
+        stageTransitions: params.mode === 'early-artifact' ? 'none' : 'code-review',
       });
       ranRemediation = true;
       totalCost = remediationOutcome.totalCost;
@@ -601,9 +604,27 @@ export async function runCodeReviewLoop(
       costUsd: totalCost,
       durationMs: maxDuration,
       cyclesCompleted: cycle,
-      newStage: ranRemediation ? 'code-review' : undefined,
+      newStage: ranRemediation && params.mode !== 'early-artifact' ? 'code-review' : undefined,
     };
   }
+}
+
+export async function runEarlyArtifactReviewLoop(
+  params: Omit<RunCodeReviewLoopParams, 'codeRepo' | 'mode'> & { kind: 'spec' | 'plan' },
+): Promise<CodeReviewLoopResult> {
+  const knowledgeRepoAsCodeRepo: CodeRepo = {
+    url: params.product.knowledge_repo.url,
+    default_branch: params.product.knowledge_repo.default_branch,
+    role: 'docs',
+  };
+
+  const result = await runCodeReviewLoop({
+    ...params,
+    codeRepo: knowledgeRepoAsCodeRepo,
+    mode: 'early-artifact',
+  });
+
+  return { ...result, prUrl: params.prUrl, newStage: undefined };
 }
 
 type RemediationPassOutcome =
@@ -901,6 +922,7 @@ async function runRemediationPass(input: {
   fetchFn?: FetchFn;
   resolvedProductDecisions?: StoredResolvedProductDecision[];
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
+  stageTransitions?: 'code-review' | 'none';
 }): Promise<RemediationPassOutcome> {
   let totalCost = input.totalCost;
   let maxDuration = input.maxDuration;
@@ -975,11 +997,13 @@ async function runRemediationPass(input: {
 
   try {
     try {
-      await input.transition({
-        externalId: input.externalId,
-        toStage: 'remediation',
-        triggeredBy: 'specialist:remediation',
-      });
+      if (input.stageTransitions !== 'none') {
+        await input.transition({
+          externalId: input.externalId,
+          toStage: 'remediation',
+          triggeredBy: 'specialist:remediation',
+        });
+      }
     } catch (err) {
       return {
         status: 'error',
@@ -1025,7 +1049,7 @@ async function runRemediationPass(input: {
         break;
       }
 
-      if (attempt === 0) {
+      if (attempt === 0 && input.stageTransitions !== 'none') {
         const recoveredStage = await recoverToCodeReviewAfterRemediationFailure(
           input.externalId,
           input.transition,
@@ -1036,6 +1060,14 @@ async function runRemediationPass(input: {
     }
 
     if (!remediationResult || remediationResult.status !== 'done') {
+      if (input.stageTransitions === 'none') {
+        return {
+          status: 'error',
+          totalCost,
+          maxDuration,
+          error: remediationResult?.error ?? 'Remediation failed',
+        };
+      }
       const newStage = await recoverToCodeReviewAfterRemediationFailure(
         input.externalId,
         input.transition,
@@ -1053,7 +1085,7 @@ async function runRemediationPass(input: {
       };
     }
 
-    if (!returnedToCodeReviewDuringRetry) {
+    if (!returnedToCodeReviewDuringRetry && input.stageTransitions !== 'none') {
       try {
         await input.transition({
           externalId: input.externalId,
@@ -1084,7 +1116,7 @@ async function runRemediationPass(input: {
         status: 'error',
         totalCost,
         maxDuration,
-        newStage: 'code-review',
+        newStage: input.stageTransitions === 'none' ? undefined : 'code-review',
         error: `Remediation succeeded, but the reviewer fan-out reported an error (reviewer coverage may be incomplete): ${input.fanoutResult.error}`,
       };
     }

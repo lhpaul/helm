@@ -389,6 +389,25 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     }
   });
 
+  it('parses early_loop enabled and defaults it to false when the section is present', () => {
+    const defaulted = ProductSchema.safeParse(withReview({ early_loop: {} }));
+    expect(defaulted.success).toBe(true);
+    if (defaulted.success) {
+      expect(defaulted.data.review?.early_loop?.enabled).toBe(false);
+    }
+
+    const enabled = ProductSchema.safeParse(withReview({ early_loop: { enabled: true } }));
+    expect(enabled.success).toBe(true);
+    if (enabled.success) {
+      expect(enabled.data.review?.early_loop?.enabled).toBe(true);
+    }
+  });
+
+  it('rejects non-boolean early_loop.enabled', () => {
+    const result = ProductSchema.safeParse(withReview({ early_loop: { enabled: 'true' } }));
+    expect(result.success).toBe(false);
+  });
+
   it('parses optional review-adjudicator specialist (ADR-037)', () => {
     const result = ProductSchema.safeParse({
       ...makeRawProduct({

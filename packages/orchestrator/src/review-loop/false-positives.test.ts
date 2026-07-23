@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseFalsePositivesCatalog } from './false-positives.js';
+import { builtInFalsePositiveEntries, parseFalsePositivesCatalog } from './false-positives.js';
 
 const SAMPLE = `# Code-review false positives
 
@@ -66,5 +66,36 @@ describe('parseFalsePositivesCatalog', () => {
     const healthEntry = entries.find((e) => e.title.includes('Health token'))!;
     expect(healthEntry.matchesSummary('unhealthy retry logic in parser')).toBe(false);
     expect(healthEntry.matchesSummary('reviewer flags health endpoint contract')).toBe(true);
+  });
+
+  it('parses optional applies-to metadata for sequential artifact entries', () => {
+    const entries = parseFalsePositivesCatalog(`# Code-review false positives
+
+---
+
+## Pair spec and plan files
+
+**Pattern:** pair-spec-and-plan-files
+
+**Applies to:** spec-draft, plan-draft
+
+**Why it's a false positive:** Draft artifacts are reviewed sequentially.
+`);
+
+    expect(entries[0]).toMatchObject({
+      title: 'Pair spec and plan files',
+      pattern: 'pair-spec-and-plan-files',
+      appliesTo: ['spec-draft', 'plan-draft'],
+    });
+    expect(entries[0]!.matchesSummary('Reviewer flags pair spec and plan files')).toBe(true);
+  });
+
+  it('ships built-in Helm sequential-artifact false positives', () => {
+    const entries = builtInFalsePositiveEntries();
+    const pairEntry = entries.find((entry) => entry.pattern === 'pair-spec-and-plan-files');
+
+    expect(pairEntry).toBeDefined();
+    expect(pairEntry?.appliesTo).toEqual(['spec-draft', 'plan-draft']);
+    expect(pairEntry?.matchesSummary('pair-spec-and-plan-files sequencing')).toBe(true);
   });
 });

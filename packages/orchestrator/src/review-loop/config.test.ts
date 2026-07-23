@@ -66,6 +66,16 @@ describe('resolveReviewLoopConfig (ADR-036/037)', () => {
     );
     expect(resolveReviewLoopConfig(product).remediateSeverity).toBe('medium_and_above');
   });
+
+  it('normalizes early_loop.enabled with an off-by-default posture', () => {
+    const disabled = ProductSchema.parse(makeRawProduct());
+    expect(resolveReviewLoopConfig(disabled).earlyLoopEnabled).toBe(false);
+
+    const enabled = ProductSchema.parse(
+      makeRawProduct({ review: { early_loop: { enabled: true } } }),
+    );
+    expect(resolveReviewLoopConfig(enabled).earlyLoopEnabled).toBe(true);
+  });
 });
 
 describe('ProductSchema adjudication invariants (validate-runtime-config-invariants)', () => {

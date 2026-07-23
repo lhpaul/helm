@@ -121,7 +121,7 @@ export async function fetchFalsePositivesCatalog(
     FALSE_POSITIVES_PATH,
     token,
     fetchFn,
-  );
+  ).catch(() => null);
   if (!content) return builtInFalsePositiveEntries();
   return [...builtInFalsePositiveEntries(), ...parseFalsePositivesCatalog(content)];
 }

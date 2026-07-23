@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { builtInFalsePositiveEntries, parseFalsePositivesCatalog } from './false-positives.js';
+import type { Product } from '@helm/shared';
+import {
+  builtInFalsePositiveEntries,
+  fetchFalsePositivesCatalog,
+  parseFalsePositivesCatalog,
+} from './false-positives.js';
 
 const SAMPLE = `# Code-review false positives
 
@@ -97,5 +102,18 @@ describe('parseFalsePositivesCatalog', () => {
     expect(pairEntry).toBeDefined();
     expect(pairEntry?.appliesTo).toEqual(['spec-draft', 'plan-draft']);
     expect(pairEntry?.matchesSummary('pair-spec-and-plan-files sequencing')).toBe(true);
+  });
+
+  it('falls back to built-in entries when the knowledge-repo catalog fetch fails', async () => {
+    const product = {
+      knowledge_repo: { url: 'https://github.com/o/k', default_branch: 'main' },
+    } as Product;
+    const fetchFn = async () => {
+      throw new Error('transient network failure');
+    };
+
+    const entries = await fetchFalsePositivesCatalog(product, 'token', fetchFn);
+
+    expect(entries.some((entry) => entry.pattern === 'pair-spec-and-plan-files')).toBe(true);
   });
 });

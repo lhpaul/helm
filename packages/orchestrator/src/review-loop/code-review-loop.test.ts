@@ -170,6 +170,7 @@ describe('runCodeReviewLoop', () => {
       status: 'skipped',
       reason: 'not_configured',
     });
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue([]);
     vi.mocked(fetchHaystackSkipEvidence).mockResolvedValue(null);
     vi.mocked(handleRemediationResult).mockResolvedValue({
       status: 'done',
@@ -921,6 +922,67 @@ describe('runCodeReviewLoop', () => {
       expect.objectContaining({
         prUrl: 'https://github.com/o/k/pull/7',
         stage: 'spec-draft',
+        catalog: [sequencingFalsePositive],
+        advisories: [
+          expect.objectContaining({
+            id: 'adv-sequential',
+            summary: 'pair-spec-and-plan-files sequencing',
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('routes plan-draft advisories through draft-stage false-positive disposition', async () => {
+    const sequencingFalsePositive = {
+      id: 'pair-spec-and-plan-files',
+      title: 'Pair spec and plan files sequencing',
+      pattern: 'pair-spec-and-plan-files sequencing',
+      appliesTo: ['spec-draft', 'plan-draft'] as const,
+      rationale:
+        'Spec and plan artifacts are generated and reviewed in sequence, so the companion file can be absent while the first artifact is still in draft.',
+      matchesSummary: vi.fn((summary: string) => summary === 'pair-spec-and-plan-files sequencing'),
+    };
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        early_loop: { enabled: true },
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
+    };
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValueOnce([sequencingFalsePositive]);
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'clean',
+      blockers: [],
+      advisories: [
+        {
+          id: 'adv-sequential',
+          severity: 'low',
+          blocking: false,
+          summary: 'pair-spec-and-plan-files sequencing',
+        },
+      ],
+    });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'plan',
+      externalId: 'issue_1',
+      product,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prUrl: 'https://github.com/o/k/pull/7',
+        stage: 'plan-draft',
         catalog: [sequencingFalsePositive],
         advisories: [
           expect.objectContaining({

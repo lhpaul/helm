@@ -446,6 +446,42 @@ describe('scheduleItemDispatch', () => {
     expect(options.specialistId).toBeUndefined();
   });
 
+  it('keeps explicit specialist routing authoritative when early loop is enabled', async () => {
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'spec-draft',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockReturnValue('spec-remediator');
+    mockCreateJobIfNoRunning.mockResolvedValue({ job: { jobId: 'job-explicit-specialist' } });
+
+    await expect(
+      scheduleItemDispatch({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        specialistId: 'spec-remediator',
+        triggeredBy: 'test',
+      }),
+    ).resolves.toEqual({ scheduled: true, jobId: 'job-explicit-specialist' });
+
+    expect(resolveSpecialistId).toHaveBeenCalledWith('spec-draft', 'spec-remediator');
+    expect(mockCreateJobIfNoRunning).toHaveBeenCalledWith(
+      expect.objectContaining({ specialistId: 'spec-remediator' }),
+    );
+    await vi.waitFor(() => {
+      expect(dispatchStageHandler).toHaveBeenCalled();
+    });
+    const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+      specialistId?: string;
+    };
+    expect(options.specialistId).toBe('spec-remediator');
+  });
+
   it('returns a generic reason when path segments are unsafe', async () => {
     await expect(
       scheduleItemDispatch({

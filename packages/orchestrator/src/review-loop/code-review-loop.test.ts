@@ -256,6 +256,39 @@ describe('runCodeReviewLoop', () => {
     );
   });
 
+  it('returns early artifact remediation failures without transition or recovery attempts', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(handleRemediationResult).mockResolvedValue({
+      status: 'error',
+      costUsd: 0.02,
+      durationMs: 200,
+      commentPosted: false,
+      error: 'remediation summary missing',
+    });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product: baseProduct,
+      prUrl: PR_URL,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result).toMatchObject({
+      status: 'error',
+      prUrl: PR_URL,
+      error: 'remediation summary missing',
+    });
+    expect(result.newStage).toBeUndefined();
+    expect(transition).not.toHaveBeenCalled();
+    expect(buildRemediationParams).toHaveBeenCalledOnce();
+    expect(handleRemediationResult).toHaveBeenCalledTimes(2);
+  });
+
   it('escalates when max_cycles is reached before another remediation pass', async () => {
     const product: Product = {
       ...baseProduct,

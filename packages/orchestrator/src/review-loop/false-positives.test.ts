@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Product } from '@helm/shared';
 import {
   builtInFalsePositiveEntries,
@@ -13,6 +13,8 @@ const SAMPLE = `# Code-review false positives
 ## Health endpoint returns degraded
 
 **Pattern:** A reviewer flags the \`/health\` endpoint for returning extra data
+
+**Applies to:** code-review
 
 **Why it's a false positive:** This behavior is spec-intended for fail-open visibility.
 
@@ -115,5 +117,33 @@ describe('parseFalsePositivesCatalog', () => {
     const entries = await fetchFalsePositivesCatalog(product, 'token', fetchFn);
 
     expect(entries.some((entry) => entry.pattern === 'pair-spec-and-plan-files')).toBe(true);
+  });
+
+  it('merges built-in sequential-artifact entries with a fetched knowledge-repo catalog', async () => {
+    const product = {
+      knowledge_repo: { url: 'https://github.com/o/k', default_branch: 'main' },
+    } as Product;
+    const fetchFn = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => SAMPLE,
+    });
+
+    const entries = await fetchFalsePositivesCatalog(product, 'token', fetchFn);
+
+    expect(entries.map((entry) => entry.pattern)).toEqual(
+      expect.arrayContaining([
+        'pair-spec-and-plan-files',
+        'A reviewer flags the `/health` endpoint for returning extra data',
+      ]),
+    );
+    expect(
+      entries.find((entry) => entry.pattern === 'pair-spec-and-plan-files')?.appliesTo,
+    ).toEqual(['spec-draft', 'plan-draft']);
+    expect(
+      entries.find(
+        (entry) =>
+          entry.pattern === 'A reviewer flags the `/health` endpoint for returning extra data',
+      )?.appliesTo,
+    ).toEqual(['code-review']);
   });
 });

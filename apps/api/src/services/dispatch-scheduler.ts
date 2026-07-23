@@ -558,7 +558,11 @@ export async function scheduleItemDispatch(input: {
   }
 
   const resolvedSpecialist = resolveSpecialistId(item.currentStage, input.specialistId);
-  if (!resolvedSpecialist) {
+  const earlyLoopDraftDispatch =
+    !input.specialistId &&
+    product.review?.early_loop?.enabled === true &&
+    (item.currentStage === 'spec-draft' || item.currentStage === 'plan-draft');
+  if (!resolvedSpecialist && !earlyLoopDraftDispatch) {
     console.info(
       `[dispatch-scheduler] skip: no specialist for stage '${item.currentStage}' (${input.productSlug}/${input.externalId})`,
     );
@@ -641,7 +645,7 @@ export async function scheduleItemDispatch(input: {
   }
 
   console.info(
-    `[dispatch-scheduler] ${input.triggeredBy} → job ${outcome.job.jobId} for ${input.productSlug}/${input.externalId} (${resolvedSpecialist})`,
+    `[dispatch-scheduler] ${input.triggeredBy} → job ${outcome.job.jobId} for ${input.productSlug}/${input.externalId} (${resolvedSpecialist ?? 'auto'})`,
   );
 
   void runDispatchJob(outcome.job, {

@@ -1399,6 +1399,26 @@ describe('dispatchStageHandler > early-stage remediators', () => {
     expect(fanoutReviewers).not.toHaveBeenCalled();
   });
 
+  it('keeps plan-draft review disabled when early_loop is false', async () => {
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: false } };
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-draft' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'tok', fetchFn: make404Fetch() },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain("No specialist mapped for stage 'plan-draft'");
+    expect(findArtifactPRUrl).not.toHaveBeenCalled();
+    expect(runEarlyRemediation).not.toHaveBeenCalled();
+    expect(fanoutReviewers).not.toHaveBeenCalled();
+  });
+
   it('routes spec-draft through the review loop when early_loop is enabled', async () => {
     const product = makeProduct();
     product.review = { early_loop: { enabled: true } };

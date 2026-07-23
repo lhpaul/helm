@@ -90,6 +90,7 @@ import { runExternalReviewIfConfigured } from '../external-review/run.js';
 import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
 import { upsertReviewLoopSummaryComment } from './summary.js';
+import { fetchFalsePositivesCatalog } from './false-positives.js';
 import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
 
 const PR_URL = 'https://github.com/o/r/pull/42';
@@ -860,6 +861,15 @@ describe('runCodeReviewLoop', () => {
   });
 
   it('routes early artifact advisories through draft-stage false-positive disposition', async () => {
+    const sequencingFalsePositive = {
+      id: 'pair-spec-and-plan-files',
+      title: 'Pair spec and plan files sequencing',
+      pattern: 'pair-spec-and-plan-files sequencing',
+      appliesTo: ['spec-draft', 'plan-draft'] as const,
+      rationale:
+        'Spec and plan artifacts are generated and reviewed in sequence, so the companion file can be absent while the first artifact is still in draft.',
+      matchesSummary: vi.fn((summary: string) => summary === 'pair-spec-and-plan-files sequencing'),
+    };
     const product: Product = {
       ...baseProduct,
       review: {
@@ -870,6 +880,7 @@ describe('runCodeReviewLoop', () => {
         },
       },
     };
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue([sequencingFalsePositive]);
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'clean',
       blockers: [],
@@ -910,6 +921,7 @@ describe('runCodeReviewLoop', () => {
       expect.objectContaining({
         prUrl: 'https://github.com/o/k/pull/7',
         stage: 'spec-draft',
+        catalog: [sequencingFalsePositive],
         advisories: [
           expect.objectContaining({
             id: 'adv-sequential',

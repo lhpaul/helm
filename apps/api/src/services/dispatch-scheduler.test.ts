@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { GitHubNotFoundError, LinearNotFoundError } from '@helm/adapters';
+import type { Product } from '@helm/shared';
 
 const { mockGetItem, mockGetIssueTrackerAdapter, mockUpdateJob, mockCreateJobIfNoRunning } =
   vi.hoisted(() => ({
@@ -50,7 +51,7 @@ import { getReviewDispatchOutbox } from './review-dispatch-outbox.js';
 const baseProduct = {
   product: { slug: 'test-product', name: 'Test Product' },
   code_repos: [{ url: 'https://github.com/o/r', default_branch: 'main', role: 'app' }],
-} as never;
+} as unknown as Product;
 
 describe('runDispatchJob fetchTask', () => {
   beforeEach(() => {
@@ -381,6 +382,68 @@ describe('scheduleItemDispatch', () => {
       scheduled: false,
       reason: 'Unable to schedule dispatch',
     });
+  });
+
+  it('schedules spec-draft with no resolved specialist when early loop is enabled', async () => {
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'spec-draft',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockReturnValue(undefined);
+    mockCreateJobIfNoRunning.mockResolvedValue({ job: { jobId: 'job-early-spec' } });
+
+    await expect(
+      scheduleItemDispatch({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        triggeredBy: 'test',
+      }),
+    ).resolves.toEqual({ scheduled: true, jobId: 'job-early-spec' });
+
+    await vi.waitFor(() => {
+      expect(dispatchStageHandler).toHaveBeenCalled();
+    });
+    const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+      specialistId?: string;
+    };
+    expect(options.specialistId).toBeUndefined();
+  });
+
+  it('schedules plan-draft with no resolved specialist when early loop is enabled', async () => {
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'plan-draft',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockReturnValue(undefined);
+    mockCreateJobIfNoRunning.mockResolvedValue({ job: { jobId: 'job-early-plan' } });
+
+    await expect(
+      scheduleItemDispatch({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        triggeredBy: 'test',
+      }),
+    ).resolves.toEqual({ scheduled: true, jobId: 'job-early-plan' });
+
+    await vi.waitFor(() => {
+      expect(dispatchStageHandler).toHaveBeenCalled();
+    });
+    const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+      specialistId?: string;
+    };
+    expect(options.specialistId).toBeUndefined();
   });
 
   it('returns a generic reason when path segments are unsafe', async () => {

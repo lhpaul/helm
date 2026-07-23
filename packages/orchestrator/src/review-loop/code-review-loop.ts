@@ -52,6 +52,7 @@ import {
 } from './finding-fingerprint.js';
 import { isEnoentError } from '../lib/fs-errors.js';
 import { type StoredResolvedProductDecision } from './adjudication.js';
+import type { WorkflowStage } from '@helm/workflow';
 
 export type CodeReviewLoopResult = {
   status: 'done' | 'error' | 'deferred';
@@ -82,6 +83,7 @@ export type RunCodeReviewLoopParams = {
   product: Product;
   prUrl: string;
   codeRepo: CodeRepo;
+  kind?: 'spec' | 'plan';
   githubToken: string;
   runtime: IAgentRuntime;
   transition: ItemTransitionFn;
@@ -173,6 +175,7 @@ async function postReviewLoopSummaryBestEffort(
   input: {
     cyclesCompleted: number;
     advisories: NormalizedFinding[];
+    stage: WorkflowStage;
     externalProvider?: string;
   },
 ): Promise<void> {
@@ -191,6 +194,7 @@ async function postReviewLoopSummaryBestEffort(
       externalProvider: input.externalProvider,
       advisories: input.advisories,
       catalog,
+      stage: input.stage,
       runGh: params.runGh,
     });
   } catch {
@@ -318,6 +322,8 @@ export async function runCodeReviewLoop(
         params.runtime,
         params.runGit,
         params.runGh,
+        params.fetchFn,
+        params.codeRepo,
       );
       lastFanout = fanoutResult;
       totalCost += fanoutResult.costUsd;
@@ -594,6 +600,12 @@ export async function runCodeReviewLoop(
       await postReviewLoopSummaryBestEffort(params, {
         cyclesCompleted: cycle,
         advisories: external.advisories,
+        stage:
+          params.mode === 'early-artifact'
+            ? params.kind === 'spec'
+              ? 'spec-draft'
+              : 'plan-draft'
+            : 'code-review',
         externalProvider: params.product.review?.external?.provider,
       });
     }

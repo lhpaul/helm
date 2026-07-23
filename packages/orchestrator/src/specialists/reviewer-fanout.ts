@@ -450,8 +450,9 @@ export async function fanoutReviewers(
   runGit?: RunGit,
   runGh?: RunGh,
   fetchFn?: FetchFn,
+  selectedCodeRepo?: CodeRepo,
 ): Promise<ReviewerFanoutResult> {
-  const codeRepo = product.code_repos[0];
+  const codeRepo = selectedCodeRepo ?? product.code_repos[0];
   if (!codeRepo) {
     return {
       reviewerResults: [],

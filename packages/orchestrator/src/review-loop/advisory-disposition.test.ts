@@ -22,6 +22,7 @@ describe('resolveAdvisoryDispositions', () => {
         },
       ],
       catalog,
+      'code-review',
     );
     expect(rows[0]).toMatchObject({
       disposition: 'Rejected',
@@ -40,7 +41,34 @@ describe('resolveAdvisoryDispositions', () => {
         },
       ],
       [],
+      'code-review',
     );
     expect(rows[0]!.disposition).toBe('Deferred');
+  });
+
+  it('only matches catalog entries that apply to the current stage', () => {
+    const catalog: FalsePositiveEntry[] = [
+      {
+        title: 'Sequential artifact',
+        pattern: 'pair-spec-and-plan-files',
+        appliesTo: ['spec-draft', 'plan-draft'],
+        rationale: 'Spec and plan artifacts are reviewed sequentially.',
+        matchesSummary: (summary) => summary.includes('pair-spec-and-plan-files'),
+      },
+    ];
+
+    const advisory = {
+      id: 'adv-3',
+      severity: 'low' as const,
+      blocking: false,
+      summary: 'pair-spec-and-plan-files',
+    };
+
+    expect(resolveAdvisoryDispositions([advisory], catalog, 'spec-draft')[0]).toMatchObject({
+      disposition: 'Rejected',
+    });
+    expect(resolveAdvisoryDispositions([advisory], catalog, 'code-review')[0]).toMatchObject({
+      disposition: 'Deferred',
+    });
   });
 });

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { REVIEW_LOOP_SUMMARY_MARKER, formatReviewLoopSummaryComment } from './summary.js';
+import {
+  REVIEW_LOOP_SUMMARY_MARKER,
+  buildAdvisorySummaryRows,
+  formatReviewLoopSummaryComment,
+} from './summary.js';
+import { builtInFalsePositiveEntries } from './false-positives.js';
 
 describe('formatReviewLoopSummaryComment', () => {
   it('includes marker, disposition table, and ADR-036 note', () => {
@@ -44,5 +49,36 @@ describe('formatReviewLoopSummaryComment', () => {
       ],
     });
     expect(body).toContain('summary \\| with pipe');
+  });
+});
+
+describe('buildAdvisorySummaryRows', () => {
+  it('passes the current stage through to advisory disposition matching', () => {
+    const advisory = {
+      id: 'adv-1',
+      severity: 'low' as const,
+      blocking: false,
+      summary: 'pair-spec-and-plan-files',
+    };
+    const rows = buildAdvisorySummaryRows(
+      [advisory],
+      [
+        {
+          title: 'Sequential artifact',
+          pattern: 'pair-spec-and-plan-files',
+          appliesTo: ['spec-draft', 'plan-draft'],
+          rationale: 'Sequential artifact review.',
+          matchesSummary: (summary) => summary.includes('pair-spec-and-plan-files'),
+        },
+      ],
+      'code-review',
+    );
+
+    expect(rows[0]!.disposition).toBe('Deferred');
+    expect(
+      buildAdvisorySummaryRows([advisory], builtInFalsePositiveEntries(), 'spec-draft')[0],
+    ).toMatchObject({
+      disposition: 'Rejected',
+    });
   });
 });

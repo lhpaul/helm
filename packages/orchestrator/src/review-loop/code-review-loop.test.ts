@@ -241,6 +241,8 @@ describe('runCodeReviewLoop', () => {
       expect.any(MockAgentRuntime),
       runGit,
       undefined,
+      undefined,
+      { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
     );
     expect(buildRemediationParams).toHaveBeenCalledWith(
       'issue_1',
@@ -849,9 +851,71 @@ describe('runCodeReviewLoop', () => {
         prUrl: PR_URL,
         cyclesCompleted: 1,
         externalProvider: 'haystack',
+        stage: 'code-review',
         advisories: expect.arrayContaining([
           expect.objectContaining({ id: 'adv-1', summary: 'Weak test coverage on summary module' }),
         ]),
+      }),
+    );
+  });
+
+  it('routes early artifact advisories through draft-stage false-positive disposition', async () => {
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        early_loop: { enabled: true },
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
+    };
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'clean',
+      blockers: [],
+      advisories: [
+        {
+          id: 'adv-sequential',
+          severity: 'low',
+          blocking: false,
+          summary: 'pair-spec-and-plan-files sequencing',
+        },
+      ],
+    });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(fanoutReviewers).toHaveBeenCalledWith(
+      'issue_1',
+      product,
+      'https://github.com/o/k/pull/7',
+      'token',
+      expect.any(MockAgentRuntime),
+      runGit,
+      undefined,
+      undefined,
+      { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
+    );
+    expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prUrl: 'https://github.com/o/k/pull/7',
+        stage: 'spec-draft',
+        advisories: [
+          expect.objectContaining({
+            id: 'adv-sequential',
+            summary: 'pair-spec-and-plan-files sequencing',
+          }),
+        ],
       }),
     );
   });

@@ -302,13 +302,13 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       }
     }
   } else if (event.type === 'pull_request_synchronized') {
-    if (isOrchestratorSender(event.senderLogin)) {
-      console.info(
-        `[webhooks/github] impl PR sync ignored — orchestrator sender '${event.senderLogin}'`,
-      );
-    } else {
-      const parsed = parseArtifactBranch(event.headRef);
-      if (parsed?.kind === 'impl') {
+    const parsed = parseArtifactBranch(event.headRef);
+    if (parsed?.kind === 'impl') {
+      if (isOrchestratorSender(event.senderLogin)) {
+        console.info(
+          `[webhooks/github] impl PR sync ignored — orchestrator sender '${event.senderLogin}'`,
+        );
+      } else {
         try {
           const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
           const item = await itemStore.get(parsed.externalId);
@@ -346,6 +346,43 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             err instanceof Error ? err.message : String(err),
           );
         }
+      }
+    } else if (parsed?.kind === 'spec' || parsed?.kind === 'plan') {
+      try {
+        const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
+        if (config.review?.early_loop?.enabled !== true) {
+          console.info('[webhooks/github] draft PR sync ignored — early review loop disabled');
+          return c.json({ processed: true });
+        }
+
+        const item = await itemStore.get(parsed.externalId);
+        const expectedStage = parsed.kind === 'spec' ? 'spec-draft' : 'plan-draft';
+        if (item?.currentStage === expectedStage && item.productSlug === config.product.slug) {
+          const specialistId =
+            parsed.kind === 'spec' ? 'spec-draft-reviewer' : 'plan-draft-reviewer';
+          const outcome = await scheduleItemDispatch({
+            productSlug: config.product.slug,
+            externalId: parsed.externalId,
+            specialistId,
+            targetRevision: event.headSha,
+            prNumber: event.prNumber,
+            triggeredBy: `webhook:${parsed.kind}-pr-sync`,
+          });
+          if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+            console.info(
+              `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} — dispatch deferred: ${outcome.reason}`,
+            );
+          }
+        } else {
+          console.info(
+            `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} ignored — stage '${item?.currentStage ?? 'missing'}' (expected ${expectedStage})`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          '[webhooks/github] Failed to schedule draft PR sync dispatch:',
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }
   } else if (event.type === 'external_review_ready') {

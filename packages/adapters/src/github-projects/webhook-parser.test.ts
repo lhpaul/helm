@@ -160,14 +160,25 @@ describe('parseGitHubWebhook', () => {
       expect(result.type).toBe('unknown');
     });
 
-    it('pull_request action:opened → unknown', () => {
+    it('pull_request action:opened → pull_request_synchronized with headRef', () => {
       const result = parseGitHubWebhook(
         ctx('pull_request', {
           action: 'opened',
-          pull_request: { merged: false, head: { ref: 'helm/spec/issue_42' } },
+          pull_request: {
+            number: 42,
+            merged: false,
+            head: { ref: 'helm/spec/issue_42', sha: 'abc123' },
+          },
         }),
       );
-      expect(result.type).toBe('unknown');
+      expect(result).toEqual({
+        type: 'pull_request_synchronized',
+        headRef: 'helm/spec/issue_42',
+        prNumber: 42,
+        headSha: 'abc123',
+        senderLogin: null,
+        timestamp: expect.any(String),
+      });
     });
 
     it('pull_request action:synchronize → pull_request_synchronized with headRef', () => {

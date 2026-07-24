@@ -7,6 +7,7 @@ export type FalsePositiveEntry = {
   pattern: string;
   rationale: string;
   appliesTo?: string[];
+  source?: 'built-in' | 'remote';
   matchesSummary: (summary: string) => boolean;
 };
 
@@ -62,6 +63,7 @@ export function parseFalsePositivesCatalog(markdown: string): FalsePositiveEntry
       pattern,
       rationale,
       appliesTo,
+      source: 'remote',
       matchesSummary: (summary: string) => {
         const haystack = normalizeForMatch(summary);
         if (haystack.includes(patternNeedle)) return true;
@@ -79,10 +81,10 @@ export function builtInFalsePositiveEntries(): FalsePositiveEntry[] {
     return {
       ...entry,
       appliesTo: entry.appliesTo ? [...entry.appliesTo] : undefined,
+      source: 'built-in',
       matchesSummary: (summary: string) => {
         const haystack = normalizeForMatch(summary);
-        if (haystack.includes(patternNeedle)) return true;
-        return significantTokenOverlap(patternNeedle, haystack);
+        return haystack.trim() === patternNeedle.trim();
       },
     };
   });

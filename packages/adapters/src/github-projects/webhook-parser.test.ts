@@ -160,7 +160,7 @@ describe('parseGitHubWebhook', () => {
       expect(result.type).toBe('unknown');
     });
 
-    it('pull_request action:opened → pull_request_synchronized with headRef', () => {
+    it('pull_request action:opened on early artifact branch → pull_request_synchronized with headRef', () => {
       const result = parseGitHubWebhook(
         ctx('pull_request', {
           action: 'opened',
@@ -229,6 +229,20 @@ describe('parseGitHubWebhook', () => {
         headRef: 'feature/foo',
         senderLogin: null,
       });
+    });
+
+    it('pull_request action:opened on non-artifact branch → unknown', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'opened',
+          pull_request: {
+            number: 12,
+            merged: false,
+            head: { ref: 'feature/foo', sha: 'abc123' },
+          },
+        }),
+      );
+      expect(result.type).toBe('unknown');
     });
 
     it('pull_request with missing pull_request field → unknown (no throw)', () => {

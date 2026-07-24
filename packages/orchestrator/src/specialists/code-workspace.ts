@@ -671,7 +671,7 @@ export async function pushReviewerPatches(
   const { owner, repo } = parsed;
 
   // ── Step 6: Push (fast-forward, NO --force) ───────────────────────────────
-  const branchName = implBranchName(externalId);
+  const branchName = opts.branchName ?? implBranchName(externalId);
   const pushUrl = buildAuthenticatedUrl(owner, repo, githubToken);
   try {
     await runGit(['push', pushUrl, `${branchName}:${branchName}`], { cwd: workspacePath });

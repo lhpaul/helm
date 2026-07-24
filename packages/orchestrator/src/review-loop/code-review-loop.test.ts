@@ -493,6 +493,31 @@ describe('runCodeReviewLoop', () => {
     expect(transition).not.toHaveBeenCalled();
   });
 
+  it('preserves stage when early artifact remediation provisioning fails', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(provisionReviewerWorkspace).mockRejectedValueOnce(new Error('clone failed'));
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product: baseProduct,
+      prUrl: PR_URL,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result).toMatchObject({
+      status: 'error',
+      cyclesCompleted: 1,
+    });
+    expect(result.newStage).toBeUndefined();
+    expect(result.error).toContain('Failed to provision remediation workspace');
+    expect(transition).not.toHaveBeenCalled();
+  });
+
   it('returns error when transition back to code-review fails after remediation', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());

@@ -191,7 +191,10 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
           timestamp,
         };
       }
-      if (action === 'opened' || action === 'synchronize') {
+      if (
+        action === 'synchronize' ||
+        (action === 'opened' && isEarlyDraftArtifactBranch(pr.head.ref))
+      ) {
         return {
           type: 'pull_request_synchronized',
           headRef: pr.head.ref,
@@ -257,4 +260,8 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
     // Never throw — catch any unexpected runtime error
     return { type: 'unknown', raw: rawEvent };
   }
+}
+
+function isEarlyDraftArtifactBranch(headRef: string): boolean {
+  return headRef.startsWith('helm/spec/') || headRef.startsWith('helm/implementation-plan/');
 }

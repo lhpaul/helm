@@ -1018,7 +1018,7 @@ async function runRemediationPass(input: {
       status: 'error',
       totalCost: input.totalCost,
       maxDuration: input.maxDuration,
-      newStage: 'code-review',
+      newStage: input.stageTransitions === 'none' ? undefined : 'code-review',
       error: `Failed to provision remediation workspace: ${err instanceof Error ? err.message : String(err)}`,
     };
   }

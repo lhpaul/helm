@@ -1450,6 +1450,7 @@ describe('dispatchStageHandler > early-stage remediators', () => {
       undefined,
       expect.any(Function),
       { url: 'https://github.com/test-org/test-knowledge', default_branch: 'main', role: 'docs' },
+      'helm/spec/issue_1',
     );
     expect(transition).not.toHaveBeenCalled();
     expect(runEarlyRemediation).not.toHaveBeenCalled();

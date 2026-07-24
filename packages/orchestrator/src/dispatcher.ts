@@ -671,12 +671,16 @@ export async function dispatchStageHandler(
       }
       prUrl = found;
     } catch (err) {
+      console.error(
+        `[dispatcher] Failed to find ${kind} PR for ${item.externalId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
       return {
         specialistId,
         status: 'error',
         costUsd: 0,
         durationMs: 0,
-        error: `Failed to find ${kind} PR: ${err instanceof Error ? err.message : String(err)}`,
+        error: `Failed to find ${kind} PR`,
       };
     }
 

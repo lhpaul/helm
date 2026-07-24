@@ -185,19 +185,22 @@ export function buildReviewerParams(
   workspacePath: string,
   prUrl: string,
   spec?: string,
+  options: { codeRepo?: CodeRepo; branchName?: string } = {},
 ): SpawnParams {
   const specialistCfg = product.specialists[SPECIALIST_CONFIG_KEY[kind]];
   const specialistId = `${kind}-reviewer`;
 
   const kindLabel = kind.charAt(0).toUpperCase() + kind.slice(1);
-  const defaultBranch = product.code_repos[0]?.default_branch ?? 'main';
+  const codeRepo = options.codeRepo ?? product.code_repos[0];
+  const defaultBranch = codeRepo?.default_branch ?? 'main';
+  const branchName = options.branchName ?? `helm/impl/${externalId}`;
 
   const commonHeader = [
     `You are Helm's ${kindLabel} reviewer specialist. Your task is to review item \`${externalId}\`.`,
     '',
     `The implementation PR is available at: ${prUrl} (for context only — do not merge or close it).`,
     '',
-    `The working directory is a shallow clone of the \`helm/impl/${externalId}\` implementation branch.`,
+    `The working directory is a shallow clone of the \`${branchName}\` review branch.`,
     '',
     `To inspect the diff: \`git fetch --depth 1 origin ${defaultBranch}\` then \`git diff origin/${defaultBranch}...HEAD\``,
   ].join('\n');
@@ -335,6 +338,7 @@ export async function handleReviewerResult(
   codeRepo: CodeRepo,
   runGh?: RunGh,
   runGit?: RunGit,
+  branchName?: string,
 ): Promise<ReviewerResult> {
   const baseResult = {
     kind,
@@ -373,7 +377,7 @@ export async function handleReviewerResult(
   if (kind === 'code') {
     try {
       const pushResult = await pushReviewerPatches(
-        { externalId, codeRepo, workspacePath, githubToken },
+        { externalId, codeRepo, workspacePath, githubToken, branchName },
         runGit,
       );
       if (pushResult.pushed && pushResult.commitSha) {
@@ -451,6 +455,7 @@ export async function fanoutReviewers(
   runGh?: RunGh,
   fetchFn?: FetchFn,
   selectedCodeRepo?: CodeRepo,
+  selectedBranchName?: string,
 ): Promise<ReviewerFanoutResult> {
   const codeRepo = selectedCodeRepo ?? product.code_repos[0];
   if (!codeRepo) {
@@ -477,14 +482,18 @@ export async function fanoutReviewers(
   }
 
   // Provision all 3 workspaces in parallel.
-  // provisionReviewerWorkspace clones helm/impl/{externalId} directly from the
-  // remote, so each reviewer workspace contains the real implementation code.
+  const branchName = selectedBranchName ?? `helm/impl/${externalId}`;
+
+  // provisionReviewerWorkspace clones the selected review branch directly from
+  // the remote, so each reviewer workspace contains the real PR contents.
   const provisionResults = await Promise.allSettled(
     REVIEWER_KINDS.map((kind) =>
-      provisionReviewerWorkspace({ externalId, codeRepo, githubToken }, runGit).then((result) => ({
-        kind,
-        workspacePath: result.workspacePath,
-      })),
+      provisionReviewerWorkspace({ externalId, codeRepo, githubToken, branchName }, runGit).then(
+        (result) => ({
+          kind,
+          workspacePath: result.workspacePath,
+        }),
+      ),
     ),
   );
 
@@ -529,7 +538,10 @@ export async function fanoutReviewers(
     const spawnResults = await Promise.allSettled(
       REVIEWER_KINDS.map(async (kind) => {
         const workspacePath = workspacePaths.get(kind)!;
-        const params = buildReviewerParams(kind, externalId, product, workspacePath, prUrl, spec);
+        const params = buildReviewerParams(kind, externalId, product, workspacePath, prUrl, spec, {
+          codeRepo,
+          branchName,
+        });
         const session = await runtime.spawn(params);
         const agentResult = await session.wait();
         const reviewerResult = await handleReviewerResult(
@@ -542,6 +554,7 @@ export async function fanoutReviewers(
           codeRepo,
           runGh,
           runGit,
+          branchName,
         );
         return reviewerResult;
       }),

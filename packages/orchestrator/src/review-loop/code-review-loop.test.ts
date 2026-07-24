@@ -245,6 +245,7 @@ describe('runCodeReviewLoop', () => {
       undefined,
       undefined,
       { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
+      'helm/spec/issue_1',
     );
     expect(buildRemediationParams).toHaveBeenCalledWith(
       'issue_1',
@@ -253,6 +254,8 @@ describe('runCodeReviewLoop', () => {
       PR_URL,
       expect.any(Map),
       undefined,
+      { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
+      'helm/spec/issue_1',
     );
   });
 
@@ -264,6 +267,7 @@ describe('runCodeReviewLoop', () => {
       costUsd: 0.02,
       durationMs: 200,
       commentPosted: false,
+      pushed: false,
       error: 'remediation summary missing',
     });
 
@@ -819,6 +823,8 @@ describe('runCodeReviewLoop', () => {
       PR_URL,
       expect.any(Map),
       undefined,
+      baseProduct.code_repos[0],
+      undefined,
     );
     const findingsByKind = vi.mocked(buildRemediationParams).mock.calls.at(-1)![4] as Map<
       string,
@@ -899,7 +905,7 @@ describe('runCodeReviewLoop', () => {
       id: 'pair-spec-and-plan-files',
       title: 'Pair spec and plan files sequencing',
       pattern: 'pair-spec-and-plan-files sequencing',
-      appliesTo: ['spec-draft', 'plan-draft'] as const,
+      appliesTo: ['spec-draft', 'plan-draft'],
       rationale:
         'Spec and plan artifacts are generated and reviewed in sequence, so the companion file can be absent while the first artifact is still in draft.',
       matchesSummary: vi.fn((summary: string) => summary === 'pair-spec-and-plan-files sequencing'),
@@ -950,6 +956,7 @@ describe('runCodeReviewLoop', () => {
       undefined,
       undefined,
       { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
+      'helm/spec/issue_1',
     );
     expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -971,7 +978,7 @@ describe('runCodeReviewLoop', () => {
       id: 'pair-spec-and-plan-files',
       title: 'Pair spec and plan files sequencing',
       pattern: 'pair-spec-and-plan-files sequencing',
-      appliesTo: ['spec-draft', 'plan-draft'] as const,
+      appliesTo: ['spec-draft', 'plan-draft'],
       rationale:
         'Spec and plan artifacts are generated and reviewed in sequence, so the companion file can be absent while the first artifact is still in draft.',
       matchesSummary: vi.fn((summary: string) => summary === 'pair-spec-and-plan-files sequencing'),
@@ -1148,6 +1155,8 @@ describe('runCodeReviewLoop', () => {
       expect.any(String),
       expect.any(Map),
       expect.stringContaining('SETTLED'),
+      expect.any(Object),
+      undefined,
     );
   });
 
@@ -1312,6 +1321,8 @@ describe('runCodeReviewLoop', () => {
       PR_URL,
       expect.any(Map),
       '- **AUTO** · Add CSRF guard on POST /api/sync',
+      product.code_repos[0],
+      undefined,
     );
   });
 
@@ -1401,7 +1412,12 @@ describe('runCodeReviewLoop', () => {
       '/tmp/ws',
       PR_URL,
       expect.any(Map),
-      { spec: undefined, resolvedProductDecisions: [] },
+      {
+        spec: undefined,
+        resolvedProductDecisions: [],
+        codeRepo: productWithAdjudicator().code_repos[0],
+        branchName: undefined,
+      },
     );
   });
 

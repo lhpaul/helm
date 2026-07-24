@@ -83,6 +83,7 @@ export type RunCodeReviewLoopParams = {
   product: Product;
   prUrl: string;
   codeRepo: CodeRepo;
+  branchName?: string;
   kind?: 'spec' | 'plan';
   githubToken: string;
   runtime: IAgentRuntime;
@@ -324,6 +325,7 @@ export async function runCodeReviewLoop(
         params.runGh,
         params.fetchFn,
         params.codeRepo,
+        params.branchName,
       );
       lastFanout = fanoutResult;
       totalCost += fanoutResult.costUsd;
@@ -629,10 +631,13 @@ export async function runEarlyArtifactReviewLoop(
     default_branch: params.product.knowledge_repo.default_branch,
     role: 'docs',
   };
+  const branchName =
+    params.kind === 'spec' ? `helm/spec/${params.externalId}` : `helm/plan/${params.externalId}`;
 
   const result = await runCodeReviewLoop({
     ...params,
     codeRepo: knowledgeRepoAsCodeRepo,
+    branchName,
     mode: 'early-artifact',
   });
 
@@ -699,6 +704,7 @@ async function runAdjudicationPass(input: {
   product: Product;
   prUrl: string;
   codeRepo: CodeRepo;
+  branchName?: string;
   githubToken: string;
   runtime: IAgentRuntime;
   runGit?: RunGit;
@@ -716,6 +722,7 @@ async function runAdjudicationPass(input: {
       {
         externalId: input.externalId,
         codeRepo: input.codeRepo,
+        branchName: input.branchName,
         githubToken: input.githubToken,
       },
       input.runGit,
@@ -745,7 +752,12 @@ async function runAdjudicationPass(input: {
       workspacePath,
       input.prUrl,
       findingsByKind,
-      { spec, resolvedProductDecisions: input.resolvedProductDecisions },
+      {
+        spec,
+        resolvedProductDecisions: input.resolvedProductDecisions,
+        codeRepo: input.codeRepo,
+        branchName: input.branchName,
+      },
     );
     const session = await input.runtime.spawn(params);
     const agentResult = await session.wait();
@@ -860,6 +872,7 @@ async function runAdjudicationIfEnabled(input: {
   product: Product;
   prUrl: string;
   codeRepo: CodeRepo;
+  branchName?: string;
   githubToken: string;
   runtime: IAgentRuntime;
   runGit?: RunGit;
@@ -921,6 +934,7 @@ async function runRemediationPass(input: {
   product: Product;
   prUrl: string;
   codeRepo: CodeRepo;
+  branchName?: string;
   githubToken: string;
   runtime: IAgentRuntime;
   transition: ItemTransitionFn;
@@ -944,6 +958,7 @@ async function runRemediationPass(input: {
     product: input.product,
     prUrl: input.prUrl,
     codeRepo: input.codeRepo,
+    branchName: input.branchName,
     githubToken: input.githubToken,
     runtime: input.runtime,
     runGit: input.runGit,
@@ -992,6 +1007,7 @@ async function runRemediationPass(input: {
       {
         externalId: input.externalId,
         codeRepo: input.codeRepo,
+        branchName: input.branchName,
         githubToken: input.githubToken,
       },
       input.runGit,
@@ -1035,6 +1051,8 @@ async function runRemediationPass(input: {
       input.prUrl,
       findingsByKind,
       adjudicationPlan,
+      input.codeRepo,
+      input.branchName,
     );
 
     let remediationResult: RemediationResult | undefined;
@@ -1052,6 +1070,7 @@ async function runRemediationPass(input: {
         input.codeRepo,
         input.runGit,
         input.runGh,
+        input.branchName,
       );
 
       totalCost += remediationResult.costUsd;

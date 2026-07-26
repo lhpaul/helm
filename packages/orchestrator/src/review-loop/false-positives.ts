@@ -84,7 +84,8 @@ export function builtInFalsePositiveEntries(): FalsePositiveEntry[] {
       source: 'built-in',
       matchesSummary: (summary: string) => {
         const haystack = normalizeForMatch(summary);
-        return haystack.trim() === patternNeedle.trim();
+        if (haystack.includes(patternNeedle)) return true;
+        return significantTokenOverlap(patternNeedle, haystack);
       },
     };
   });

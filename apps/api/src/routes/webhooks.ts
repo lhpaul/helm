@@ -354,6 +354,11 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           console.info('[webhooks/github] draft PR sync ignored — early review loop disabled');
           return c.json({ processed: true });
         }
+        const repo = getPrimaryCodeRepo(config);
+        if (event.owner !== repo.owner || event.repo !== repo.repo) {
+          console.info('[webhooks/github] draft PR sync ignored — repository mismatch');
+          return c.json({ processed: true });
+        }
 
         const item = await itemStore.get(parsed.externalId);
         const expectedStage = parsed.kind === 'spec' ? 'spec-draft' : 'plan-draft';

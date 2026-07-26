@@ -104,7 +104,7 @@ describe('parseFalsePositivesCatalog', () => {
     expect(pairEntry).toBeDefined();
     expect(pairEntry?.appliesTo).toEqual(['spec-draft', 'plan-draft']);
     expect(pairEntry?.matchesSummary('pair-spec-and-plan-files')).toBe(true);
-    expect(pairEntry?.matchesSummary('pair-spec-and-plan-files sequencing')).toBe(false);
+    expect(pairEntry?.matchesSummary('pair-spec-and-plan-files sequencing')).toBe(true);
   });
 
   it('falls back to built-in entries when the knowledge-repo catalog fetch fails', async () => {
@@ -118,6 +118,11 @@ describe('parseFalsePositivesCatalog', () => {
     const entries = await fetchFalsePositivesCatalog(product, 'token', fetchFn);
 
     expect(entries.some((entry) => entry.pattern === 'pair-spec-and-plan-files')).toBe(true);
+    expect(
+      entries
+        .find((entry) => entry.pattern === 'pair-spec-and-plan-files')
+        ?.matchesSummary('pair-spec-and-plan-files sequencing'),
+    ).toBe(true);
   });
 
   it('merges built-in sequential-artifact entries with a fetched knowledge-repo catalog', async () => {

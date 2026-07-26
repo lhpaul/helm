@@ -137,6 +137,8 @@ function mergedPrPayload(
     senderLogin?: string;
     prNumber?: number;
     headSha?: string;
+    owner?: string;
+    repo?: string;
   } = {},
 ): string {
   const payload: Record<string, unknown> = {
@@ -148,8 +150,8 @@ function mergedPrPayload(
       head: { ref: headRef, sha: opts.headSha ?? 'sha-sync-1' },
     },
     repository: {
-      name: 'test-repo',
-      owner: { login: 'test-org' },
+      name: opts.repo ?? 'test-repo',
+      owner: { login: opts.owner ?? 'test-org' },
     },
   };
   if (opts.senderLogin) {
@@ -1118,6 +1120,72 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
+    it('schedules plan-draft-reviewer when a helm/plan/ PR opens and early loop is enabled', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { early_loop: { enabled: true } },
+      } as never);
+      const body = mergedPrPayload('helm/plan/LEA-192', {
+        action: 'opened',
+        merged: false,
+        prNumber: 79,
+        headSha: 'sha-plan-open-192',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'plan-draft',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-192',
+        specialistId: 'plan-draft-reviewer',
+        targetRevision: 'sha-plan-open-192',
+        prNumber: 79,
+        triggeredBy: 'webhook:plan-pr-sync',
+      });
+    });
+
+    it('skips draft PR dispatch when the webhook repository does not match the primary repo', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { early_loop: { enabled: true } },
+      } as never);
+      const body = mergedPrPayload('helm/spec/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+        owner: 'other-org',
+        repo: 'other-repo',
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
     it('skips draft PR dispatch when early loop is disabled', async () => {
       const body = mergedPrPayload('helm/spec/LEA-192', {
         action: 'synchronize',
@@ -1133,6 +1201,39 @@ describe('POST /api/webhooks/github', () => {
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('returns 200 when draft reviewer dispatch lookup fails', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { early_loop: { enabled: true } },
+      } as never);
+      const body = mergedPrPayload('helm/spec/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'spec-draft',
+        history: [],
+      });
+      mockScheduleItemDispatch.mockRejectedValue(new Error('unknown specialist'));
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ specialistId: 'spec-draft-reviewer' }),
+      );
     });
 
     // ── Impl PR synchronize (helm/impl/ → re-dispatch reviewer-fanout) ─────

@@ -169,13 +169,40 @@ describe('parseGitHubWebhook', () => {
             merged: false,
             head: { ref: 'helm/spec/issue_42', sha: 'abc123' },
           },
+          repository: { name: 'repo', owner: { login: 'owner' } },
         }),
       );
       expect(result).toEqual({
         type: 'pull_request_synchronized',
         headRef: 'helm/spec/issue_42',
+        owner: 'owner',
+        repo: 'repo',
         prNumber: 42,
         headSha: 'abc123',
+        senderLogin: null,
+        timestamp: expect.any(String),
+      });
+    });
+
+    it('pull_request action:opened on helm/plan artifact branch → pull_request_synchronized', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'opened',
+          pull_request: {
+            number: 43,
+            merged: false,
+            head: { ref: 'helm/plan/issue_42', sha: 'def456' },
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result).toEqual({
+        type: 'pull_request_synchronized',
+        headRef: 'helm/plan/issue_42',
+        owner: 'owner',
+        repo: 'repo',
+        prNumber: 43,
+        headSha: 'def456',
         senderLogin: null,
         timestamp: expect.any(String),
       });
@@ -190,11 +217,14 @@ describe('parseGitHubWebhook', () => {
             merged: false,
             head: { ref: 'helm/impl/LEA-192', sha: 'abc123' },
           },
+          repository: { name: 'repo', owner: { login: 'owner' } },
         }),
       );
       expect(result).toEqual({
         type: 'pull_request_synchronized',
         headRef: 'helm/impl/LEA-192',
+        owner: 'owner',
+        repo: 'repo',
         prNumber: 12,
         headSha: 'abc123',
         senderLogin: null,
@@ -213,6 +243,8 @@ describe('parseGitHubWebhook', () => {
       expect(result).toMatchObject({
         type: 'pull_request_synchronized',
         headRef: 'helm/impl/LEA-192',
+        owner: null,
+        repo: null,
         senderLogin: 'human-dev',
       });
     });
@@ -227,6 +259,8 @@ describe('parseGitHubWebhook', () => {
       expect(result).toMatchObject({
         type: 'pull_request_synchronized',
         headRef: 'feature/foo',
+        owner: null,
+        repo: null,
         senderLogin: null,
       });
     });

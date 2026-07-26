@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseArtifactBranch } from '@helm/shared';
 import type { NormalizedEvent } from '../types.js';
 
 // ── Context schema ────────────────────────────────────────────────────────────
@@ -198,6 +199,8 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
         return {
           type: 'pull_request_synchronized',
           headRef: pr.head.ref,
+          owner: parsed.data.repository?.owner.login ?? null,
+          repo: parsed.data.repository?.name ?? null,
           prNumber: pr.number,
           headSha: pr.head.sha,
           senderLogin: parsed.data.sender?.login ?? null,
@@ -263,5 +266,6 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
 }
 
 function isEarlyDraftArtifactBranch(headRef: string): boolean {
-  return headRef.startsWith('helm/spec/') || headRef.startsWith('helm/implementation-plan/');
+  const parsed = parseArtifactBranch(headRef);
+  return parsed?.kind === 'spec' || parsed?.kind === 'plan';
 }

@@ -74,9 +74,13 @@ vi.mock('../specialists/pr-helpers.js', async (importOriginal) => {
 vi.mock('./false-positives.js', () => ({
   fetchFalsePositivesCatalog: vi.fn().mockResolvedValue([]),
 }));
-vi.mock('./summary.js', () => ({
-  upsertReviewLoopSummaryComment: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock('./summary.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./summary.js')>();
+  return {
+    ...actual,
+    upsertReviewLoopSummaryComment: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 import { fanoutReviewers, shouldRemediate } from '../specialists/reviewer-fanout.js';
 import { buildRemediationParams, handleRemediationResult } from '../specialists/remediation.js';
@@ -89,7 +93,11 @@ import { fetchSpecForPlan } from '../specialists/fetch-product-context.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
 import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
-import { upsertReviewLoopSummaryComment } from './summary.js';
+import {
+  buildAdvisorySummaryRows,
+  formatReviewLoopSummaryComment,
+  upsertReviewLoopSummaryComment,
+} from './summary.js';
 import { fetchFalsePositivesCatalog } from './false-positives.js';
 import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
 
@@ -996,6 +1004,27 @@ describe('runCodeReviewLoop', () => {
         ],
       }),
     );
+    const summaryInput = vi.mocked(upsertReviewLoopSummaryComment).mock.calls.at(-1)![0];
+    const rows = buildAdvisorySummaryRows(
+      summaryInput.advisories,
+      summaryInput.catalog,
+      summaryInput.stage,
+    );
+    const commentBody = formatReviewLoopSummaryComment({
+      cyclesCompleted: summaryInput.cyclesCompleted,
+      externalProvider: summaryInput.externalProvider,
+      advisories: rows,
+    });
+    expect(rows).toEqual([
+      expect.objectContaining({
+        disposition: 'Rejected',
+        finding: expect.objectContaining({ id: 'adv-sequential' }),
+      }),
+    ]);
+    expect(commentBody).toContain(
+      '| `adv-sequential` | pair-spec-and-plan-files sequencing | **Rejected** |',
+    );
+    expect(commentBody).toContain('Spec and plan artifacts are generated and reviewed in sequence');
   });
 
   it('routes plan-draft advisories through draft-stage false-positive disposition', async () => {

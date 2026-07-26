@@ -100,11 +100,19 @@ describe('parseFalsePositivesCatalog', () => {
   it('ships built-in Helm sequential-artifact false positives', () => {
     const entries = builtInFalsePositiveEntries();
     const pairEntry = entries.find((entry) => entry.pattern === 'pair-spec-and-plan-files');
+    const specPlanEntry = entries.find(
+      (entry) => entry.pattern === 'plan file is missing while spec remains in spec-draft',
+    );
 
     expect(pairEntry).toBeDefined();
     expect(pairEntry?.appliesTo).toEqual(['spec-draft', 'plan-draft']);
     expect(pairEntry?.matchesSummary('pair-spec-and-plan-files')).toBe(true);
     expect(pairEntry?.matchesSummary('pair-spec-and-plan-files sequencing')).toBe(true);
+    expect(specPlanEntry).toBeDefined();
+    expect(specPlanEntry?.appliesTo).toEqual(['spec-draft', 'plan-draft']);
+    expect(
+      specPlanEntry?.matchesSummary('plan file is missing while spec remains in spec-draft'),
+    ).toBe(true);
   });
 
   it('falls back to built-in entries when the knowledge-repo catalog fetch fails', async () => {

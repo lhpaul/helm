@@ -32,6 +32,7 @@ import {
   authorHasWriteAccess,
   getPrimaryCodeRepo,
   listPrIssueComments,
+  parseGitHubRepoUrl,
   resolveOpenPrMetadata,
 } from '../services/github-pr.js';
 import { readGitHubTokenFromEnv } from '../lib/github-token.js';
@@ -348,13 +349,19 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         }
       }
     } else if (parsed?.kind === 'spec' || parsed?.kind === 'plan') {
+      if (isOrchestratorSender(event.senderLogin)) {
+        console.info(
+          `[webhooks/github] draft PR sync ignored — orchestrator sender '${event.senderLogin}'`,
+        );
+        return c.json({ processed: true });
+      }
       try {
         const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
         if (config.review?.early_loop?.enabled !== true) {
           console.info('[webhooks/github] draft PR sync ignored — early review loop disabled');
           return c.json({ processed: true });
         }
-        const repo = getPrimaryCodeRepo(config);
+        const repo = parseGitHubRepoUrl(config.knowledge_repo.url);
         if (event.owner !== repo.owner || event.repo !== repo.repo) {
           console.info('[webhooks/github] draft PR sync ignored — repository mismatch');
           return c.json({ processed: true });

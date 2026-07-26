@@ -1060,7 +1060,6 @@ describe('POST /api/webhooks/github', () => {
         merged: false,
         prNumber: 76,
         headSha: 'sha-spec-192',
-        senderLogin: 'helm-bot',
       });
       mockGet.mockResolvedValue({
         externalId: 'LEA-192',
@@ -1120,6 +1119,60 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
+    it('schedules draft reviewer for artifact PRs in a separate knowledge repo', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/knowledge-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { early_loop: { enabled: true } },
+      } as never);
+      const body = mergedPrPayload('helm/spec/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+        owner: 'test-org',
+        repo: 'knowledge-repo',
+        prNumber: 80,
+        headSha: 'sha-spec-knowledge-192',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'spec-draft',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-192',
+        specialistId: 'spec-draft-reviewer',
+        targetRevision: 'sha-spec-knowledge-192',
+        prNumber: 80,
+        triggeredBy: 'webhook:spec-pr-sync',
+      });
+    });
+
+    it('skips draft PR dispatch when an orchestrator sender syncs the branch', async () => {
+      const body = mergedPrPayload('helm/spec/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+        senderLogin: 'helm-bot',
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
     it('schedules plan-draft-reviewer when a helm/plan/ PR opens and early loop is enabled', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({
         product: { slug: 'test-app', name: 'Test' },
@@ -1159,7 +1212,7 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
-    it('skips draft PR dispatch when the webhook repository does not match the primary repo', async () => {
+    it('skips draft PR dispatch when the webhook repository does not match the knowledge repo', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({
         product: { slug: 'test-app', name: 'Test' },
         issue_tracker: {

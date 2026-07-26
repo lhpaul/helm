@@ -213,6 +213,25 @@ export async function dispatchStageHandler(
       error: `No specialist mapped for stage '${item.currentStage}'`,
     };
   }
+  const draftReviewerStage =
+    specialistId === 'spec-draft-reviewer'
+      ? 'spec-draft'
+      : specialistId === 'plan-draft-reviewer'
+        ? 'plan-draft'
+        : undefined;
+  if (
+    draftReviewerStage &&
+    (resolveReviewLoopConfig(product).earlyLoopEnabled !== true ||
+      item.currentStage !== draftReviewerStage)
+  ) {
+    return {
+      specialistId,
+      status: 'error',
+      costUsd: 0,
+      durationMs: 0,
+      error: `${specialistId} requires review.early_loop.enabled=true and stage '${draftReviewerStage}'`,
+    };
+  }
 
   const workdir =
     options?.workdir ?? join(process.cwd(), 'data', 'worktrees', item.productSlug, item.externalId);

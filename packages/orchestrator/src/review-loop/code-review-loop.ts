@@ -70,6 +70,7 @@ export type CodeReviewLoopResult = {
 export type DeferredExternalReviewIntent = {
   productSlug: string;
   externalId: string;
+  specialistId: 'reviewer-fanout' | 'spec-draft-reviewer' | 'plan-draft-reviewer';
   provider: string;
   reason: 'analysis_pending';
   providerReason?: string;
@@ -460,6 +461,10 @@ export async function runCodeReviewLoop(
       const deferredExternalReview: DeferredExternalReviewIntent = {
         productSlug: params.product.product.slug,
         externalId: params.externalId,
+        specialistId:
+          params.mode === 'early-artifact' && params.kind
+            ? `${params.kind}-draft-reviewer`
+            : 'reviewer-fanout',
         provider,
         reason: externalOutcome.reason,
         providerReason: externalOutcome.providerReason,

@@ -1478,6 +1478,58 @@ describe('dispatchStageHandler > early-stage remediators', () => {
     );
   });
 
+  it('does not run spec-draft-reviewer on spec-ready even when early_loop is enabled', async () => {
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: true } };
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-ready' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        specialistId: 'spec-draft-reviewer',
+        githubToken: 'tok',
+        fetchFn: make404Fetch(),
+      },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe(
+      "spec-draft-reviewer requires review.early_loop.enabled=true and stage 'spec-draft'",
+    );
+    expect(findArtifactPRUrl).not.toHaveBeenCalled();
+    expect(fanoutReviewers).not.toHaveBeenCalled();
+  });
+
+  it('does not run plan-draft-reviewer on plan-ready even when early_loop is enabled', async () => {
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: true } };
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        specialistId: 'plan-draft-reviewer',
+        githubToken: 'tok',
+        fetchFn: make404Fetch(),
+      },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe(
+      "plan-draft-reviewer requires review.early_loop.enabled=true and stage 'plan-draft'",
+    );
+    expect(findArtifactPRUrl).not.toHaveBeenCalled();
+    expect(fanoutReviewers).not.toHaveBeenCalled();
+  });
+
   it('rejects missing GITHUB_TOKEN', async () => {
     const runtime = new MockAgentRuntime({ messages: [] });
 

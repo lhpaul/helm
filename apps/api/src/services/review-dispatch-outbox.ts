@@ -9,6 +9,7 @@ export type ReviewDispatchIntent = {
   kind?: ReviewDispatchIntentKind;
   productSlug: string;
   externalId: string;
+  specialistId?: string;
   prNumber?: number;
   targetRevision?: string;
   provider?: string;
@@ -21,6 +22,7 @@ export type ReviewDispatchIntent = {
 
 export type PendingExternalReviewIntent = ReviewDispatchIntent & {
   kind: 'pending_external_review';
+  specialistId?: string;
   provider: string;
   reason: 'analysis_pending';
   prNumber: number;

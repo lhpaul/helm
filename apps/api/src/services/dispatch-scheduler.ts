@@ -53,6 +53,7 @@ async function persistPendingReviewDispatch(input: {
   dataRoot: string;
   productSlug: string;
   externalId: string;
+  specialistId?: string;
   prNumber?: number;
   targetRevision?: string;
   triggeredBy: string;
@@ -62,6 +63,7 @@ async function persistPendingReviewDispatch(input: {
     kind: 'review_dispatch',
     productSlug: input.productSlug,
     externalId: input.externalId,
+    specialistId: input.specialistId,
     prNumber: input.prNumber,
     targetRevision: input.targetRevision,
     triggeredBy: input.triggeredBy,
@@ -82,6 +84,7 @@ async function persistPendingExternalReview(input: {
     kind: 'pending_external_review',
     productSlug: input.intent.productSlug,
     externalId: input.intent.externalId,
+    specialistId: input.intent.specialistId,
     prNumber: input.intent.prNumber,
     targetRevision: input.intent.targetRevision,
     provider: input.intent.provider,
@@ -96,6 +99,7 @@ async function persistPendingExternalReview(input: {
 export async function persistReviewDispatchIntent(input: {
   productSlug: string;
   externalId: string;
+  specialistId?: string;
   prNumber?: number;
   targetRevision?: string;
   triggeredBy: string;
@@ -219,7 +223,7 @@ async function finalizePendingExternalReviewResume(
   const outcome = await scheduleItemDispatch({
     productSlug: intent.productSlug,
     externalId: intent.externalId,
-    specialistId: 'reviewer-fanout',
+    specialistId: intent.specialistId ?? 'reviewer-fanout',
     targetRevision: intent.targetRevision,
     prNumber: intent.prNumber,
     triggeredBy,
@@ -244,6 +248,7 @@ async function finalizePendingExternalReviewResume(
       dataRoot: dataRootFromEnv(),
       productSlug: intent.productSlug,
       externalId: intent.externalId,
+      specialistId: intent.specialistId ?? 'reviewer-fanout',
       prNumber: intent.prNumber,
       targetRevision: intent.targetRevision,
       triggeredBy: `${triggeredBy}:awaiting-job-exit`,
@@ -279,7 +284,26 @@ async function replayPendingReviewDispatch(input: {
   if ((intent.kind ?? 'review_dispatch') !== 'review_dispatch') return;
 
   let targetRevision = intent.targetRevision;
+  const replaySpecialist = intent.specialistId ?? 'reviewer-fanout';
   if (intent.prNumber !== undefined) {
+    if (replaySpecialist !== 'reviewer-fanout') {
+      if (!targetRevision) return;
+      const outcome = await scheduleItemDispatch({
+        productSlug: intent.productSlug,
+        externalId: intent.externalId,
+        specialistId: replaySpecialist,
+        targetRevision,
+        prNumber: intent.prNumber,
+        triggeredBy: `outbox:${intent.triggeredBy}`,
+      });
+      if (outcome.scheduled || outcome.reason === 'Duplicate target revision') {
+        await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+          updatedAt: intent.updatedAt,
+          targetRevision: intent.targetRevision,
+        });
+      }
+      return;
+    }
     const pr = await resolveOpenPrMetadata({
       product: input.product,
       prNumber: intent.prNumber,
@@ -300,7 +324,7 @@ async function replayPendingReviewDispatch(input: {
   const outcome = await scheduleItemDispatch({
     productSlug: intent.productSlug,
     externalId: intent.externalId,
-    specialistId: 'reviewer-fanout',
+    specialistId: replaySpecialist,
     targetRevision,
     prNumber: intent.prNumber,
     triggeredBy: `outbox:${intent.triggeredBy}`,
@@ -326,6 +350,7 @@ async function scheduleReviewAfterImplementerCompletion(input: {
       dataRoot: input.dataRoot,
       productSlug: input.item.productSlug,
       externalId: input.item.externalId,
+      specialistId: 'reviewer-fanout',
       prNumber: prNumber ?? undefined,
       triggeredBy: 'agent:implementer:missing-token',
     });
@@ -336,6 +361,7 @@ async function scheduleReviewAfterImplementerCompletion(input: {
       dataRoot: input.dataRoot,
       productSlug: input.item.productSlug,
       externalId: input.item.externalId,
+      specialistId: 'reviewer-fanout',
       triggeredBy: 'agent:implementer:missing-pr-url',
     });
     return;
@@ -353,6 +379,7 @@ async function scheduleReviewAfterImplementerCompletion(input: {
         dataRoot: input.dataRoot,
         productSlug: input.item.productSlug,
         externalId: input.item.externalId,
+        specialistId: 'reviewer-fanout',
         prNumber,
         triggeredBy: 'agent:implementer:head-ref-mismatch',
       });
@@ -371,6 +398,7 @@ async function scheduleReviewAfterImplementerCompletion(input: {
         dataRoot: input.dataRoot,
         productSlug: input.item.productSlug,
         externalId: input.item.externalId,
+        specialistId: 'reviewer-fanout',
         prNumber,
         targetRevision: pr.headSha,
         triggeredBy: 'agent:implementer:code-review',
@@ -381,6 +409,7 @@ async function scheduleReviewAfterImplementerCompletion(input: {
       dataRoot: input.dataRoot,
       productSlug: input.item.productSlug,
       externalId: input.item.externalId,
+      specialistId: 'reviewer-fanout',
       prNumber,
       triggeredBy: 'agent:implementer:lookup-failed',
     });
@@ -558,6 +587,24 @@ export async function scheduleItemDispatch(input: {
   }
 
   const resolvedSpecialist = resolveSpecialistId(item.currentStage, input.specialistId);
+  const draftReviewerStage =
+    input.specialistId === 'spec-draft-reviewer'
+      ? 'spec-draft'
+      : input.specialistId === 'plan-draft-reviewer'
+        ? 'plan-draft'
+        : undefined;
+  if (
+    draftReviewerStage &&
+    (product.review?.early_loop?.enabled !== true || item.currentStage !== draftReviewerStage)
+  ) {
+    console.info(
+      `[dispatch-scheduler] skip: ${input.specialistId} requires early_loop enabled and stage '${draftReviewerStage}' (${input.productSlug}/${input.externalId})`,
+    );
+    return {
+      scheduled: false,
+      reason: DISPATCH_UNAVAILABLE,
+    };
+  }
   const earlyLoopDraftDispatch =
     !input.specialistId &&
     product.review?.early_loop?.enabled === true &&
@@ -581,6 +628,7 @@ export async function scheduleItemDispatch(input: {
           dataRoot: dataRootFromEnv(),
           productSlug: input.productSlug,
           externalId: input.externalId,
+          specialistId: input.specialistId,
           prNumber: input.prNumber,
           targetRevision: input.targetRevision,
           triggeredBy: input.triggeredBy,
@@ -621,6 +669,7 @@ export async function scheduleItemDispatch(input: {
         dataRoot,
         productSlug: input.productSlug,
         externalId: input.externalId,
+        specialistId: input.specialistId,
         prNumber: input.prNumber,
         targetRevision: input.targetRevision,
         triggeredBy: input.triggeredBy,
@@ -630,6 +679,7 @@ export async function scheduleItemDispatch(input: {
         dataRoot,
         productSlug: input.productSlug,
         externalId: input.externalId,
+        specialistId: input.specialistId,
         prNumber: input.prNumber,
         targetRevision: input.targetRevision,
         triggeredBy: input.triggeredBy,

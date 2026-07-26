@@ -71,9 +71,13 @@ vi.mock('../specialists/pr-helpers.js', async (importOriginal) => {
     postPRComment: vi.fn().mockResolvedValue(undefined),
   };
 });
-vi.mock('./false-positives.js', () => ({
-  fetchFalsePositivesCatalog: vi.fn().mockResolvedValue([]),
-}));
+vi.mock('./false-positives.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./false-positives.js')>();
+  return {
+    ...actual,
+    fetchFalsePositivesCatalog: vi.fn().mockResolvedValue([]),
+  };
+});
 vi.mock('./summary.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./summary.js')>();
   return {
@@ -98,7 +102,7 @@ import {
   formatReviewLoopSummaryComment,
   upsertReviewLoopSummaryComment,
 } from './summary.js';
-import { fetchFalsePositivesCatalog } from './false-positives.js';
+import { builtInFalsePositiveEntries, fetchFalsePositivesCatalog } from './false-positives.js';
 import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
 
 const PR_URL = 'https://github.com/o/r/pull/42';
@@ -643,6 +647,7 @@ describe('runCodeReviewLoop', () => {
       deferredExternalReview: {
         productSlug: 'test',
         externalId: 'issue_1',
+        specialistId: 'reviewer-fanout',
         provider: 'haystack',
         reason: 'analysis_pending',
         providerReason: 'pending_timeout',
@@ -728,6 +733,53 @@ describe('runCodeReviewLoop', () => {
       error: 'External review deferred but intent persistence failed: outbox unavailable',
     });
     expect(onExternalReviewDeferred).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists the draft reviewer identity when early artifact review defers', async () => {
+    const product = {
+      ...baseProduct,
+      review: {
+        early_loop: { enabled: true },
+        external: {
+          provider: 'haystack',
+          max_defer_sec: 600,
+          haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 5 },
+        },
+      },
+    } as Product;
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'deferred',
+      reason: 'analysis_pending',
+      providerReason: 'pending_timeout',
+    });
+    const onExternalReviewDeferred = vi.fn();
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'plan',
+      externalId: 'issue_1',
+      product,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+      targetRevision: 'sha-42',
+      onExternalReviewDeferred,
+    });
+
+    expect(result).toMatchObject({
+      status: 'deferred',
+      deferredExternalReview: {
+        productSlug: 'test',
+        externalId: 'issue_1',
+        specialistId: 'plan-draft-reviewer',
+        provider: 'haystack',
+        reason: 'analysis_pending',
+        prNumber: 7,
+        targetRevision: 'sha-42',
+      },
+    });
+    expect(onExternalReviewDeferred).toHaveBeenCalledWith(result.deferredExternalReview);
   });
 
   it('escalates when external review skips with Haystack evidence', async () => {
@@ -934,15 +986,7 @@ describe('runCodeReviewLoop', () => {
   });
 
   it('routes early artifact advisories through draft-stage false-positive disposition', async () => {
-    const sequencingFalsePositive = {
-      id: 'pair-spec-and-plan-files',
-      title: 'Pair spec and plan files sequencing',
-      pattern: 'pair-spec-and-plan-files sequencing',
-      appliesTo: ['spec-draft', 'plan-draft'],
-      rationale:
-        'Spec and plan artifacts are generated and reviewed in sequence, so the companion file can be absent while the first artifact is still in draft.',
-      matchesSummary: vi.fn((summary: string) => summary === 'pair-spec-and-plan-files sequencing'),
-    };
+    const builtInCatalog = builtInFalsePositiveEntries();
     const product: Product = {
       ...baseProduct,
       review: {
@@ -953,7 +997,7 @@ describe('runCodeReviewLoop', () => {
         },
       },
     };
-    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue([sequencingFalsePositive]);
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInCatalog);
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'clean',
       blockers: [],
@@ -962,7 +1006,7 @@ describe('runCodeReviewLoop', () => {
           id: 'adv-sequential',
           severity: 'low',
           blocking: false,
-          summary: 'pair-spec-and-plan-files sequencing',
+          summary: 'pair-spec-and-plan-files',
         },
       ],
     });
@@ -995,11 +1039,11 @@ describe('runCodeReviewLoop', () => {
       expect.objectContaining({
         prUrl: 'https://github.com/o/k/pull/7',
         stage: 'spec-draft',
-        catalog: [sequencingFalsePositive],
+        catalog: builtInCatalog,
         advisories: [
           expect.objectContaining({
             id: 'adv-sequential',
-            summary: 'pair-spec-and-plan-files sequencing',
+            summary: 'pair-spec-and-plan-files',
           }),
         ],
       }),
@@ -1021,22 +1065,12 @@ describe('runCodeReviewLoop', () => {
         finding: expect.objectContaining({ id: 'adv-sequential' }),
       }),
     ]);
-    expect(commentBody).toContain(
-      '| `adv-sequential` | pair-spec-and-plan-files sequencing | **Rejected** |',
-    );
-    expect(commentBody).toContain('Spec and plan artifacts are generated and reviewed in sequence');
+    expect(commentBody).toContain('| `adv-sequential` | pair-spec-and-plan-files | **Rejected** |');
+    expect(commentBody).toContain('Draft artifact review may see only one side');
   });
 
   it('routes plan-draft advisories through draft-stage false-positive disposition', async () => {
-    const sequencingFalsePositive = {
-      id: 'pair-spec-and-plan-files',
-      title: 'Pair spec and plan files sequencing',
-      pattern: 'pair-spec-and-plan-files sequencing',
-      appliesTo: ['spec-draft', 'plan-draft'],
-      rationale:
-        'Spec and plan artifacts are generated and reviewed in sequence, so the companion file can be absent while the first artifact is still in draft.',
-      matchesSummary: vi.fn((summary: string) => summary === 'pair-spec-and-plan-files sequencing'),
-    };
+    const builtInCatalog = builtInFalsePositiveEntries();
     const product: Product = {
       ...baseProduct,
       review: {
@@ -1047,7 +1081,7 @@ describe('runCodeReviewLoop', () => {
         },
       },
     };
-    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValueOnce([sequencingFalsePositive]);
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValueOnce(builtInCatalog);
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'clean',
       blockers: [],
@@ -1056,7 +1090,7 @@ describe('runCodeReviewLoop', () => {
           id: 'adv-sequential',
           severity: 'low',
           blocking: false,
-          summary: 'pair-spec-and-plan-files sequencing',
+          summary: 'pair-spec-and-plan-files',
         },
       ],
     });
@@ -1077,11 +1111,11 @@ describe('runCodeReviewLoop', () => {
       expect.objectContaining({
         prUrl: 'https://github.com/o/k/pull/7',
         stage: 'plan-draft',
-        catalog: [sequencingFalsePositive],
+        catalog: builtInCatalog,
         advisories: [
           expect.objectContaining({
             id: 'adv-sequential',
-            summary: 'pair-spec-and-plan-files sequencing',
+            summary: 'pair-spec-and-plan-files',
           }),
         ],
       }),

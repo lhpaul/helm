@@ -45,6 +45,22 @@ function isOrchestratorSender(login: string | null): boolean {
   return login !== null && ORCHESTRATOR_SENDER_LOGINS.has(login);
 }
 
+type ReviewReadinessArtifactKind = 'impl' | 'spec' | 'plan';
+
+function artifactKindForPendingExternalReview(
+  specialistId: string | undefined,
+): ReviewReadinessArtifactKind {
+  if (specialistId === 'spec-draft-reviewer') return 'spec';
+  if (specialistId === 'plan-draft-reviewer') return 'plan';
+  return 'impl';
+}
+
+function stageForReviewReadiness(kind: ReviewReadinessArtifactKind): string {
+  if (kind === 'spec') return 'spec-draft';
+  if (kind === 'plan') return 'plan-draft';
+  return 'code-review';
+}
+
 export const webhooksRouter = new Hono();
 
 webhooksRouter.post('/webhooks/github', async (c) => {
@@ -404,16 +420,12 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         console.info('[webhooks/github] external review readiness ignored — resume disabled');
         return c.json({ processed: true });
       }
-      const repo = getPrimaryCodeRepo(config);
-      if (event.owner !== repo.owner || event.repo !== repo.repo) {
-        console.info('[webhooks/github] external review readiness ignored — repository mismatch');
-        return c.json({ processed: true });
-      }
       if (config.review?.external?.provider !== event.provider) {
         console.info('[webhooks/github] external review readiness ignored — provider mismatch');
         return c.json({ processed: true });
       }
 
+      let artifactKind: ReviewReadinessArtifactKind | null = null;
       let externalId: string | null = null;
       let prNumber: number | null = event.prNumber ?? null;
       let matchedByRevision = false;
@@ -426,10 +438,11 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         targetRevision: event.targetRevision,
       });
       if (matched) {
+        const matchedArtifactKind = artifactKindForPendingExternalReview(matched.specialistId);
         if (event.headRef) {
           const parsed = parseArtifactBranch(event.headRef);
-          if (parsed?.kind !== 'impl') {
-            console.info('[webhooks/github] external review readiness ignored — non-impl ref');
+          if (parsed?.kind !== 'impl' && parsed?.kind !== 'spec' && parsed?.kind !== 'plan') {
+            console.info('[webhooks/github] external review readiness ignored — non-artifact ref');
             return c.json({ processed: true });
           }
           if (parsed.externalId !== matched.externalId) {
@@ -438,6 +451,15 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             );
             return c.json({ processed: true });
           }
+          if (parsed.kind !== matchedArtifactKind) {
+            console.info(
+              '[webhooks/github] external review readiness ignored — artifact/intent mismatch',
+            );
+            return c.json({ processed: true });
+          }
+          artifactKind = parsed.kind;
+        } else {
+          artifactKind = matchedArtifactKind;
         }
         if (event.prNumber !== undefined && event.prNumber !== matched.prNumber) {
           console.info('[webhooks/github] external review readiness ignored — PR/intent mismatch');
@@ -448,10 +470,11 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         matchedByRevision = true;
       } else if (event.headRef) {
         const parsed = parseArtifactBranch(event.headRef);
-        if (parsed?.kind !== 'impl') {
-          console.info('[webhooks/github] external review readiness ignored — non-impl ref');
+        if (parsed?.kind !== 'impl' && parsed?.kind !== 'spec' && parsed?.kind !== 'plan') {
+          console.info('[webhooks/github] external review readiness ignored — non-artifact ref');
           return c.json({ processed: true });
         }
+        artifactKind = parsed.kind;
         externalId = parsed.externalId;
       } else {
         console.info(
@@ -460,13 +483,23 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         return c.json({ processed: true });
       }
 
-      if (prNumber === null || externalId === null) {
+      if (prNumber === null || externalId === null || artifactKind === null) {
         console.info('[webhooks/github] external review readiness ignored — missing PR identity');
         return c.json({ processed: true });
       }
 
+      const expectedRepo =
+        artifactKind === 'impl'
+          ? getPrimaryCodeRepo(config)
+          : parseGitHubRepoUrl(config.knowledge_repo.url);
+      if (event.owner !== expectedRepo.owner || event.repo !== expectedRepo.repo) {
+        console.info('[webhooks/github] external review readiness ignored — repository mismatch');
+        return c.json({ processed: true });
+      }
+
+      const expectedStage = stageForReviewReadiness(artifactKind);
       const item = await itemStore.get(externalId);
-      if (item?.productSlug !== config.product.slug || item.currentStage !== 'code-review') {
+      if (item?.productSlug !== config.product.slug || item.currentStage !== expectedStage) {
         await clearPendingExternalReview({
           productSlug: config.product.slug,
           externalId,
@@ -475,7 +508,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           targetRevision: event.targetRevision,
         });
         console.info(
-          '[webhooks/github] external review readiness ignored — item not in code-review',
+          `[webhooks/github] external review readiness ignored — item not in ${expectedStage}`,
         );
         return c.json({ processed: true });
       }

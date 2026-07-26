@@ -97,11 +97,7 @@ import { fetchSpecForPlan } from '../specialists/fetch-product-context.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
 import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
-import {
-  buildAdvisorySummaryRows,
-  formatReviewLoopSummaryComment,
-  upsertReviewLoopSummaryComment,
-} from './summary.js';
+import { upsertReviewLoopSummaryComment } from './summary.js';
 import { builtInFalsePositiveEntries, fetchFalsePositivesCatalog } from './false-positives.js';
 import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
 
@@ -1049,24 +1045,27 @@ describe('runCodeReviewLoop', () => {
       }),
     );
     const summaryInput = vi.mocked(upsertReviewLoopSummaryComment).mock.calls.at(-1)![0];
-    const rows = buildAdvisorySummaryRows(
-      summaryInput.advisories,
-      summaryInput.catalog,
-      summaryInput.stage,
-    );
-    const commentBody = formatReviewLoopSummaryComment({
-      cyclesCompleted: summaryInput.cyclesCompleted,
-      externalProvider: summaryInput.externalProvider,
-      advisories: rows,
-    });
-    expect(rows).toEqual([
+    expect(summaryInput).toEqual(
       expect.objectContaining({
-        disposition: 'Rejected',
-        finding: expect.objectContaining({ id: 'adv-sequential' }),
+        cyclesCompleted: 1,
+        externalProvider: 'haystack',
+        stage: 'spec-draft',
+        advisories: [
+          expect.objectContaining({
+            id: 'adv-sequential',
+            severity: 'low',
+            blocking: false,
+            summary: 'pair-spec-and-plan-files',
+          }),
+        ],
+        catalog: expect.arrayContaining([
+          expect.objectContaining({
+            pattern: 'pair-spec-and-plan-files',
+            appliesTo: ['spec-draft', 'plan-draft'],
+          }),
+        ]),
       }),
-    ]);
-    expect(commentBody).toContain('| `adv-sequential` | pair-spec-and-plan-files | **Rejected** |');
-    expect(commentBody).toContain('Draft artifact review may see only one side');
+    );
   });
 
   it('routes plan-draft advisories through draft-stage false-positive disposition', async () => {

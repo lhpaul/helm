@@ -412,7 +412,7 @@ describe('scheduleItemDispatch', () => {
     const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
       specialistId?: string;
     };
-    expect(options.specialistId).toBeUndefined();
+    expect(options.specialistId).toBe('spec-draft-reviewer');
   });
 
   it('schedules plan-draft with no resolved specialist when early loop is enabled', async () => {
@@ -443,7 +443,7 @@ describe('scheduleItemDispatch', () => {
     const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
       specialistId?: string;
     };
-    expect(options.specialistId).toBeUndefined();
+    expect(options.specialistId).toBe('plan-draft-reviewer');
   });
 
   it('keeps explicit specialist routing authoritative when early loop is enabled', async () => {
@@ -678,13 +678,14 @@ describe('pending external review readiness cleanup', () => {
   async function putPending(
     expiresAt = '2099-01-01T00:00:00.000Z',
     specialistId = 'reviewer-fanout',
+    options: { omitSpecialistId?: boolean } = {},
   ) {
     const outbox = await getReviewDispatchOutbox(dataRoot);
     const intent = await outbox.put({
       kind: 'pending_external_review',
       productSlug: 'test-product',
       externalId: 'LEA-1',
-      specialistId,
+      ...(options.omitSpecialistId ? {} : { specialistId }),
       provider: 'haystack',
       reason: 'analysis_pending',
       prNumber: 42,
@@ -850,6 +851,59 @@ describe('pending external review readiness cleanup', () => {
     ).resolves.toBeNull();
   });
 
+  it('infers the spec draft reviewer for legacy pending external reviews without a specialist', async () => {
+    const { outbox } = await putPending('2099-01-01T00:00:00.000Z', 'reviewer-fanout', {
+      omitSpecialistId: true,
+    });
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'spec-draft',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockImplementation(
+      (_stage, specialistId) => specialistId as string | undefined,
+    );
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      job: {
+        jobId: '00000000-0000-4000-8000-000000000003',
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        specialistId: 'spec-draft-reviewer',
+        status: 'running',
+        targetRevision: 'sha-1',
+        startedAt: '2026-07-22T10:00:00.000Z',
+      },
+    });
+
+    await expect(
+      resumePendingExternalReviewByRevision({
+        productSlug: 'test-product',
+        provider: 'haystack',
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready',
+      }),
+    ).resolves.toEqual({
+      scheduled: true,
+      jobId: '00000000-0000-4000-8000-000000000003',
+      externalId: 'LEA-1',
+    });
+
+    expect(mockCreateJobIfNoRunning).toHaveBeenCalledWith({
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'spec-draft-reviewer',
+      targetRevision: 'sha-1',
+    });
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+  });
+
   it('removes pending external review after duplicate readiness delivery', async () => {
     const { outbox } = await putPending();
     mockCreateJobIfNoRunning.mockResolvedValue({
@@ -966,6 +1020,113 @@ describe('pending external review readiness cleanup', () => {
       prNumber: 42,
       triggeredBy: 'test:ready:awaiting-job-exit',
     });
+  });
+
+  it('parks the inferred draft reviewer when early-loop readiness races a running job', async () => {
+    const { outbox } = await putPending('2099-01-01T00:00:00.000Z', 'reviewer-fanout', {
+      omitSpecialistId: true,
+    });
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'plan-draft',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockImplementation(
+      (_stage, specialistId) => specialistId as string | undefined,
+    );
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      conflict: true,
+      runningJobId: 'job-running',
+      runningTargetRevision: 'sha-1',
+    });
+
+    await expect(
+      resumePendingExternalReview({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready',
+      }),
+    ).resolves.toEqual({
+      scheduled: false,
+      reason: 'Job already running — queued review dispatch for replay after exit',
+    });
+
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+    await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toMatchObject({
+      kind: 'review_dispatch',
+      specialistId: 'plan-draft-reviewer',
+      targetRevision: 'sha-1',
+      prNumber: 42,
+      triggeredBy: 'test:ready:awaiting-job-exit',
+    });
+  });
+
+  it('infers the draft reviewer when replaying a legacy parked dispatch without a specialist', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      targetRevision: 'sha-1',
+      triggeredBy: 'legacy',
+    });
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'spec-draft',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockImplementation(
+      (_stage, specialistId) => specialistId as string | undefined,
+    );
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      job: {
+        jobId: '00000000-0000-4000-8000-000000000004',
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        specialistId: 'spec-draft-reviewer',
+        status: 'running',
+        targetRevision: 'sha-1',
+        startedAt: '2026-07-22T10:00:00.000Z',
+      },
+    });
+
+    await runDispatchJob({ jobId: 'job-current' } as never, {
+      product: { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'spec-draft',
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot,
+      specialistId: 'spec-draft-reviewer',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    expect(mockCreateJobIfNoRunning).toHaveBeenCalledWith({
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'spec-draft-reviewer',
+      targetRevision: 'sha-1',
+    });
+    await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toBeNull();
   });
 });
 

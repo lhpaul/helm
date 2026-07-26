@@ -49,6 +49,31 @@ function parseGitHubPrNumber(prUrl: string | undefined): number | null {
   return Number.parseInt(match[1]!, 10);
 }
 
+function inferEarlyLoopDraftReviewer(
+  product: Product,
+  item: ItemState,
+): 'spec-draft-reviewer' | 'plan-draft-reviewer' | undefined {
+  if (product.review?.early_loop?.enabled !== true) return undefined;
+  if (item.currentStage === 'spec-draft') return 'spec-draft-reviewer';
+  if (item.currentStage === 'plan-draft') return 'plan-draft-reviewer';
+  return undefined;
+}
+
+async function inferPendingReviewSpecialist(input: {
+  productSlug: string;
+  externalId: string;
+  specialistId?: string;
+}): Promise<string | undefined> {
+  if (input.specialistId) return input.specialistId;
+
+  const [products, store] = await Promise.all([getProductRegistry(), getItemStore()]);
+  const product = products.find((p) => p.product.slug === input.productSlug);
+  if (!product) return undefined;
+  const item = await store.get(input.externalId);
+  if (!item || item.productSlug !== input.productSlug) return undefined;
+  return inferEarlyLoopDraftReviewer(product, item);
+}
+
 async function persistPendingReviewDispatch(input: {
   dataRoot: string;
   productSlug: string;
@@ -220,10 +245,11 @@ async function finalizePendingExternalReviewResume(
     return { scheduled: false, reason: 'Pending external review expired' };
   }
 
+  const specialistId = await inferPendingReviewSpecialist(intent);
   const outcome = await scheduleItemDispatch({
     productSlug: intent.productSlug,
     externalId: intent.externalId,
-    specialistId: intent.specialistId ?? 'reviewer-fanout',
+    specialistId,
     targetRevision: intent.targetRevision,
     prNumber: intent.prNumber,
     triggeredBy,
@@ -248,7 +274,7 @@ async function finalizePendingExternalReviewResume(
       dataRoot: dataRootFromEnv(),
       productSlug: intent.productSlug,
       externalId: intent.externalId,
-      specialistId: intent.specialistId ?? 'reviewer-fanout',
+      specialistId,
       prNumber: intent.prNumber,
       targetRevision: intent.targetRevision,
       triggeredBy: `${triggeredBy}:awaiting-job-exit`,
@@ -284,7 +310,11 @@ async function replayPendingReviewDispatch(input: {
   if ((intent.kind ?? 'review_dispatch') !== 'review_dispatch') return;
 
   let targetRevision = intent.targetRevision;
-  const replaySpecialist = intent.specialistId ?? 'reviewer-fanout';
+  const replaySpecialist =
+    (await inferPendingReviewSpecialist(intent).catch((err) => {
+      logErrorMetadata('dispatch pending replay specialist inference', err);
+      return undefined;
+    })) ?? 'reviewer-fanout';
   if (intent.prNumber !== undefined) {
     if (replaySpecialist !== 'reviewer-fanout') {
       if (!targetRevision) return;
@@ -586,11 +616,13 @@ export async function scheduleItemDispatch(input: {
     return { scheduled: false, reason: DISPATCH_UNAVAILABLE };
   }
 
-  const resolvedSpecialist = resolveSpecialistId(item.currentStage, input.specialistId);
+  const requestedSpecialist = input.specialistId ?? inferEarlyLoopDraftReviewer(product, item);
+  const resolvedSpecialist = resolveSpecialistId(item.currentStage, requestedSpecialist);
+  const dispatchSpecialist = resolvedSpecialist ?? requestedSpecialist;
   const draftReviewerStage =
-    input.specialistId === 'spec-draft-reviewer'
+    dispatchSpecialist === 'spec-draft-reviewer'
       ? 'spec-draft'
-      : input.specialistId === 'plan-draft-reviewer'
+      : dispatchSpecialist === 'plan-draft-reviewer'
         ? 'plan-draft'
         : undefined;
   if (
@@ -598,18 +630,14 @@ export async function scheduleItemDispatch(input: {
     (product.review?.early_loop?.enabled !== true || item.currentStage !== draftReviewerStage)
   ) {
     console.info(
-      `[dispatch-scheduler] skip: ${input.specialistId} requires early_loop enabled and stage '${draftReviewerStage}' (${input.productSlug}/${input.externalId})`,
+      `[dispatch-scheduler] skip: ${dispatchSpecialist} requires early_loop enabled and stage '${draftReviewerStage}' (${input.productSlug}/${input.externalId})`,
     );
     return {
       scheduled: false,
       reason: DISPATCH_UNAVAILABLE,
     };
   }
-  const earlyLoopDraftDispatch =
-    !input.specialistId &&
-    product.review?.early_loop?.enabled === true &&
-    (item.currentStage === 'spec-draft' || item.currentStage === 'plan-draft');
-  if (!resolvedSpecialist && !earlyLoopDraftDispatch) {
+  if (!dispatchSpecialist) {
     console.info(
       `[dispatch-scheduler] skip: no specialist for stage '${item.currentStage}' (${input.productSlug}/${input.externalId})`,
     );
@@ -628,7 +656,7 @@ export async function scheduleItemDispatch(input: {
           dataRoot: dataRootFromEnv(),
           productSlug: input.productSlug,
           externalId: input.externalId,
-          specialistId: input.specialistId,
+          specialistId: dispatchSpecialist,
           prNumber: input.prNumber,
           targetRevision: input.targetRevision,
           triggeredBy: input.triggeredBy,
@@ -647,7 +675,7 @@ export async function scheduleItemDispatch(input: {
   const outcome = await jobStore.createJobIfNoRunning({
     productSlug: input.productSlug,
     externalId: input.externalId,
-    specialistId: input.specialistId ?? 'auto',
+    specialistId: dispatchSpecialist,
     targetRevision: input.targetRevision,
   });
   if ('duplicate' in outcome) {
@@ -669,7 +697,7 @@ export async function scheduleItemDispatch(input: {
         dataRoot,
         productSlug: input.productSlug,
         externalId: input.externalId,
-        specialistId: input.specialistId,
+        specialistId: dispatchSpecialist,
         prNumber: input.prNumber,
         targetRevision: input.targetRevision,
         triggeredBy: input.triggeredBy,
@@ -679,7 +707,7 @@ export async function scheduleItemDispatch(input: {
         dataRoot,
         productSlug: input.productSlug,
         externalId: input.externalId,
-        specialistId: input.specialistId,
+        specialistId: dispatchSpecialist,
         prNumber: input.prNumber,
         targetRevision: input.targetRevision,
         triggeredBy: input.triggeredBy,
@@ -695,7 +723,7 @@ export async function scheduleItemDispatch(input: {
   }
 
   console.info(
-    `[dispatch-scheduler] ${input.triggeredBy} → job ${outcome.job.jobId} for ${input.productSlug}/${input.externalId} (${resolvedSpecialist ?? 'auto'})`,
+    `[dispatch-scheduler] ${input.triggeredBy} → job ${outcome.job.jobId} for ${input.productSlug}/${input.externalId} (${dispatchSpecialist})`,
   );
 
   void runDispatchJob(outcome.job, {
@@ -703,7 +731,7 @@ export async function scheduleItemDispatch(input: {
     item,
     workdir,
     dataRoot,
-    specialistId: resolvedSpecialist,
+    specialistId: dispatchSpecialist,
     feedback: undefined,
     githubToken,
   }).catch((err) => {

@@ -95,6 +95,30 @@ describe('BugbotExternalReviewAdapter', () => {
     });
   });
 
+  it('keeps pending analysis escalatory when deferral is disabled', () => {
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        external: {
+          provider: 'bugbot',
+          defer_when_pending: false,
+          bugbot: {
+            blocking_severities: ['critical', 'high', 'medium'],
+            check_names: ['Bugbot'],
+            trusted_app_identities: ['bugbot'],
+          },
+        },
+      },
+    };
+
+    const result = normalizeBugbotReviewPayload(
+      loadFixture('check-run-pending.json'),
+      resolveBugbotReviewConfig(product),
+    );
+
+    expect(result).toEqual({ status: 'escalate', reason: 'bugbot check_run in_progress' });
+  });
+
   it.each([
     ['unavailable payload', { unavailable: true }, { status: 'skipped', reason: 'unavailable' }],
     [

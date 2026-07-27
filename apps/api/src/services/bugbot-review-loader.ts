@@ -35,7 +35,7 @@ type GitHubAnnotationResponse = {
 };
 
 type GitHubReviewCommentResponse = {
-  id?: number;
+  id?: number | string;
   node_id?: string;
   path?: string | null;
   line?: number | null;
@@ -44,9 +44,54 @@ type GitHubReviewCommentResponse = {
   user?: { login?: string | null } | null;
 };
 
+type LoadedReviewThread = {
+  id?: string | number;
+  isResolved?: boolean;
+  is_resolved?: boolean;
+  path?: string | null;
+  line?: number | null;
+  comments?: GitHubReviewCommentResponse[];
+};
+
+type GitHubGraphQLResponse<T> = {
+  data?: T;
+  errors?: { message?: string }[];
+};
+
+type GitHubReviewThreadsGraphQL = {
+  repository?: {
+    pullRequest?: {
+      reviewThreads?: {
+        nodes?: {
+          id?: string;
+          isResolved?: boolean;
+          path?: string | null;
+          line?: number | null;
+          comments?: {
+            nodes?: {
+              databaseId?: number | null;
+              id?: string;
+              path?: string | null;
+              line?: number | null;
+              originalLine?: number | null;
+              body?: string | null;
+              author?: { login?: string | null } | null;
+            }[];
+          } | null;
+        }[];
+        pageInfo?: {
+          hasNextPage?: boolean;
+          endCursor?: string | null;
+        };
+      } | null;
+    } | null;
+  } | null;
+};
+
 const GITHUB_API_TIMEOUT_MS = 10_000;
 const DEFAULT_BUGBOT_CHECK_NAMES = ['Bugbot', 'Bugbot / Review', 'Cursor / Bugbot'];
 const DEFAULT_BUGBOT_APP_IDENTITIES = ['bugbot', 'cursor', 'cursor[bot]', 'cursor bugbot'];
+const GIT_SHA_RE = /^[0-9a-f]{7,64}$/i;
 
 function normalize(value: string): string {
   return value.trim().toLowerCase();
@@ -103,10 +148,128 @@ async function fetchGitHubJson<T>(url: string, token: string): Promise<T> {
   }
 }
 
+async function fetchGitHubGraphQL<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  token: string,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
+  try {
+    const res = await fetch('https://api.github.com/graphql', {
+      method: 'POST',
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        'user-agent': 'helm-api',
+        'x-github-api-version': '2022-11-28',
+      },
+      body: JSON.stringify({ query, variables }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`GitHub GraphQL request failed with status ${res.status}`);
+    }
+    const payload = (await res.json()) as GitHubGraphQLResponse<T>;
+    if (payload.errors?.length) {
+      throw new Error(`GitHub GraphQL request failed: ${payload.errors[0]?.message ?? 'error'}`);
+    }
+    if (!payload.data) throw new Error('GitHub GraphQL response missing data');
+    return payload.data;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function latestFirst(a: GitHubCheckRunResponse, b: GitHubCheckRunResponse): number {
   const aTime = Date.parse(a.completed_at ?? a.started_at ?? '');
   const bTime = Date.parse(b.completed_at ?? b.started_at ?? '');
   return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
+}
+
+const REVIEW_THREADS_QUERY = `
+  query HelmBugbotReviewThreads($owner: String!, $repo: String!, $number: Int!, $after: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        reviewThreads(first: 100, after: $after) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            id
+            isResolved
+            path
+            line
+            comments(first: 100) {
+              nodes {
+                databaseId
+                id
+                path
+                line
+                originalLine
+                body
+                author {
+                  login
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+async function fetchBugbotReviewThreads(input: {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  product: Product;
+  githubToken: string;
+}): Promise<LoadedReviewThread[]> {
+  const threads: LoadedReviewThread[] = [];
+  let after: string | null | undefined;
+  do {
+    const data = await fetchGitHubGraphQL<GitHubReviewThreadsGraphQL>(
+      REVIEW_THREADS_QUERY,
+      {
+        owner: input.owner,
+        repo: input.repo,
+        number: input.prNumber,
+        after,
+      },
+      input.githubToken,
+    );
+    const page = data.repository?.pullRequest?.reviewThreads;
+    for (const thread of page?.nodes ?? []) {
+      const comments = (thread.comments?.nodes ?? [])
+        .map(
+          (comment): GitHubReviewCommentResponse => ({
+            id: comment.databaseId ?? comment.id,
+            node_id: comment.id,
+            path: comment.path ?? thread.path,
+            line: comment.line ?? thread.line,
+            original_line: comment.originalLine,
+            body: comment.body,
+            user: { login: comment.author?.login ?? null },
+          }),
+        )
+        .filter((comment) => isTrustedBugbotComment(comment, input.product));
+      if (comments.length === 0) continue;
+      threads.push({
+        id: thread.id,
+        isResolved: thread.isResolved,
+        path: thread.path,
+        line: thread.line,
+        comments,
+      });
+    }
+    after = page?.pageInfo?.endCursor;
+    if (page?.pageInfo?.hasNextPage !== true) break;
+  } while (after);
+  return threads;
 }
 
 export function createGitHubBugbotReviewLoader(input: {
@@ -119,11 +282,11 @@ export function createGitHubBugbotReviewLoader(input: {
       `${repoBase}/pulls/${ctx.prNumber}`,
       input.githubToken,
     );
-    const headSha = pr.head?.sha;
-    if (!headSha) return { unavailable: true };
+    const targetSha = ctx.targetRevision ?? pr.head?.sha;
+    if (!targetSha || !GIT_SHA_RE.test(targetSha)) return { unavailable: true };
 
     const checkRuns = await fetchGitHubJson<GitHubCheckRunsResponse>(
-      `${repoBase}/commits/${headSha}/check-runs?per_page=100`,
+      `${repoBase}/commits/${targetSha}/check-runs?per_page=100`,
       input.githubToken,
     );
     const checkRun = (checkRuns.check_runs ?? [])
@@ -131,7 +294,7 @@ export function createGitHubBugbotReviewLoader(input: {
       .sort(latestFirst)[0];
     if (!checkRun) return { unavailable: true };
 
-    const [annotations, reviewComments] = await Promise.all([
+    const [annotations, reviewComments, reviewThreads] = await Promise.all([
       fetchGitHubJson<GitHubAnnotationResponse[]>(
         `${repoBase}/check-runs/${checkRun.id}/annotations?per_page=100`,
         input.githubToken,
@@ -140,6 +303,13 @@ export function createGitHubBugbotReviewLoader(input: {
         `${repoBase}/pulls/${ctx.prNumber}/comments?per_page=100`,
         input.githubToken,
       ),
+      fetchBugbotReviewThreads({
+        owner: ctx.owner,
+        repo: ctx.repo,
+        prNumber: ctx.prNumber,
+        product: input.product,
+        githubToken: input.githubToken,
+      }),
     ]);
 
     return {
@@ -157,6 +327,7 @@ export function createGitHubBugbotReviewLoader(input: {
       reviewComments: reviewComments.filter((comment) =>
         isTrustedBugbotComment(comment, input.product),
       ),
+      reviewThreads,
     };
   };
 }

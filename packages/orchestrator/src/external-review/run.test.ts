@@ -5,13 +5,20 @@ import { parsePullRequestRef, runExternalReviewIfConfigured } from './run.js';
 const baseProduct = {
   helm_version: '0' as const,
   product: { slug: 'test', name: 'Test' },
-  issue_tracker: { provider: 'github_projects' as const, org: 'o', project_number: 1 },
+  issue_tracker: {
+    provider: 'github_projects' as const,
+    org: 'o',
+    project_number: 1,
+    custom_field_name: 'Helm Stage',
+  },
   code_repos: [{ url: 'https://github.com/o/r', default_branch: 'main', role: 'app' as const }],
   knowledge_repo: { url: 'https://github.com/o/k', default_branch: 'main' },
   workflow: {
     stages_enabled: ['code-review' as const],
     designer_gate: 'skip' as const,
     qa_gate: 'skip' as const,
+    readiness_gate: 'skip' as const,
+    final_stage: 'released' as const,
   },
   specialists: {
     'spec-writer': { runtime: 'claude_code' as const, model: 'm' },
@@ -139,5 +146,32 @@ describe('runExternalReviewIfConfigured', () => {
       prUrl: PR_URL,
       defaultBranch: 'main',
     });
+  });
+
+  it('passes the locked target revision to the external review context', async () => {
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        external: {
+          provider: 'bugbot',
+          bugbot: {
+            check_names: ['Bugbot'],
+            trusted_app_identities: ['bugbot'],
+            blocking_severities: ['critical', 'high', 'medium'],
+          },
+        },
+      },
+    };
+    const loadBugbotReview = vi.fn(() => ({
+      checkRun: { name: 'Bugbot / Review', status: 'completed', conclusion: 'success' },
+    }));
+
+    await runExternalReviewIfConfigured(product, PR_URL, { loadBugbotReview }, 'abc1234');
+
+    expect(loadBugbotReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetRevision: 'abc1234',
+      }),
+    );
   });
 });

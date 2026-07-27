@@ -4,6 +4,7 @@ export type BugbotSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 export type BugbotReviewConfig = {
   blockingSeverities: BugbotSeverity[];
+  deferWhenPending: boolean;
 };
 
 export type BugbotCheckRunPayload = {

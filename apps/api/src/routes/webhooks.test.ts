@@ -1246,6 +1246,30 @@ describe('POST /api/webhooks/github', () => {
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
     });
 
+    it('does not resume a Haystack-configured product from a Bugbot readiness event', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+      } as never);
+
+      const res = await post(bugbotCheckRunPayload(), 'check_run');
+
+      expect(res.status).toBe(200);
+      expect(mockPeekPendingExternalReviewByRevision).not.toHaveBeenCalled();
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+      expect(mockResumePendingExternalReviewByRevision).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
     it('uses configured Bugbot trust values instead of hardcoded defaults', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({
         product: { slug: 'test-app', name: 'Test' },

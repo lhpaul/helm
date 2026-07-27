@@ -21,12 +21,14 @@ export type BugbotAdapterDeps = {
 };
 
 const DEFAULT_BLOCKING_SEVERITIES: BugbotSeverity[] = ['critical', 'high', 'medium'];
+const DEFAULT_DEFER_WHEN_PENDING = true;
 const SEVERITIES: BugbotSeverity[] = ['critical', 'high', 'medium', 'low', 'info'];
 
 export function resolveBugbotReviewConfig(product: Product): BugbotReviewConfig {
   return {
     blockingSeverities:
       product.review?.external?.bugbot?.blocking_severities ?? DEFAULT_BLOCKING_SEVERITIES,
+    deferWhenPending: product.review?.external?.defer_when_pending ?? DEFAULT_DEFER_WHEN_PENDING,
   };
 }
 
@@ -166,6 +168,9 @@ export function normalizeBugbotReviewPayload(
 
   const analysisStatus = text(payload.analysisStatus)?.toLowerCase();
   if (analysisStatus && ['queued', 'pending', 'in_progress', 'running'].includes(analysisStatus)) {
+    if (!config.deferWhenPending) {
+      return { status: 'escalate', reason: `bugbot ${analysisStatus}` };
+    }
     return {
       status: 'deferred',
       reason: 'analysis_pending',
@@ -175,6 +180,9 @@ export function normalizeBugbotReviewPayload(
 
   const checkRun = payload.checkRun;
   if (checkRun?.status && checkRun.status !== 'completed') {
+    if (!config.deferWhenPending) {
+      return { status: 'escalate', reason: `bugbot check_run ${checkRun.status}` };
+    }
     return {
       status: 'deferred',
       reason: 'analysis_pending',

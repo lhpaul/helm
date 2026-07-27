@@ -25,6 +25,7 @@ export async function runExternalReviewIfConfigured(
   product: Product,
   prUrl: string,
   deps?: RunExternalReviewDeps,
+  targetRevision?: string,
 ): Promise<ExternalReviewResult> {
   const provider = product.review?.external?.provider;
   if (!provider) {
@@ -48,6 +49,7 @@ export async function runExternalReviewIfConfigured(
     prNumber: prRef.prNumber,
     prUrl,
     defaultBranch: codeRepo.default_branch,
+    ...(targetRevision ? { targetRevision } : {}),
   };
 
   if (provider === 'haystack') {

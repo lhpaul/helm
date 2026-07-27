@@ -95,6 +95,29 @@ describe('BugbotExternalReviewAdapter', () => {
     });
   });
 
+  it.each([
+    ['unavailable payload', { unavailable: true }, { status: 'skipped', reason: 'unavailable' }],
+    [
+      'provider error payload',
+      { error: 'api_unavailable' },
+      { status: 'escalate', reason: 'bugbot api_unavailable' },
+    ],
+    [
+      'skipped check-run conclusion',
+      { checkRun: { status: 'completed', conclusion: 'skipped' } },
+      { status: 'skipped', reason: 'unavailable' },
+    ],
+    [
+      'non-success check-run conclusion',
+      { checkRun: { status: 'completed', conclusion: 'failure' } },
+      { status: 'escalate', reason: 'bugbot check_run failure' },
+    ],
+  ] as const)('normalizes %s', (_name, payload, expected) => {
+    expect(normalizeBugbotReviewPayload(payload, resolveBugbotReviewConfig(baseProduct))).toEqual(
+      expected,
+    );
+  });
+
   it('maps review threads and annotations into normalized findings', () => {
     const result = normalizeBugbotReviewPayload(
       loadFixture('review-thread-blocking.json'),

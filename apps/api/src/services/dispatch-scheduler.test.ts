@@ -298,6 +298,32 @@ describe('runDispatchJob lifecycle', () => {
     );
   });
 
+  it('passes a production Bugbot loader when Bugbot external review is configured', async () => {
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+
+    await runDispatchJob({ jobId: 'job-1' } as never, {
+      product: {
+        product: { slug: 'test' },
+        review: { external: { provider: 'bugbot' } },
+      } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test',
+        currentStage: 'code-review',
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot: '/tmp/data',
+      specialistId: 'reviewer-fanout',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+      externalReviewDeps?: { loadBugbotReview?: unknown };
+    };
+    expect(typeof options.externalReviewDeps?.loadBugbotReview).toBe('function');
+  });
+
   it('records an error job when dispatchStageHandler throws', async () => {
     vi.mocked(dispatchStageHandler).mockRejectedValue(new Error('dispatch failed'));
 

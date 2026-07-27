@@ -115,10 +115,25 @@ const BUGBOT_APP_IDENTITIES = new Set([
   'cursor-agent',
 ]);
 
+export type ExternalReviewWebhookTrustConfig = {
+  bugbot?: {
+    checkNames?: string[];
+    trustedAppIdentities?: string[];
+  };
+};
+
+function normalizedSet(values: string[] | undefined, fallback: Set<string>): Set<string> {
+  const normalized = (values ?? [])
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value.length > 0);
+  return normalized.length > 0 ? new Set(normalized) : fallback;
+}
+
 function providerFromTrustedCheckRun(
   name: string,
   appSlug?: string,
   appName?: string,
+  trustConfig?: ExternalReviewWebhookTrustConfig,
 ): string | null {
   const normalizedName = name.trim().toLowerCase();
   const identities = [appSlug, appName]
@@ -127,8 +142,13 @@ function providerFromTrustedCheckRun(
   if (HAYSTACK_CHECK_NAMES.has(normalizedName)) {
     return identities.some((identity) => HAYSTACK_APP_IDENTITIES.has(identity)) ? 'haystack' : null;
   }
-  if (BUGBOT_CHECK_NAMES.has(normalizedName)) {
-    return identities.some((identity) => BUGBOT_APP_IDENTITIES.has(identity)) ? 'bugbot' : null;
+  const bugbotCheckNames = normalizedSet(trustConfig?.bugbot?.checkNames, BUGBOT_CHECK_NAMES);
+  if (bugbotCheckNames.has(normalizedName)) {
+    const bugbotAppIdentities = normalizedSet(
+      trustConfig?.bugbot?.trustedAppIdentities,
+      BUGBOT_APP_IDENTITIES,
+    );
+    return identities.some((identity) => bugbotAppIdentities.has(identity)) ? 'bugbot' : null;
   }
   return null;
 }
@@ -145,7 +165,10 @@ function providerFromTrustedCheckRun(
  * projects_v2_item.* events are handled by GitHubProjectsAdapter.parseWebhook
  * which has access to the internal option/node-ID maps.
  */
-export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
+export function parseGitHubWebhook(
+  rawEvent: unknown,
+  trustConfig?: ExternalReviewWebhookTrustConfig,
+): NormalizedEvent {
   try {
     const ctx = WebhookContextSchema.safeParse(rawEvent);
     if (!ctx.success) return { type: 'unknown', raw: rawEvent };
@@ -250,6 +273,7 @@ export function parseGitHubWebhook(rawEvent: unknown): NormalizedEvent {
         checkRun.name,
         checkRun.app?.slug,
         checkRun.app?.name,
+        trustConfig,
       );
       if (!provider) return { type: 'unknown', raw: rawEvent };
       const pr = checkRun.pull_requests?.[0];

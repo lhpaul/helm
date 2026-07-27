@@ -18,6 +18,7 @@ export { CodexRuntime } from './runtimes/codex.js';
 export { dispatchStageHandler, resolveSpecialistId } from './dispatcher.js';
 export type { DispatchInput, DispatchResult, DispatchOptions } from './dispatcher.js';
 export type { DeferredExternalReviewIntent } from './review-loop/code-review-loop.js';
+export type { RunExternalReviewDeps } from './external-review/run.js';
 export {
   decisionMatchesLatestAdjudication,
   parseAdjudicationBody,

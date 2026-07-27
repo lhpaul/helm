@@ -216,7 +216,11 @@ function haystackCheckRunPayload(
 
 function bugbotCheckRunPayload(
   opts: {
+    action?: string;
+    checkName?: string;
     appSlug?: string;
+    appName?: string;
+    status?: string;
     conclusion?: string;
     prNumber?: number;
     headSha?: string;
@@ -226,13 +230,13 @@ function bugbotCheckRunPayload(
   } = {},
 ): string {
   return JSON.stringify({
-    action: 'completed',
+    action: opts.action ?? 'completed',
     check_run: {
-      name: 'Bugbot / Review',
-      status: 'completed',
+      name: opts.checkName ?? 'Bugbot / Review',
+      status: opts.status ?? 'completed',
       conclusion: opts.conclusion ?? 'neutral',
       head_sha: opts.headSha ?? 'sha-42',
-      app: { slug: opts.appSlug ?? 'bugbot' },
+      app: { slug: opts.appSlug ?? 'bugbot', name: opts.appName },
       pull_requests: [
         {
           number: opts.prNumber ?? 42,
@@ -1242,6 +1246,61 @@ describe('POST /api/webhooks/github', () => {
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
     });
 
+    it('uses configured Bugbot trust values instead of hardcoded defaults', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: {
+          external: {
+            provider: 'bugbot',
+            resume_on_check_run: true,
+            bugbot: {
+              check_names: ['Custom Bugbot'],
+              trusted_app_identities: ['custom-bugbot-app'],
+              blocking_severities: ['critical', 'high'],
+            },
+          },
+        },
+      } as never);
+
+      const defaultPayload = await post(bugbotCheckRunPayload(), 'check_run');
+
+      expect(defaultPayload.status).toBe(200);
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+      const customPayload = await post(
+        bugbotCheckRunPayload({
+          checkName: 'Custom Bugbot',
+          appSlug: 'custom-bugbot-app',
+        }),
+        'check_run',
+      );
+
+      expect(customPayload.status).toBe(200);
+      expect(mockResumePendingExternalReview).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        provider: 'bugbot',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        triggeredBy: 'webhook:external-review-ready',
+      });
+    });
+
     it('ignores generic status success events as readiness (Option B)', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({
         product: { slug: 'test-app', name: 'Test' },
@@ -1488,6 +1547,76 @@ describe('POST /api/webhooks/github', () => {
         haystackCheckRunPayload({ headRef: 'helm/impl/issue_99' }),
         'check_run',
       );
+
+      expect(res.status).toBe(200);
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+      expect(mockResumePendingExternalReviewByRevision).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        title: 'mismatched PR number',
+        payload: bugbotCheckRunPayload({ prNumber: 99 }),
+        pending: {
+          externalId: 'issue_42',
+          prNumber: 42,
+          targetRevision: 'sha-42',
+        },
+      },
+      {
+        title: 'mismatched head SHA',
+        payload: bugbotCheckRunPayload(),
+        pending: {
+          externalId: 'issue_42',
+          prNumber: 42,
+          targetRevision: 'sha-old',
+        },
+      },
+      {
+        title: 'non-allowlisted completion action',
+        payload: bugbotCheckRunPayload({ action: 'rerequested' }),
+        pending: null,
+      },
+      {
+        title: 'non-allowlisted check-run status',
+        payload: bugbotCheckRunPayload({ status: 'in_progress', conclusion: undefined }),
+        pending: null,
+      },
+      {
+        title: 'non-allowlisted check-run conclusion',
+        payload: bugbotCheckRunPayload({ conclusion: 'failure' }),
+        pending: null,
+      },
+    ])('does not resume deferred external review for $title', async ({ payload, pending }) => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
+      } as never);
+      if (pending) {
+        mockPeekPendingExternalReviewByRevision.mockResolvedValue({
+          kind: 'pending_external_review',
+          productSlug: 'test-app',
+          provider: 'bugbot',
+          reason: 'analysis_pending',
+          createdAt: '2026-07-22T10:00:00.000Z',
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          triggeredBy: 'test',
+          updatedAt: '2026-07-22T10:00:00.000Z',
+          ...pending,
+        });
+      }
+
+      const res = await post(payload, 'check_run');
 
       expect(res.status).toBe(200);
       expect(mockResumePendingExternalReview).not.toHaveBeenCalled();

@@ -88,6 +88,13 @@ const CheckRunWebhookSchema = z.object({
 
 /** Exact check-run name allowlist — never substring-match provider identity. */
 const HAYSTACK_CHECK_NAMES = new Set(['haystack / review']);
+const BUGBOT_CHECK_NAMES = new Set([
+  'bugbot',
+  'bugbot / review',
+  'cursor / bugbot',
+  'cursor / bugbot review',
+  'cursor bugbot',
+]);
 
 /**
  * Trusted Haystack GitHub App identities (slug or display name).
@@ -98,6 +105,15 @@ const HAYSTACK_APP_IDENTITIES = new Set([
   'haystack-code-reviewer-pr-hook',
   'haystack code reviewer - pr hook',
 ]);
+const BUGBOT_APP_IDENTITIES = new Set([
+  'bugbot',
+  'cursor',
+  'cursor[bot]',
+  'cursor bot',
+  'cursor bugbot',
+  'cursor-ai',
+  'cursor-agent',
+]);
 
 function providerFromTrustedCheckRun(
   name: string,
@@ -105,11 +121,16 @@ function providerFromTrustedCheckRun(
   appName?: string,
 ): string | null {
   const normalizedName = name.trim().toLowerCase();
-  if (!HAYSTACK_CHECK_NAMES.has(normalizedName)) return null;
   const identities = [appSlug, appName]
     .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
     .map((value) => value.trim().toLowerCase());
-  return identities.some((identity) => HAYSTACK_APP_IDENTITIES.has(identity)) ? 'haystack' : null;
+  if (HAYSTACK_CHECK_NAMES.has(normalizedName)) {
+    return identities.some((identity) => HAYSTACK_APP_IDENTITIES.has(identity)) ? 'haystack' : null;
+  }
+  if (BUGBOT_CHECK_NAMES.has(normalizedName)) {
+    return identities.some((identity) => BUGBOT_APP_IDENTITIES.has(identity)) ? 'bugbot' : null;
+  }
+  return null;
 }
 
 // ── Pure parser (handles issues.* and issue_comment.*) ───────────────────────

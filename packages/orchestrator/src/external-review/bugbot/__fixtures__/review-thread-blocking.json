@@ -1,0 +1,35 @@
+{
+  "checkRun": {
+    "name": "Bugbot / Review",
+    "status": "completed",
+    "conclusion": "neutral",
+    "output": {
+      "title": "Bugbot review",
+      "summary": "Findings were posted as review comments.",
+      "annotations": [
+        {
+          "path": "apps/api/src/routes/webhooks.ts",
+          "start_line": 354,
+          "annotation_level": "notice",
+          "title": "Low priority follow-up",
+          "message": "Consider a clearer log message."
+        }
+      ]
+    }
+  },
+  "reviewThreads": [
+    {
+      "id": "thread-1",
+      "isResolved": false,
+      "path": "apps/api/src/routes/webhooks.ts",
+      "line": 365,
+      "comments": [
+        {
+          "id": 9001,
+          "node_id": "PRRC_kwDOBUGBOT1",
+          "body": "**HIGH**: Missing provider identity check before resuming deferred review.\n\nOnly Bugbot-owned checks should wake the loop."
+        }
+      ]
+    }
+  ]
+}

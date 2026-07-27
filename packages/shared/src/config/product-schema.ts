@@ -101,6 +101,8 @@ const SpecialistsSchema = z
     }
   });
 
+const ExternalReviewSeveritySchema = z.enum(['critical', 'high', 'medium', 'low', 'info']);
+
 // ── Root Product Schema ───────────────────────────────────────────────────────
 
 export const ProductSchema = z
@@ -181,7 +183,7 @@ export const ProductSchema = z
       .object({
         external: z
           .object({
-            provider: z.enum(['haystack']).optional(),
+            provider: z.enum(['haystack', 'bugbot']).optional(),
             defer_when_pending: z.boolean().optional(),
             resume_on_check_run: z.boolean().optional(),
             max_defer_sec: z.number().int().positive().optional(),
@@ -190,6 +192,23 @@ export const ProductSchema = z
                 major_is_blocking: z.boolean().default(false),
                 poll_interval_sec: z.number().int().positive().default(15),
                 timeout_sec: z.number().int().positive().default(120),
+              })
+              .strict()
+              .optional(),
+            bugbot: z
+              .object({
+                check_names: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(['Bugbot', 'Bugbot / Review', 'Cursor / Bugbot']),
+                trusted_app_identities: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(['bugbot', 'cursor', 'cursor[bot]', 'cursor bugbot']),
+                blocking_severities: z
+                  .array(ExternalReviewSeveritySchema)
+                  .min(1)
+                  .default(['critical', 'high', 'medium']),
               })
               .strict()
               .optional(),

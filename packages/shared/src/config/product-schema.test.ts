@@ -425,6 +425,39 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     expect(result.success).toBe(false);
   });
 
+  it('parses external bugbot provider and strict provider config', () => {
+    const result = ProductSchema.safeParse(
+      withReview({
+        external: {
+          provider: 'bugbot',
+          bugbot: {
+            check_names: ['Bugbot / Review'],
+            trusted_app_identities: ['bugbot'],
+            blocking_severities: ['critical', 'high'],
+          },
+        },
+      }),
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.review?.external?.provider).toBe('bugbot');
+      expect(result.data.review?.external?.bugbot).toEqual({
+        check_names: ['Bugbot / Review'],
+        trusted_app_identities: ['bugbot'],
+        blocking_severities: ['critical', 'high'],
+      });
+    }
+  });
+
+  it('rejects unknown keys in review.external.bugbot', () => {
+    const result = ProductSchema.safeParse(
+      withReview({
+        external: { provider: 'bugbot', bugbot: { unknown_flag: true } },
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
   it('rejects non-positive max_cycles', () => {
     const result = ProductSchema.safeParse(withReview({ loop: { max_cycles: 0 } }));
     expect(result.success).toBe(false);

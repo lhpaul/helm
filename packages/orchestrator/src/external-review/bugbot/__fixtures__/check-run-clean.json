@@ -1,0 +1,13 @@
+{
+  "checkRun": {
+    "name": "Bugbot / Review",
+    "status": "completed",
+    "conclusion": "success",
+    "output": {
+      "title": "Bugbot review",
+      "summary": "No blocking findings were found.",
+      "annotations": []
+    }
+  },
+  "reviewThreads": []
+}

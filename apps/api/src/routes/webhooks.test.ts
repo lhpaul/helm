@@ -214,6 +214,39 @@ function haystackCheckRunPayload(
   });
 }
 
+function bugbotCheckRunPayload(
+  opts: {
+    appSlug?: string;
+    conclusion?: string;
+    prNumber?: number;
+    headSha?: string;
+    headRef?: string;
+    owner?: string;
+    repo?: string;
+  } = {},
+): string {
+  return JSON.stringify({
+    action: 'completed',
+    check_run: {
+      name: 'Bugbot / Review',
+      status: 'completed',
+      conclusion: opts.conclusion ?? 'neutral',
+      head_sha: opts.headSha ?? 'sha-42',
+      app: { slug: opts.appSlug ?? 'bugbot' },
+      pull_requests: [
+        {
+          number: opts.prNumber ?? 42,
+          head: { ref: opts.headRef ?? 'helm/impl/issue_42' },
+        },
+      ],
+    },
+    repository: {
+      name: opts.repo ?? 'test-repo',
+      owner: { login: opts.owner ?? 'test-org' },
+    },
+  });
+}
+
 function haystackStatusPayload(
   opts: {
     targetRevision?: string;
@@ -1148,6 +1181,64 @@ describe('POST /api/webhooks/github', () => {
         targetRevision: 'sha-42',
         triggeredBy: 'webhook:external-review-ready',
       });
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('resumes deferred external review from a matching Bugbot check run', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
+      } as never);
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const res = await post(bugbotCheckRunPayload(), 'check_run');
+
+      expect(res.status).toBe(200);
+      expect(mockResumePendingExternalReview).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        provider: 'bugbot',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        triggeredBy: 'webhook:external-review-ready',
+      });
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('does not resume Bugbot readiness from an untrusted app identity', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
+      } as never);
+
+      const res = await post(bugbotCheckRunPayload({ appSlug: 'spoofed-bugbot' }), 'check_run');
+
+      expect(res.status).toBe(200);
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+      expect(mockResumePendingExternalReviewByRevision).not.toHaveBeenCalled();
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
     });
 

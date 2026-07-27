@@ -106,4 +106,38 @@ describe('runExternalReviewIfConfigured', () => {
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
   });
+
+  it('delegates to Bugbot adapter when provider is bugbot', async () => {
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        external: {
+          provider: 'bugbot',
+          bugbot: {
+            check_names: ['Bugbot'],
+            trusted_app_identities: ['bugbot'],
+            blocking_severities: ['critical', 'high', 'medium'],
+          },
+        },
+      },
+    };
+    const loadBugbotReview = vi.fn(() => ({
+      checkRun: { name: 'Bugbot / Review', status: 'completed', conclusion: 'success' },
+    }));
+
+    await expect(
+      runExternalReviewIfConfigured(product, PR_URL, { loadBugbotReview }),
+    ).resolves.toEqual({
+      status: 'clean',
+      blockers: [],
+      advisories: [],
+    });
+    expect(loadBugbotReview).toHaveBeenCalledWith({
+      owner: 'o',
+      repo: 'r',
+      prNumber: 42,
+      prUrl: PR_URL,
+      defaultBranch: 'main',
+    });
+  });
 });

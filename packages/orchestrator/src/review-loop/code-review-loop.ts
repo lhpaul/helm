@@ -227,6 +227,7 @@ async function runExternalReviewWithStopRule(
       params.product,
       params.prUrl,
       params.externalReviewDeps,
+      params.targetRevision,
     );
 
     let evidence: HaystackSkipEvidence | null = null;

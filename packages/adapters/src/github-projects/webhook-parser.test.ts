@@ -387,10 +387,56 @@ describe('parseGitHubWebhook', () => {
       expect(result.type).toBe('unknown');
     });
 
+    it('check_run.completed success for Bugbot emits external_review_ready', () => {
+      const result = parseGitHubWebhook(
+        ctx('check_run', {
+          action: 'completed',
+          check_run: {
+            name: 'Bugbot / Review',
+            status: 'completed',
+            conclusion: 'neutral',
+            head_sha: 'abc123',
+            app: { slug: 'bugbot', name: 'Bugbot' },
+            pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result).toEqual({
+        type: 'external_review_ready',
+        provider: 'bugbot',
+        owner: 'owner',
+        repo: 'repo',
+        prNumber: 42,
+        targetRevision: 'abc123',
+        headRef: 'helm/impl/issue_42',
+        timestamp: expect.any(String),
+      });
+    });
+
+    it('rejects Bugbot check names without a trusted Cursor/Bugbot app identity', () => {
+      const result = parseGitHubWebhook(
+        ctx('check_run', {
+          action: 'completed',
+          check_run: {
+            name: 'Bugbot / Review',
+            status: 'completed',
+            conclusion: 'success',
+            head_sha: 'abc123',
+            app: { slug: 'spoofed-bugbot' },
+            pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
     it('status.success is not treated as external-review readiness (Option B)', () => {
       const result = parseGitHubWebhook(
         ctx('status', {
-          context: 'Haystack / Review',
+          context: 'Bugbot / Review',
           state: 'success',
           sha: 'abc123',
           target_url: 'https://github.com/owner/repo/pull/42/checks',

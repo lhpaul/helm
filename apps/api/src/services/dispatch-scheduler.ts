@@ -18,6 +18,7 @@ import {
   type PendingExternalReviewIntent,
 } from './review-dispatch-outbox.js';
 import { resolveOpenPrMetadata } from './github-pr.js';
+import { createGitHubBugbotReviewLoader } from './bugbot-review-loader.js';
 
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
 
@@ -461,6 +462,15 @@ export async function runDispatchJob(
             triggeredBy: 'external-review:analysis-pending',
           });
         },
+        externalReviewDeps:
+          ctx.product.review?.external?.provider === 'bugbot' && ctx.githubToken
+            ? {
+                loadBugbotReview: createGitHubBugbotReviewLoader({
+                  product: ctx.product,
+                  githubToken: ctx.githubToken,
+                }),
+              }
+            : undefined,
       },
     );
 

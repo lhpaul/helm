@@ -4,6 +4,7 @@ import {
   verifyLinearSignature,
   parseGitHubWebhook,
   type NormalizedEvent,
+  type ExternalReviewWebhookTrustConfig,
 } from '@helm/adapters';
 import {
   decisionMatchesLatestAdjudication,
@@ -42,6 +43,18 @@ const ORCHESTRATOR_SENDER_LOGINS = new Set(['helm-bot']);
 
 function isOrchestratorSender(login: string | null): boolean {
   return login !== null && ORCHESTRATOR_SENDER_LOGINS.has(login);
+}
+
+function externalReviewTrustConfig(
+  config: Awaited<ReturnType<typeof getProductConfig>>,
+): ExternalReviewWebhookTrustConfig {
+  const bugbot = config.review?.external?.bugbot;
+  return {
+    bugbot: {
+      checkNames: bugbot?.check_names,
+      trustedAppIdentities: bugbot?.trusted_app_identities,
+    },
+  };
 }
 
 export const webhooksRouter = new Hono();
@@ -88,7 +101,9 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       // GitHub regardless of the issue tracker, so PR merge events (helm/spec/*,
       // helm/plan/*, helm/impl/*) AND release.published events must process for
       // Linear products too (a Linear product still ships via GitHub releases).
-      event = parseGitHubWebhook({ eventType, payload: body });
+      const trustConfig =
+        eventType === 'check_run' ? externalReviewTrustConfig(await getProductConfig()) : undefined;
+      event = parseGitHubWebhook({ eventType, payload: body }, trustConfig);
     } else {
       // issues / projects_v2_item — require the GitHub Projects
       // adapter. For a non-GitHub-Projects product (e.g. Linear) this is the wrong
@@ -377,6 +392,10 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         targetRevision: event.targetRevision,
       });
       if (matched) {
+        if (matched.targetRevision !== event.targetRevision) {
+          console.info('[webhooks/github] external review readiness ignored — SHA/intent mismatch');
+          return c.json({ processed: true });
+        }
         if (event.headRef) {
           const parsed = parseArtifactBranch(event.headRef);
           if (parsed?.kind !== 'impl') {

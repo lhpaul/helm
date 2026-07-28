@@ -16,6 +16,7 @@ import {
   runCodeReviewLoop,
   type DeferredExternalReviewIntent,
 } from './review-loop/code-review-loop.js';
+import type { RunExternalReviewDeps } from './external-review/run.js';
 import type { StopRuleEscalationReason } from './review-loop/stop-rule.js';
 import type { StoredResolvedProductDecision } from './review-loop/adjudication.js';
 import { provisionCodeWorkspace, artifactsDirFor } from './specialists/code-workspace.js';
@@ -135,6 +136,7 @@ export type DispatchOptions = {
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
   targetRevision?: string;
   onExternalReviewDeferred?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
+  externalReviewDeps?: RunExternalReviewDeps;
 };
 
 // ── Status resolution ─────────────────────────────────────────────────────────
@@ -606,6 +608,7 @@ export async function dispatchStageHandler(
       loadResolvedProductDecisions: options.loadResolvedProductDecisions,
       targetRevision: options.targetRevision,
       onExternalReviewDeferred: options.onExternalReviewDeferred,
+      externalReviewDeps: options.externalReviewDeps,
     });
 
     return {

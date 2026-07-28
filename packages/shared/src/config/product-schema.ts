@@ -101,6 +101,16 @@ const SpecialistsSchema = z
     }
   });
 
+const ExternalReviewSeveritySchema = z.enum(['critical', 'high', 'medium', 'low', 'info']);
+export const DEFAULT_BUGBOT_CHECK_NAMES = ['Bugbot', 'Bugbot / Review', 'Cursor / Bugbot'];
+export const DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES = [
+  'bugbot',
+  'cursor',
+  'cursor[bot]',
+  'cursor bugbot',
+];
+export const DEFAULT_BUGBOT_BLOCKING_SEVERITIES = ['critical', 'high', 'medium'] as const;
+
 // ── Root Product Schema ───────────────────────────────────────────────────────
 
 export const ProductSchema = z
@@ -181,7 +191,7 @@ export const ProductSchema = z
       .object({
         external: z
           .object({
-            provider: z.enum(['haystack']).optional(),
+            provider: z.enum(['haystack', 'bugbot']).optional(),
             defer_when_pending: z.boolean().optional(),
             resume_on_check_run: z.boolean().optional(),
             max_defer_sec: z.number().int().positive().optional(),
@@ -190,6 +200,23 @@ export const ProductSchema = z
                 major_is_blocking: z.boolean().default(false),
                 poll_interval_sec: z.number().int().positive().default(15),
                 timeout_sec: z.number().int().positive().default(120),
+              })
+              .strict()
+              .optional(),
+            bugbot: z
+              .object({
+                check_names: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(DEFAULT_BUGBOT_CHECK_NAMES),
+                trusted_app_identities: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES),
+                blocking_severities: z
+                  .array(ExternalReviewSeveritySchema)
+                  .min(1)
+                  .default([...DEFAULT_BUGBOT_BLOCKING_SEVERITIES]),
               })
               .strict()
               .optional(),

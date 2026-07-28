@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Product } from '@helm/shared';
+import { DEFAULT_BUGBOT_BLOCKING_SEVERITIES, type Product } from '@helm/shared';
 import type {
   ExternalReviewAdapter,
   ExternalReviewContext,
@@ -20,14 +20,14 @@ export type BugbotAdapterDeps = {
   loadBugbotReview?: LoadBugbotReview;
 };
 
-const DEFAULT_BLOCKING_SEVERITIES: BugbotSeverity[] = ['critical', 'high', 'medium'];
 const DEFAULT_DEFER_WHEN_PENDING = true;
 const SEVERITIES: BugbotSeverity[] = ['critical', 'high', 'medium', 'low', 'info'];
 
 export function resolveBugbotReviewConfig(product: Product): BugbotReviewConfig {
   return {
-    blockingSeverities:
-      product.review?.external?.bugbot?.blocking_severities ?? DEFAULT_BLOCKING_SEVERITIES,
+    blockingSeverities: product.review?.external?.bugbot?.blocking_severities ?? [
+      ...DEFAULT_BUGBOT_BLOCKING_SEVERITIES,
+    ],
     deferWhenPending: product.review?.external?.defer_when_pending ?? DEFAULT_DEFER_WHEN_PENDING,
   };
 }
@@ -221,19 +221,21 @@ export function normalizeBugbotReviewPayload(
     appendFinding(findingFromAnnotation(annotation, config), findings, seen);
   }
 
-  if (payload.reviewThreads === undefined) {
-    for (const comment of payload.reviewComments ?? []) {
-      const finding = findingFromComment(comment, config);
-      if (finding) appendFinding(finding, findings, seen);
-    }
-  }
   for (const thread of payload.reviewThreads ?? []) {
     const resolved = thread.isResolved ?? thread.is_resolved ?? false;
-    if (resolved) continue;
     for (const comment of thread.comments ?? []) {
       const finding = findingFromComment(comment, config, thread);
-      if (finding) appendFinding(finding, findings, seen);
+      if (!finding) continue;
+      if (resolved) {
+        seen.add(finding.id);
+      } else {
+        appendFinding(finding, findings, seen);
+      }
     }
+  }
+  for (const comment of payload.reviewComments ?? []) {
+    const finding = findingFromComment(comment, config);
+    if (finding) appendFinding(finding, findings, seen);
   }
 
   if (findings.blockers.length > 0) {

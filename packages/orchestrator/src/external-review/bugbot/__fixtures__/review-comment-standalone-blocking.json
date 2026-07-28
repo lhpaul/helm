@@ -1,0 +1,22 @@
+{
+  "checkRun": {
+    "name": "Bugbot / Review",
+    "status": "completed",
+    "conclusion": "success",
+    "output": {
+      "title": "Bugbot review",
+      "summary": "Found review comments",
+      "text": null,
+      "annotations": []
+    }
+  },
+  "reviewComments": [
+    {
+      "id": 101,
+      "node_id": "comment-101",
+      "path": "src/app.ts",
+      "line": 12,
+      "body": "**HIGH**: Standalone Bugbot finding.\n\nThis comment is not part of a review thread."
+    }
+  ]
+}

@@ -176,6 +176,49 @@ describe('BugbotExternalReviewAdapter', () => {
     });
   });
 
+  it('maps standalone review comments into normalized findings', () => {
+    const result = normalizeBugbotReviewPayload(
+      loadFixture('review-comment-standalone-blocking.json'),
+      resolveBugbotReviewConfig(baseProduct),
+    );
+
+    expect(result.status).toBe('needs_fixes');
+    if (result.status !== 'needs_fixes') return;
+    expect(result.blockers).toHaveLength(1);
+    expect(result.blockers[0]).toMatchObject({
+      severity: 'high',
+      blocking: true,
+      path: 'src/app.ts',
+      summary: 'HIGH: Standalone Bugbot finding.',
+    });
+  });
+
+  it('merges review comments and review threads while deduping repeated findings', () => {
+    const result = normalizeBugbotReviewPayload(
+      loadFixture('review-comments-and-threads-blocking.json'),
+      resolveBugbotReviewConfig(baseProduct),
+    );
+
+    expect(result.status).toBe('needs_fixes');
+    if (result.status !== 'needs_fixes') return;
+    expect(result.blockers).toHaveLength(2);
+    expect(result.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          severity: 'high',
+          path: 'src/threaded.ts',
+          summary: 'HIGH: Threaded Bugbot finding.',
+        }),
+        expect.objectContaining({
+          severity: 'critical',
+          path: 'src/standalone.ts',
+          summary: 'CRITICAL: Standalone Bugbot finding.',
+        }),
+      ]),
+    );
+    expect(new Set(result.blockers.map((finding) => finding.id)).size).toBe(2);
+  });
+
   it('derives stable ledger IDs across duplicate deliveries', () => {
     const payload = loadFixture('review-thread-blocking.json');
     const config = resolveBugbotReviewConfig(baseProduct);
@@ -189,7 +232,7 @@ describe('BugbotExternalReviewAdapter', () => {
     expect(second.advisories[0]?.id).toBe(first.advisories[0]?.id);
   });
 
-  it('ignores standalone comments when unresolved thread state is loaded', () => {
+  it('does not re-open resolved thread comments from the flat review comment list', () => {
     const result = normalizeBugbotReviewPayload(
       {
         checkRun: { status: 'completed', conclusion: 'success' },

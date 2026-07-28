@@ -1,4 +1,8 @@
-import type { Product } from '@helm/shared';
+import {
+  DEFAULT_BUGBOT_CHECK_NAMES,
+  DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES,
+  type Product,
+} from '@helm/shared';
 import type { RunExternalReviewDeps } from '@helm/orchestrator';
 
 type GitHubPullRequestResponse = {
@@ -89,8 +93,6 @@ type GitHubReviewThreadsGraphQL = {
 };
 
 const GITHUB_API_TIMEOUT_MS = 10_000;
-const DEFAULT_BUGBOT_CHECK_NAMES = ['Bugbot', 'Bugbot / Review', 'Cursor / Bugbot'];
-const DEFAULT_BUGBOT_APP_IDENTITIES = ['bugbot', 'cursor', 'cursor[bot]', 'cursor bugbot'];
 const GIT_SHA_RE = /^[0-9a-f]{7,64}$/i;
 
 function normalize(value: string): string {
@@ -107,7 +109,7 @@ function isTrustedBugbotCheckRun(checkRun: GitHubCheckRunResponse, product: Prod
   const checkNames = configuredSet(bugbot?.check_names, DEFAULT_BUGBOT_CHECK_NAMES);
   const appIdentities = configuredSet(
     bugbot?.trusted_app_identities,
-    DEFAULT_BUGBOT_APP_IDENTITIES,
+    DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES,
   );
   const name = checkRun.name ? normalize(checkRun.name) : '';
   if (!checkNames.has(name)) return false;
@@ -120,7 +122,7 @@ function isTrustedBugbotCheckRun(checkRun: GitHubCheckRunResponse, product: Prod
 function isTrustedBugbotComment(comment: GitHubReviewCommentResponse, product: Product): boolean {
   const appIdentities = configuredSet(
     product.review?.external?.bugbot?.trusted_app_identities,
-    DEFAULT_BUGBOT_APP_IDENTITIES,
+    DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES,
   );
   const login = comment.user?.login;
   return typeof login === 'string' && appIdentities.has(normalize(login));

@@ -148,6 +148,21 @@ async function fetchGitHubJson<T>(url: string, token: string): Promise<T> {
   }
 }
 
+async function fetchPaginatedGitHubJson<T>(url: string, token: string): Promise<T[]> {
+  const items: T[] = [];
+  let page = 1;
+  while (true) {
+    const pageUrl = new URL(url);
+    pageUrl.searchParams.set('per_page', '100');
+    if (page > 1) pageUrl.searchParams.set('page', `${page}`);
+    const pageItems = await fetchGitHubJson<T[]>(pageUrl.toString(), token);
+    items.push(...pageItems);
+    if (pageItems.length < 100) break;
+    page += 1;
+  }
+  return items;
+}
+
 async function fetchGitHubGraphQL<T>(
   query: string,
   variables: Record<string, unknown>,
@@ -244,6 +259,7 @@ async function fetchBugbotReviewThreads(input: {
     );
     const page = data.repository?.pullRequest?.reviewThreads;
     for (const thread of page?.nodes ?? []) {
+      if (thread.isResolved === true) continue;
       const comments = (thread.comments?.nodes ?? [])
         .map(
           (comment): GitHubReviewCommentResponse => ({
@@ -295,12 +311,12 @@ export function createGitHubBugbotReviewLoader(input: {
     if (!checkRun) return { unavailable: true };
 
     const [annotations, reviewComments, reviewThreads] = await Promise.all([
-      fetchGitHubJson<GitHubAnnotationResponse[]>(
-        `${repoBase}/check-runs/${checkRun.id}/annotations?per_page=100`,
+      fetchPaginatedGitHubJson<GitHubAnnotationResponse>(
+        `${repoBase}/check-runs/${checkRun.id}/annotations`,
         input.githubToken,
       ),
-      fetchGitHubJson<GitHubReviewCommentResponse[]>(
-        `${repoBase}/pulls/${ctx.prNumber}/comments?per_page=100`,
+      fetchPaginatedGitHubJson<GitHubReviewCommentResponse>(
+        `${repoBase}/pulls/${ctx.prNumber}/comments`,
         input.githubToken,
       ),
       fetchBugbotReviewThreads({

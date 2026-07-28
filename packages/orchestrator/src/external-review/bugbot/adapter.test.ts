@@ -134,7 +134,17 @@ describe('BugbotExternalReviewAdapter', () => {
     [
       'non-success check-run conclusion',
       { checkRun: { status: 'completed', conclusion: 'failure' } },
-      { status: 'escalate', reason: 'bugbot check_run failure' },
+      {
+        status: 'needs_fixes',
+        blockers: [
+          expect.objectContaining({
+            severity: 'high',
+            blocking: true,
+            summary: 'Bugbot check run concluded failure',
+          }),
+        ],
+        advisories: [],
+      },
     ],
   ] as const)('normalizes %s', (_name, payload, expected) => {
     expect(normalizeBugbotReviewPayload(payload, resolveBugbotReviewConfig(baseProduct))).toEqual(
@@ -177,6 +187,39 @@ describe('BugbotExternalReviewAdapter', () => {
     if (first.status !== 'needs_fixes' || second.status !== 'needs_fixes') return;
     expect(second.blockers[0]?.id).toBe(first.blockers[0]?.id);
     expect(second.advisories[0]?.id).toBe(first.advisories[0]?.id);
+  });
+
+  it('ignores standalone comments when unresolved thread state is loaded', () => {
+    const result = normalizeBugbotReviewPayload(
+      {
+        checkRun: { status: 'completed', conclusion: 'success' },
+        reviewComments: [
+          {
+            id: 10,
+            path: 'src/app.ts',
+            line: 12,
+            body: '**HIGH** stale resolved thread finding',
+          },
+        ],
+        reviewThreads: [
+          {
+            id: 'thread-1',
+            isResolved: true,
+            path: 'src/app.ts',
+            line: 12,
+            comments: [
+              {
+                id: 10,
+                body: '**HIGH** stale resolved thread finding',
+              },
+            ],
+          },
+        ],
+      },
+      resolveBugbotReviewConfig(baseProduct),
+    );
+
+    expect(result).toEqual({ status: 'clean', blockers: [], advisories: [] });
   });
 
   it('uses configured blocking severities', () => {

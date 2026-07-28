@@ -148,6 +148,30 @@ function findingFromComment(
   );
 }
 
+function findingFromCheckRunConclusion(
+  checkRun: NonNullable<BugbotReviewPayload['checkRun']>,
+  conclusion: string,
+  config: BugbotReviewConfig,
+): NormalizedFinding {
+  const output = checkRun.output;
+  const detail = [output?.title, output?.summary, output?.text]
+    .map((part) => text(part ?? undefined))
+    .filter((part): part is string => Boolean(part))
+    .join('\n\n');
+  return makeFinding(
+    {
+      nativeId: `check-run:${checkRun.name ?? 'bugbot'}:${conclusion}`,
+      summary:
+        text(output?.title ?? undefined) ??
+        text(output?.summary ?? undefined) ??
+        `Bugbot check run concluded ${conclusion}`,
+      detail,
+      severity: 'high',
+    },
+    config,
+  );
+}
+
 function appendFinding(
   finding: NormalizedFinding,
   target: { blockers: NormalizedFinding[]; advisories: NormalizedFinding[] },
@@ -196,9 +220,12 @@ export function normalizeBugbotReviewPayload(
   for (const annotation of checkRun?.output?.annotations ?? []) {
     appendFinding(findingFromAnnotation(annotation, config), findings, seen);
   }
-  for (const comment of payload.reviewComments ?? []) {
-    const finding = findingFromComment(comment, config);
-    if (finding) appendFinding(finding, findings, seen);
+
+  if (payload.reviewThreads === undefined) {
+    for (const comment of payload.reviewComments ?? []) {
+      const finding = findingFromComment(comment, config);
+      if (finding) appendFinding(finding, findings, seen);
+    }
   }
   for (const thread of payload.reviewThreads ?? []) {
     const resolved = thread.isResolved ?? thread.is_resolved ?? false;
@@ -217,8 +244,13 @@ export function normalizeBugbotReviewPayload(
   if (conclusion && ['cancelled', 'skipped', 'stale'].includes(conclusion)) {
     return { status: 'skipped', reason: 'unavailable' };
   }
-  if (conclusion && !['success', 'neutral'].includes(conclusion)) {
-    return { status: 'escalate', reason: `bugbot check_run ${conclusion}` };
+  if (checkRun && conclusion && !['success', 'neutral'].includes(conclusion)) {
+    const finding = findingFromCheckRunConclusion(checkRun, conclusion, config);
+    return {
+      status: 'needs_fixes',
+      blockers: [{ ...finding, blocking: true }],
+      advisories: findings.advisories,
+    };
   }
 
   return { status: 'clean', blockers: [], advisories: findings.advisories };

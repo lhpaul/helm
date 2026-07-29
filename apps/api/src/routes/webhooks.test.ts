@@ -927,6 +927,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockPersistReviewDispatchIntent).toHaveBeenCalledWith({
         productSlug: 'test-app',
         externalId: 'issue_42',
+        specialistId: 'reviewer-fanout',
         prNumber: 42,
         targetRevision: 'sha-42',
         triggeredBy: 'webhook:pr-decision-comment',
@@ -1268,6 +1269,80 @@ describe('POST /api/webhooks/github', () => {
         targetRevision: 'sha-spec-192',
         prNumber: 76,
         triggeredBy: 'webhook:spec-pr-sync',
+      });
+    });
+
+    it('persists a deferred early-loop dispatch when scheduleItemDispatch cannot run immediately', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue(
+        parsedGitHubProduct(['review:', '  early_loop:', '    enabled: true'].join('\n')) as never,
+      );
+      mockScheduleItemDispatch.mockResolvedValue({
+        scheduled: false,
+        reason: 'Job already running — queued review dispatch for replay after exit',
+      });
+      const body = mergedPrPayload('helm/spec/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+        prNumber: 76,
+        headSha: 'sha-spec-deferred-192',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'spec-draft',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-192',
+        specialistId: 'spec-draft-reviewer',
+        targetRevision: 'sha-spec-deferred-192',
+        prNumber: 76,
+        triggeredBy: 'webhook:spec-pr-sync',
+      });
+      expect(mockPersistReviewDispatchIntent).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-192',
+        specialistId: 'spec-draft-reviewer',
+        prNumber: 76,
+        targetRevision: 'sha-spec-deferred-192',
+        triggeredBy: 'webhook:spec-pr-sync',
+      });
+    });
+
+    it('persists a deferred plan-draft dispatch when scheduleItemDispatch cannot run immediately', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue(
+        parsedGitHubProduct(['review:', '  early_loop:', '    enabled: true'].join('\n')) as never,
+      );
+      mockScheduleItemDispatch.mockResolvedValue({
+        scheduled: false,
+        reason: 'Unable to schedule dispatch',
+      });
+      const body = mergedPrPayload('helm/plan/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+        prNumber: 77,
+        headSha: 'sha-plan-deferred-192',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'plan-draft',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockPersistReviewDispatchIntent).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-192',
+        specialistId: 'plan-draft-reviewer',
+        prNumber: 77,
+        targetRevision: 'sha-plan-deferred-192',
+        triggeredBy: 'webhook:plan-pr-sync',
       });
     });
 

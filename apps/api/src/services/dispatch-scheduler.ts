@@ -66,6 +66,29 @@ function inferEarlyLoopDraftReviewer(
   return undefined;
 }
 
+function draftReviewerFromTriggeredBy(
+  triggeredBy: string | undefined,
+): 'spec-draft-reviewer' | 'plan-draft-reviewer' | undefined {
+  if (!triggeredBy) return undefined;
+  if (triggeredBy.includes('spec-pr-sync') || triggeredBy.includes('awaiting-spec-draft')) {
+    return 'spec-draft-reviewer';
+  }
+  if (triggeredBy.includes('plan-pr-sync') || triggeredBy.includes('awaiting-plan-draft')) {
+    return 'plan-draft-reviewer';
+  }
+  return undefined;
+}
+
+function looksLikeImplReviewTrigger(triggeredBy: string | undefined): boolean {
+  if (!triggeredBy) return false;
+  return (
+    triggeredBy.includes('impl-pr-sync') ||
+    triggeredBy.includes('pr-decision-comment') ||
+    triggeredBy.includes('implementer') ||
+    triggeredBy.includes('reviewer-fanout')
+  );
+}
+
 async function inferPendingReviewSpecialist(input: {
   productSlug: string;
   externalId: string;
@@ -79,6 +102,26 @@ async function inferPendingReviewSpecialist(input: {
   const item = await store.get(input.externalId);
   if (!item || item.productSlug !== input.productSlug) return undefined;
   return inferEarlyLoopDraftReviewer(product, item);
+}
+
+async function resolveReviewDispatchReplaySpecialist(intent: {
+  productSlug: string;
+  externalId: string;
+  specialistId?: string;
+  triggeredBy?: string;
+}): Promise<string> {
+  if (intent.specialistId) return intent.specialistId;
+
+  const fromTrigger = draftReviewerFromTriggeredBy(intent.triggeredBy);
+  if (fromTrigger) return fromTrigger;
+  if (looksLikeImplReviewTrigger(intent.triggeredBy)) return 'reviewer-fanout';
+
+  return (
+    (await inferPendingReviewSpecialist(intent).catch((err) => {
+      logErrorMetadata('dispatch pending replay specialist inference', err);
+      return undefined;
+    })) ?? 'reviewer-fanout'
+  );
 }
 
 async function persistPendingReviewDispatch(input: {
@@ -331,11 +374,7 @@ async function replayOnePendingReviewDispatch(input: {
     });
 
   let targetRevision = intent.targetRevision;
-  const replaySpecialist =
-    (await inferPendingReviewSpecialist(intent).catch((err) => {
-      logErrorMetadata('dispatch pending replay specialist inference', err);
-      return undefined;
-    })) ?? 'reviewer-fanout';
+  let replaySpecialist = await resolveReviewDispatchReplaySpecialist(intent);
   if (intent.prNumber !== undefined) {
     if (replaySpecialist !== 'reviewer-fanout') {
       const artifactKind =
@@ -352,47 +391,76 @@ async function replayOnePendingReviewDispatch(input: {
         });
         const expectedHeadRef = `helm/${artifactKind}/${intent.externalId}`;
         if (pr.headRef !== expectedHeadRef) {
-          console.info(
-            `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
-          );
-          await removeIntent();
+          // Stage-only draft inference must not drop impl fanout intents.
+          if (!intent.specialistId && !draftReviewerFromTriggeredBy(intent.triggeredBy)) {
+            console.info(
+              `[dispatch-scheduler] pending replay falling back to reviewer-fanout — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
+            );
+            replaySpecialist = 'reviewer-fanout';
+          } else {
+            console.info(
+              `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
+            );
+            await removeIntent();
+            return;
+          }
+        } else {
+          targetRevision = pr.headSha;
+          if (!targetRevision) return;
+          const outcome = await scheduleItemDispatch({
+            productSlug: intent.productSlug,
+            externalId: intent.externalId,
+            specialistId: replaySpecialist,
+            targetRevision,
+            prNumber: intent.prNumber,
+            triggeredBy: `outbox:${intent.triggeredBy}`,
+          });
+          if (
+            outcome.scheduled ||
+            outcome.reason === 'Duplicate target revision' ||
+            outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
+          ) {
+            await removeIntent();
+          }
           return;
         }
-        targetRevision = pr.headSha;
+      } else {
+        if (!targetRevision) return;
+        const outcome = await scheduleItemDispatch({
+          productSlug: intent.productSlug,
+          externalId: intent.externalId,
+          specialistId: replaySpecialist,
+          targetRevision,
+          prNumber: intent.prNumber,
+          triggeredBy: `outbox:${intent.triggeredBy}`,
+        });
+        if (
+          outcome.scheduled ||
+          outcome.reason === 'Duplicate target revision' ||
+          outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
+        ) {
+          await removeIntent();
+        }
+        return;
       }
-      if (!targetRevision) return;
-      const outcome = await scheduleItemDispatch({
-        productSlug: intent.productSlug,
-        externalId: intent.externalId,
-        specialistId: replaySpecialist,
-        targetRevision,
+    }
+    if (replaySpecialist === 'reviewer-fanout') {
+      const pr = await resolveOpenPrMetadata({
+        product: input.product,
         prNumber: intent.prNumber,
-        triggeredBy: `outbox:${intent.triggeredBy}`,
+        githubToken: input.githubToken,
       });
-      if (
-        outcome.scheduled ||
-        outcome.reason === 'Duplicate target revision' ||
-        outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
-      ) {
+      const expectedHeadRef = `helm/impl/${intent.externalId}`;
+      if (pr.headRef !== expectedHeadRef) {
+        console.info(
+          `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
+        );
         await removeIntent();
+        return;
       }
-      return;
+      // Prefer the live PR head so replay tracks the newest SHA after headRef validation.
+      targetRevision = pr.headSha;
     }
-    const pr = await resolveOpenPrMetadata({
-      product: input.product,
-      prNumber: intent.prNumber,
-      githubToken: input.githubToken,
-    });
-    const expectedHeadRef = `helm/impl/${intent.externalId}`;
-    if (pr.headRef !== expectedHeadRef) {
-      console.info(
-        `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
-      );
-      await removeIntent();
-      return;
-    }
-    // Prefer the live PR head so replay tracks the newest SHA after headRef validation.
-    targetRevision = pr.headSha;
   }
   if (!targetRevision) return;
 

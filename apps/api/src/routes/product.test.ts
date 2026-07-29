@@ -97,9 +97,25 @@ describe('GET /api/product', () => {
     const body = (await res.json()) as {
       product: { slug: string };
       issue_tracker: { provider: string };
+      review?: { early_loop?: { enabled?: boolean } };
     };
     expect(body.product.slug).toBe('example-app');
     expect(body.issue_tracker.provider).toBe('github_projects');
+    expect(body.review?.early_loop?.enabled).toBe(false);
+  });
+
+  it('returns review.early_loop.enabled=true when configured in product.yaml', async () => {
+    const enabledYaml = `${VALID_PRODUCT_YAML}\nreview:\n  early_loop:\n    enabled: true\n`;
+    await writeFile(join(testDir, '.helm', 'product.yaml'), enabledYaml, 'utf-8');
+    process.env.HELM_KNOWLEDGE_REPO_PATH = testDir;
+
+    const res = await app.request('/api/product');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      review?: { early_loop?: { enabled?: boolean } };
+    };
+    expect(body.review?.early_loop?.enabled).toBe(true);
   });
 
   it('returns 404 when product.yaml does not exist at expected location', async () => {

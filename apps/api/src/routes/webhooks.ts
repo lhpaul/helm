@@ -343,6 +343,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           await persistReviewDispatchIntent({
             productSlug: config.product.slug,
             externalId: parsed.externalId,
+            specialistId: 'reviewer-fanout',
             prNumber: pr.number,
             targetRevision: pr.headSha,
             triggeredBy: 'webhook:pr-decision-comment',
@@ -385,6 +386,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
                 await persistReviewDispatchIntent({
                   productSlug: config.product.slug,
                   externalId: parsed.externalId,
+                  specialistId: 'reviewer-fanout',
                   prNumber: event.prNumber,
                   targetRevision: event.headSha,
                   triggeredBy: 'webhook:impl-pr-sync',

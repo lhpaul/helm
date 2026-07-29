@@ -7,6 +7,7 @@ import {
   shouldRemediate,
   type ReviewerFanoutResult,
   type ReviewerKind,
+  type ReviewerResult,
 } from '../specialists/reviewer-fanout.js';
 import {
   buildRemediationParams,
@@ -247,6 +248,45 @@ async function suppressFalsePositiveExternalFindings(
   return { blockers, suppressed };
 }
 
+async function suppressFalsePositiveReviewerResults(
+  params: RunCodeReviewLoopParams,
+  results: ReviewerResult[],
+): Promise<ReviewerResult[]> {
+  if (params.mode !== 'early-artifact' || results.length === 0) return results;
+
+  const stage = stageForLoopParams(params);
+  const catalog = await fetchFalsePositivesCatalog(
+    params.product,
+    params.githubToken,
+    params.fetchFn,
+  );
+  if (catalog.length === 0) return results;
+
+  return results.map((result) => {
+    if (!result.findings || !result.commentBody) return result;
+
+    const findings = { ...result.findings };
+    const commentBody = result.commentBody.replace(
+      /\*\*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\*\*\s*·\s*([^\n]+)/g,
+      (line, rawSeverity: string, summary: string) => {
+        const severity = rawSeverity.toLowerCase() as NormalizedFinding['severity'];
+        const finding: NormalizedFinding = {
+          id: `${result.kind}:${summary}`,
+          severity,
+          blocking: true,
+          summary,
+        };
+
+        if (!findFalsePositiveMatch(finding, catalog, stage)) return line;
+        if (findings[severity] > 0) findings[severity] -= 1;
+        return `**INFO** · Catalogued false positive: ${summary}`;
+      },
+    );
+
+    return { ...result, findings, commentBody };
+  });
+}
+
 type ExternalReviewLoopOutcome =
   | { kind: 'continue'; external: ExternalReviewResult }
   | {
@@ -387,16 +427,25 @@ export async function runCodeReviewLoop(
         };
       }
 
-      if (!shouldRemediate(fanoutResult.reviewerResults, loopConfig.remediateSeverity)) {
+      const reviewerResults = await suppressFalsePositiveReviewerResults(
+        params,
+        fanoutResult.reviewerResults,
+      );
+      const gateFanoutResult =
+        reviewerResults === fanoutResult.reviewerResults
+          ? fanoutResult
+          : { ...fanoutResult, reviewerResults };
+
+      if (!shouldRemediate(gateFanoutResult.reviewerResults, loopConfig.remediateSeverity)) {
         break;
       }
 
       const blockerCount = countBlockingFindings(
-        fanoutResult.reviewerResults,
+        gateFanoutResult.reviewerResults,
         loopConfig.remediateSeverity,
       );
       const currentFingerprints = collectGateFindingFingerprints(
-        fanoutResult.reviewerResults,
+        gateFanoutResult.reviewerResults,
         loopConfig.remediateSeverity,
       );
       const stickyRemaining = observeStickyLane(internalSticky, currentFingerprints);
@@ -433,7 +482,7 @@ export async function runCodeReviewLoop(
 
       const remediationOutcome = await runRemediationPass({
         ...params,
-        fanoutResult,
+        fanoutResult: gateFanoutResult,
         totalCost,
         maxDuration,
         loopConfig,

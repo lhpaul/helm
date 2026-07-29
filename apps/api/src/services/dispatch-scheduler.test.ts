@@ -957,6 +957,59 @@ describe('pending external review readiness cleanup', () => {
     ).resolves.toBeNull();
   });
 
+  it('infers the plan draft reviewer for legacy pending external reviews without a specialist', async () => {
+    const { outbox } = await putPending('2099-01-01T00:00:00.000Z', 'reviewer-fanout', {
+      omitSpecialistId: true,
+    });
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'plan-draft',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockImplementation(
+      (_stage, specialistId) => specialistId as string | undefined,
+    );
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      job: {
+        jobId: '00000000-0000-4000-8000-000000000004',
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        specialistId: 'plan-draft-reviewer',
+        status: 'running',
+        targetRevision: 'sha-1',
+        startedAt: '2026-07-22T10:00:00.000Z',
+      },
+    });
+
+    await expect(
+      resumePendingExternalReviewByRevision({
+        productSlug: 'test-product',
+        provider: 'haystack',
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready',
+      }),
+    ).resolves.toEqual({
+      scheduled: true,
+      jobId: '00000000-0000-4000-8000-000000000004',
+      externalId: 'LEA-1',
+    });
+
+    expect(mockCreateJobIfNoRunning).toHaveBeenCalledWith({
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'plan-draft-reviewer',
+      targetRevision: 'sha-1',
+    });
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+  });
+
   it('removes pending external review after duplicate revision readiness delivery', async () => {
     const { outbox } = await putPending();
     mockCreateJobIfNoRunning.mockResolvedValue({

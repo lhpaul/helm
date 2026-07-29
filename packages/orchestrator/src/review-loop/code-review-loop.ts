@@ -277,6 +277,7 @@ function suppressFalsePositiveReviewerComment(
 
       if (!findFalsePositiveMatch(finding, catalog, stage)) return line;
       if (findings[severity] > 0) findings[severity] -= 1;
+      findings.info += 1;
       return `**INFO** · Catalogued false positive: ${summary}`;
     },
   );

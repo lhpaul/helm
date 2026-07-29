@@ -1306,7 +1306,7 @@ describe('runCodeReviewLoop', () => {
       expect(shouldRemediate).toHaveBeenCalledWith(
         [
           expect.objectContaining({
-            findings: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+            findings: { critical: 0, high: 0, medium: 0, low: 0, info: 1 },
             commentBody: expect.stringContaining('Catalogued false positive'),
           }),
         ],
@@ -1374,7 +1374,7 @@ describe('runCodeReviewLoop', () => {
     expect(shouldRemediate).toHaveBeenCalledWith(
       [
         expect.objectContaining({
-          findings: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+          findings: { critical: 0, high: 0, medium: 0, low: 0, info: 1 },
           commentBody: expect.stringContaining('## Status\nAPPROVED'),
         }),
       ],

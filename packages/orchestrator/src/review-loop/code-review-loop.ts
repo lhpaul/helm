@@ -37,7 +37,11 @@ import { postPRComment } from '../specialists/pr-helpers.js';
 import { resolveReviewLoopConfig, type ReviewLoopConfig } from './config.js';
 import { formatReviewLoopEscalationComment } from './escalation-comment.js';
 import { evaluateExternalReviewStopRule } from './external-stop-rule.js';
-import { fetchFalsePositivesCatalog, type FalsePositiveEntry } from './false-positives.js';
+import {
+  fetchFalsePositivesCatalog,
+  matchesFalsePositiveFinding,
+  type FalsePositiveEntry,
+} from './false-positives.js';
 import { upsertReviewLoopSummaryComment } from './summary.js';
 import {
   countBlockingFindings,
@@ -218,7 +222,7 @@ function findFalsePositiveMatch(
   return catalog.find(
     (entry) =>
       (entry.appliesTo === undefined || entry.appliesTo.includes(stage)) &&
-      entry.matchesSummary(finding.summary),
+      matchesFalsePositiveFinding(entry, finding),
   );
 }
 

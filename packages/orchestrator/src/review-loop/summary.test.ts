@@ -81,4 +81,19 @@ describe('buildAdvisorySummaryRows', () => {
       disposition: 'Rejected',
     });
   });
+
+  it('builds summary dispositions from structured finding metadata', () => {
+    const advisory = {
+      id: 'pair-spec-and-plan-files',
+      severity: 'low' as const,
+      blocking: false,
+      summary: 'Sequential review concern',
+    };
+
+    expect(
+      buildAdvisorySummaryRows([advisory], builtInFalsePositiveEntries(), 'spec-draft')[0],
+    ).toMatchObject({
+      disposition: 'Rejected',
+    });
+  });
 });

@@ -1,4 +1,5 @@
 import type { Product } from '@helm/shared';
+import type { NormalizedFinding } from '../external-review/types.js';
 import type { FetchFn } from '../specialists/fetch-product-context.js';
 import { fetchRawFile, parseGitHubRepoUrl } from '../specialists/fetch-product-context.js';
 
@@ -89,6 +90,19 @@ export function builtInFalsePositiveEntries(): FalsePositiveEntry[] {
       },
     };
   });
+}
+
+export function matchesFalsePositiveFinding(
+  entry: FalsePositiveEntry,
+  finding: NormalizedFinding,
+): boolean {
+  return structuredFindingFields(finding).some((value) => entry.matchesSummary(value));
+}
+
+function structuredFindingFields(finding: NormalizedFinding): string[] {
+  return [finding.id, finding.summary, finding.path, finding.detail, finding.fixHint].filter(
+    (value): value is string => value !== undefined && value.trim().length > 0,
+  );
 }
 
 function normalizeForMatch(text: string): string {

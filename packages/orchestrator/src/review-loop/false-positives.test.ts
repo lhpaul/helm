@@ -3,6 +3,7 @@ import type { Product } from '@helm/shared';
 import {
   builtInFalsePositiveEntries,
   fetchFalsePositivesCatalog,
+  matchesFalsePositiveFinding,
   parseFalsePositivesCatalog,
 } from './false-positives.js';
 
@@ -118,6 +119,39 @@ describe('parseFalsePositivesCatalog', () => {
     expect(specPlanEntry?.matchesSummary('plan file is missing a webhook persistence guard')).toBe(
       false,
     );
+  });
+
+  it('matches catalog entries against structured finding fields', () => {
+    const entry = builtInFalsePositiveEntries().find(
+      (candidate) => candidate.pattern === 'pair-spec-and-plan-files',
+    )!;
+
+    expect(
+      matchesFalsePositiveFinding(entry, {
+        id: 'pair-spec-and-plan-files',
+        severity: 'high',
+        blocking: true,
+        summary: 'Reviewer rendered this as a sequencing concern',
+      }),
+    ).toBe(true);
+    expect(
+      matchesFalsePositiveFinding(entry, {
+        id: 'adv-1',
+        severity: 'high',
+        blocking: true,
+        summary: 'Reviewer rendered this as a sequencing concern',
+        detail: 'The structured detail names pair-spec-and-plan-files.',
+      }),
+    ).toBe(true);
+    expect(
+      matchesFalsePositiveFinding(entry, {
+        id: 'adv-2',
+        severity: 'high',
+        blocking: true,
+        summary: 'Plan files are missing validation guards',
+        detail: 'Unrelated product concern.',
+      }),
+    ).toBe(false);
   });
 
   it('falls back to built-in entries when the knowledge-repo catalog fetch fails', async () => {

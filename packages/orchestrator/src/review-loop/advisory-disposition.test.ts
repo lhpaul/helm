@@ -3,7 +3,7 @@ import { resolveAdvisoryDispositions } from './advisory-disposition.js';
 import type { FalsePositiveEntry } from './false-positives.js';
 
 describe('resolveAdvisoryDispositions', () => {
-  it('marks catalog matches as Rejected', () => {
+  it('marks catalog matches as Rejected from structured finding fields', () => {
     const catalog: FalsePositiveEntry[] = [
       {
         title: 'Health endpoint',
@@ -18,7 +18,8 @@ describe('resolveAdvisoryDispositions', () => {
           id: 'adv-1',
           severity: 'low',
           blocking: false,
-          summary: 'Rules violation on /health endpoint shape',
+          summary: 'Rules violation on endpoint shape',
+          detail: 'The structured review detail names the /health endpoint.',
         },
       ],
       catalog,

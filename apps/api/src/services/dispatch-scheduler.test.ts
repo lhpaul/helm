@@ -1458,6 +1458,59 @@ describe('pending external review readiness cleanup', () => {
       targetRevision: 'sha-impl-live',
     });
   });
+
+  it('does not switch repositories for stage-inferred legacy draft replay mismatches', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      prNumber: 81,
+      targetRevision: 'sha-legacy',
+      triggeredBy: 'legacy',
+    });
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'spec-draft',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockImplementation(
+      (_stage, specialistId) => specialistId as string | undefined,
+    );
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+    mockResolveOpenPrMetadataForRepo.mockResolvedValue({
+      headRef: 'helm/impl/LEA-1',
+      headSha: 'sha-impl-live',
+    });
+
+    await runDispatchJob({ jobId: 'job-current' } as never, {
+      product: { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'spec-draft',
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot,
+      specialistId: 'spec-writer',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    expect(mockResolveOpenPrMetadataForRepo).toHaveBeenCalledWith({
+      repo: { owner: 'o', repo: 'k' },
+      prNumber: 81,
+      githubToken: 'token',
+    });
+    expect(mockResolveOpenPrMetadata).not.toHaveBeenCalled();
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+    await expect(outbox.get('test-product', 'LEA-1')).resolves.toBeNull();
+  });
 });
 
 describe('runDispatchJob failure handling', () => {

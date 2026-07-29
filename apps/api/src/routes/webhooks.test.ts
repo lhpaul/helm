@@ -529,6 +529,24 @@ describe('POST /api/webhooks/github', () => {
       );
     });
 
+    it('replays pending draft review dispatch after item creation', async () => {
+      const body = JSON.stringify({ action: 'opened', issue: { number: 42 } });
+      mockParseWebhook.mockReturnValue({
+        type: 'item_created',
+        externalId: 'issue_42',
+        timestamp: 't',
+      });
+      mockCreate.mockResolvedValue({ history: [] });
+
+      const res = await post(body, 'issues');
+      expect(res.status).toBe(200);
+      expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalledWith({
+        product: expect.objectContaining({ product: { slug: 'test-app', name: 'Test' } }),
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+      });
+    });
+
     it('returns 200 when item already exists (idempotent)', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({
@@ -1729,6 +1747,41 @@ describe('POST /api/webhooks/github', () => {
         prNumber: 81,
         targetRevision: 'sha-spec-early-192',
         triggeredBy: 'webhook:spec-pr-sync:awaiting-spec-draft',
+      });
+    });
+
+    it('queues spec-draft-reviewer when the spec PR opens before item creation', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { early_loop: { enabled: true } },
+      } as never);
+      const body = mergedPrPayload('helm/spec/LEA-193', {
+        action: 'opened',
+        merged: false,
+        prNumber: 84,
+        headSha: 'sha-spec-before-item',
+      });
+      mockGet.mockResolvedValue(null);
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-193',
+        specialistId: 'spec-draft-reviewer',
+        prNumber: 84,
+        targetRevision: 'sha-spec-before-item',
+        triggeredBy: 'webhook:spec-pr-sync:awaiting-item-created',
       });
     });
 

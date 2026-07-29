@@ -108,11 +108,16 @@ describe('parseFalsePositivesCatalog', () => {
     expect(pairEntry?.appliesTo).toEqual(['spec-draft', 'plan-draft']);
     expect(pairEntry?.matchesSummary('pair-spec-and-plan-files')).toBe(true);
     expect(pairEntry?.matchesSummary('pair-spec-and-plan-files sequencing')).toBe(true);
+    expect(pairEntry?.matchesSummary('Plan files are missing validation guards')).toBe(false);
+    expect(pairEntry?.matchesSummary('pair spec files')).toBe(false);
     expect(specPlanEntry).toBeDefined();
     expect(specPlanEntry?.appliesTo).toEqual(['spec-draft', 'plan-draft']);
     expect(
       specPlanEntry?.matchesSummary('plan file is missing while spec remains in spec-draft'),
     ).toBe(true);
+    expect(specPlanEntry?.matchesSummary('plan file is missing a webhook persistence guard')).toBe(
+      false,
+    );
   });
 
   it('falls back to built-in entries when the knowledge-repo catalog fetch fails', async () => {

@@ -149,6 +149,28 @@ describe('POST /api/webhooks/linear', () => {
       );
     });
 
+    it('replays pending draft review dispatch after item creation', async () => {
+      const body = JSON.stringify({
+        type: 'Issue',
+        action: 'create',
+        data: { identifier: 'MOM-42' },
+      });
+      mockParseWebhook.mockReturnValue({
+        type: 'item_created',
+        externalId: 'MOM-42',
+        timestamp: 't',
+      });
+      mockCreate.mockResolvedValue({ history: [] });
+
+      const res = await post(body);
+      expect(res.status).toBe(200);
+      expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalledWith({
+        product: expect.objectContaining({ product: { slug: 'mome', name: 'MOME' } }),
+        productSlug: 'mome',
+        externalId: 'MOM-42',
+      });
+    });
+
     it('returns 200 when item already exists (idempotent)', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({

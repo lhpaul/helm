@@ -377,6 +377,10 @@ async function replayOnePendingReviewDispatch(input: {
   let replaySpecialist = await resolveReviewDispatchReplaySpecialist(intent);
   if (intent.prNumber !== undefined) {
     if (replaySpecialist !== 'reviewer-fanout') {
+      const inferredFromStageOnly =
+        !intent.specialistId &&
+        !draftReviewerFromTriggeredBy(intent.triggeredBy) &&
+        !looksLikeImplReviewTrigger(intent.triggeredBy);
       const artifactKind =
         replaySpecialist === 'spec-draft-reviewer'
           ? 'spec'
@@ -391,8 +395,11 @@ async function replayOnePendingReviewDispatch(input: {
         });
         const expectedHeadRef = `helm/${artifactKind}/${intent.externalId}`;
         if (pr.headRef !== expectedHeadRef) {
-          // Stage-only draft inference must not drop impl fanout intents.
-          if (!intent.specialistId && !draftReviewerFromTriggeredBy(intent.triggeredBy)) {
+          // Trigger-bearing impl intents can recover from draft-stage inference,
+          // but legacy stage-only draft inference must stay in the knowledge-repo
+          // context it just validated instead of reusing the same PR number
+          // against the primary code repo.
+          if (!inferredFromStageOnly) {
             console.info(
               `[dispatch-scheduler] pending replay falling back to reviewer-fanout — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
             );

@@ -171,6 +171,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
 
   // g. Dispatch.
   if (event.type === 'item_created') {
+    let createdOrExists = false;
     try {
       // getProductConfig() is inside the try so a config-load failure is caught
       // and returned as a controlled 500 rather than escaping the handler.
@@ -182,12 +183,29 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         productSlug: config.product.slug,
         triggeredBy: 'webhook:github-projects',
       });
+      createdOrExists = true;
     } catch (err) {
       if (err instanceof ItemAlreadyExistsError) {
         // Idempotent — item already exists, treat as success.
+        createdOrExists = true;
       } else {
         console.error('[webhooks/github] Unexpected error creating item:', err);
         return c.json({ error: 'Internal server error' }, 500);
+      }
+    }
+    if (createdOrExists) {
+      try {
+        const config = await getProductConfig();
+        await replayPendingReviewDispatchForItem({
+          product: config,
+          productSlug: config.product.slug,
+          externalId: event.externalId,
+        });
+      } catch (err) {
+        console.error(
+          '[webhooks/github] Pending review replay after item creation failed:',
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }
   } else if (event.type === 'item_updated' && event.subStage != null) {
@@ -480,6 +498,20 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             console.info(
               `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} queued — stage '${item.currentStage}' (expected ${expectedStage})`,
             );
+          } else if (!item) {
+            if (event.headSha || event.prNumber !== undefined) {
+              await persistReviewDispatchIntent({
+                productSlug: config.product.slug,
+                externalId: parsed.externalId,
+                specialistId,
+                prNumber: event.prNumber,
+                targetRevision: event.headSha,
+                triggeredBy: `webhook:${parsed.kind}-pr-sync:awaiting-item-created`,
+              });
+            }
+            console.info(
+              `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} queued — item not found`,
+            );
           } else {
             console.info(
               `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} ignored — stage '${item?.currentStage ?? 'missing'}' (expected ${expectedStage})`,
@@ -752,6 +784,7 @@ webhooksRouter.post('/webhooks/linear', async (c) => {
 
   // g. Dispatch.
   if (event.type === 'item_created') {
+    let createdOrExists = false;
     try {
       // webhook:linear is tracker-originated → createItem's writeback is
       // anti-echo-skipped (the issue already exists in Linear).
@@ -760,12 +793,28 @@ webhooksRouter.post('/webhooks/linear', async (c) => {
         productSlug: config.product.slug,
         triggeredBy: 'webhook:linear',
       });
+      createdOrExists = true;
     } catch (err) {
       if (err instanceof ItemAlreadyExistsError) {
         // Idempotent — item already exists, treat as success.
+        createdOrExists = true;
       } else {
         console.error('[webhooks/linear] Unexpected error creating item:', err);
         return c.json({ error: 'Internal server error' }, 500);
+      }
+    }
+    if (createdOrExists) {
+      try {
+        await replayPendingReviewDispatchForItem({
+          product: config,
+          productSlug: config.product.slug,
+          externalId: event.externalId,
+        });
+      } catch (err) {
+        console.error(
+          '[webhooks/linear] Pending review replay after item creation failed:',
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }
   } else if (event.type === 'item_updated' && event.subStage != null) {

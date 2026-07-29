@@ -85,7 +85,7 @@ export function builtInFalsePositiveEntries(): FalsePositiveEntry[] {
       matchesSummary: (summary: string) => {
         const haystack = normalizeForMatch(summary);
         if (haystack.includes(patternNeedle)) return true;
-        return significantTokenOverlap(patternNeedle, haystack);
+        return allSignificantTokensMatch(patternNeedle, haystack);
       },
     };
   });
@@ -100,6 +100,12 @@ function significantTokenOverlap(pattern: string, summary: string): boolean {
   if (patternTokens.length === 0) return false;
   const hits = patternTokens.filter((token) => summaryIncludesToken(summary, token));
   return hits.length >= Math.min(3, patternTokens.length);
+}
+
+function allSignificantTokensMatch(pattern: string, summary: string): boolean {
+  const patternTokens = pattern.split(' ').filter((t) => t.length >= 4);
+  if (patternTokens.length === 0) return false;
+  return patternTokens.every((token) => summaryIncludesToken(summary, token));
 }
 
 /** Word-boundary token match — avoids `health` matching `unhealthy`. */

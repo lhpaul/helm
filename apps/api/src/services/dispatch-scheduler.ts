@@ -412,7 +412,11 @@ async function replayPendingReviewDispatch(input: {
   const outbox = await getReviewDispatchOutbox(input.dataRoot);
   const intents = await outbox.listReviewDispatch(input.productSlug, input.externalId);
   for (const intent of intents) {
-    await replayOnePendingReviewDispatch({ ...input, githubToken, outbox, intent });
+    try {
+      await replayOnePendingReviewDispatch({ ...input, githubToken, outbox, intent });
+    } catch (err) {
+      logErrorMetadata('dispatch pending replay intent', err);
+    }
   }
 }
 

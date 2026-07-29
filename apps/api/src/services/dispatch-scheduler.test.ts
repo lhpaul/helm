@@ -1525,6 +1525,74 @@ describe('pending external review readiness cleanup', () => {
     ).resolves.toBeNull();
   });
 
+  it('continues replaying later draft slots when one parked intent fails', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'spec-draft-reviewer',
+      prNumber: 42,
+      targetRevision: 'sha-spec',
+      triggeredBy: 'webhook:spec-pr-sync:awaiting-spec-draft',
+    });
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'plan-draft-reviewer',
+      prNumber: 43,
+      targetRevision: 'sha-plan',
+      triggeredBy: 'webhook:plan-pr-sync:awaiting-plan-draft',
+    });
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'plan-draft',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockImplementation(
+      (_stage, specialistId) => specialistId as string | undefined,
+    );
+    mockResolveOpenPrMetadataForRepo
+      .mockRejectedValueOnce(new Error('spec metadata unavailable'))
+      .mockResolvedValueOnce({
+        headRef: 'helm/plan/LEA-1',
+        headSha: 'sha-plan-live',
+      });
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      duplicate: true,
+      existingJobId: 'job-plan-existing',
+    });
+
+    await replayPendingReviewDispatchForItem({
+      product: { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+    });
+
+    expect(mockResolveOpenPrMetadataForRepo).toHaveBeenCalledTimes(2);
+    expect(mockCreateJobIfNoRunning).toHaveBeenCalledWith({
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'plan-draft-reviewer',
+      targetRevision: 'sha-plan-live',
+    });
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'review_dispatch', 'spec-draft-reviewer'),
+    ).resolves.toMatchObject({
+      specialistId: 'spec-draft-reviewer',
+      targetRevision: 'sha-spec',
+    });
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'review_dispatch', 'plan-draft-reviewer'),
+    ).resolves.toBeNull();
+  });
+
   it('clears stale draft review_dispatch intents when the item has left the draft stage', async () => {
     const outbox = await getReviewDispatchOutbox(dataRoot);
     await outbox.put({

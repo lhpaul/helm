@@ -642,6 +642,54 @@ describe('scheduleItemDispatch', () => {
     expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
   });
 
+  it('persists draft reviewer dispatch identity when GITHUB_TOKEN is not configured', async () => {
+    const dataRoot = await mkdtemp(join(tmpdir(), 'helm-dispatch-scheduler-'));
+    process.env.HELM_DATA_DIR = dataRoot;
+    delete process.env.GITHUB_TOKEN;
+    try {
+      vi.mocked(getProductRegistry).mockResolvedValue([
+        { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+      ]);
+      vi.mocked(getItemStore).mockResolvedValue({
+        get: vi.fn().mockResolvedValue({
+          externalId: 'LEA-1',
+          productSlug: 'test-product',
+          currentStage: 'spec-draft',
+        }),
+      } as never);
+      vi.mocked(resolveSpecialistId).mockImplementation(
+        (_stage, specialistId) => specialistId as string | undefined,
+      );
+
+      await expect(
+        scheduleItemDispatch({
+          productSlug: 'test-product',
+          externalId: 'LEA-1',
+          specialistId: 'spec-draft-reviewer',
+          prNumber: 42,
+          targetRevision: 'sha-spec',
+          triggeredBy: 'test:no-token',
+        }),
+      ).resolves.toEqual({
+        scheduled: false,
+        reason: 'Unable to schedule dispatch',
+      });
+
+      const outbox = await getReviewDispatchOutbox(dataRoot);
+      await expect(
+        outbox.get('test-product', 'LEA-1', 'review_dispatch', 'spec-draft-reviewer'),
+      ).resolves.toMatchObject({
+        specialistId: 'spec-draft-reviewer',
+        prNumber: 42,
+        targetRevision: 'sha-spec',
+        triggeredBy: 'test:no-token',
+      });
+    } finally {
+      delete process.env.HELM_DATA_DIR;
+      await rm(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('schedules a dispatch job when preconditions are met', async () => {
     vi.mocked(getProductRegistry).mockResolvedValue([baseProduct]);
     vi.mocked(getItemStore).mockResolvedValue({
@@ -1451,6 +1499,46 @@ describe('pending external review readiness cleanup', () => {
     });
     await expect(
       outbox.get('test-product', 'LEA-1', 'review_dispatch', 'spec-draft-reviewer'),
+    ).resolves.toBeNull();
+  });
+
+  it('clears parked draft-review dispatches when the artifact PR is closed', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'plan-draft-reviewer',
+      prNumber: 43,
+      targetRevision: 'sha-closed',
+      triggeredBy: 'webhook:plan-pr-sync:awaiting-plan-draft',
+    });
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'plan-draft',
+      }),
+    } as never);
+    mockResolveOpenPrMetadataForRepo.mockRejectedValue(new Error('Pull request is not open'));
+
+    await replayPendingReviewDispatchForItem({
+      product: { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+    });
+
+    expect(mockResolveOpenPrMetadataForRepo).toHaveBeenCalledWith({
+      repo: { owner: 'o', repo: 'k' },
+      prNumber: 43,
+      githubToken: 'test-github-token',
+    });
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'review_dispatch', 'plan-draft-reviewer'),
     ).resolves.toBeNull();
   });
 

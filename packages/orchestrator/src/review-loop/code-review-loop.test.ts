@@ -103,7 +103,11 @@ import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evid
 import { postPRComment } from '../specialists/pr-helpers.js';
 import { buildAdvisorySummaryRows, upsertReviewLoopSummaryComment } from './summary.js';
 import { builtInFalsePositiveEntries, fetchFalsePositivesCatalog } from './false-positives.js';
-import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
+import type {
+  ReviewerFanoutResult,
+  ReviewerResult,
+  ReviewCommentTransform,
+} from '../specialists/reviewer-fanout.js';
 
 const PR_URL = 'https://github.com/o/r/pull/42';
 
@@ -1304,6 +1308,71 @@ describe('runCodeReviewLoop', () => {
       expect(handleRemediationResult).not.toHaveBeenCalled();
     },
   );
+
+  it('rewrites early artifact review status after suppressing catalogued findings', async () => {
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInFalsePositiveEntries());
+    let transformedBody = '';
+    vi.mocked(fanoutReviewers).mockImplementationOnce(async (...args) => {
+      const transformReviewComment = args[10] as ReviewCommentTransform | undefined;
+      expect(transformReviewComment).toBeTypeOf('function');
+      const transformed = await transformReviewComment!({
+        kind: 'code',
+        reviewContent: [
+          '# Code Review',
+          '',
+          '## Findings',
+          '- **HIGH** · pair-spec-and-plan-files sequencing',
+          '',
+          '## Status',
+          'CHANGES_REQUESTED',
+        ].join('\n'),
+        findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+      });
+      transformedBody = transformed.reviewContent;
+      return makeFanout(
+        {
+          prUrl: 'https://github.com/o/k/pull/7',
+          reviewerResults: [
+            {
+              kind: 'code',
+              status: 'done',
+              costUsd: 0.01,
+              durationMs: 50,
+              commentPosted: true,
+              findings: transformed.findings,
+              commentBody: transformed.reviewContent,
+            },
+          ],
+        },
+        undefined,
+      );
+    });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product: baseProduct,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(transformedBody).toContain('**INFO** · Catalogued false positive');
+    expect(transformedBody).toContain('## Status\nAPPROVED');
+    expect(transformedBody).not.toContain('## Status\nCHANGES_REQUESTED');
+    expect(shouldRemediate).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          findings: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+          commentBody: expect.stringContaining('## Status\nAPPROVED'),
+        }),
+      ],
+      'critical_high',
+    );
+  });
 
   it('still remediates a sequential-artifact-looking reviewer finding in code-review mode', async () => {
     const builtInCatalog = builtInFalsePositiveEntries();

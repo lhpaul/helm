@@ -125,6 +125,10 @@ function isDraftReviewSpecialist(
   return specialistId === 'spec-draft-reviewer' || specialistId === 'plan-draft-reviewer';
 }
 
+function isTerminalPullRequestLookupError(err: unknown): boolean {
+  return err instanceof Error && err.message === 'Pull request is not open';
+}
+
 async function inferPendingReviewSpecialist(input: {
   productSlug: string;
   externalId: string;
@@ -489,11 +493,23 @@ async function replayOnePendingReviewDispatch(input: {
             ? 'plan'
             : undefined;
       if (artifactKind) {
-        const pr = await resolveOpenPrMetadataForRepo({
-          repo: parseGitHubRepoUrl(input.product.knowledge_repo.url),
-          prNumber: intent.prNumber,
-          githubToken: input.githubToken,
-        });
+        let pr: Awaited<ReturnType<typeof resolveOpenPrMetadataForRepo>>;
+        try {
+          pr = await resolveOpenPrMetadataForRepo({
+            repo: parseGitHubRepoUrl(input.product.knowledge_repo.url),
+            prNumber: intent.prNumber,
+            githubToken: input.githubToken,
+          });
+        } catch (err) {
+          if (isTerminalPullRequestLookupError(err)) {
+            console.info(
+              `[dispatch-scheduler] pending replay skipped — artifact PR #${intent.prNumber} is no longer open`,
+            );
+            await removeIntent();
+            return;
+          }
+          throw err;
+        }
         const expectedHeadRef = `helm/${artifactKind}/${intent.externalId}`;
         if (pr.headRef !== expectedHeadRef) {
           // Never reuse a knowledge-repo PR number against the code repo.

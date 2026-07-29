@@ -261,7 +261,7 @@ function suppressFalsePositiveReviewerComment(
   stage: WorkflowStage,
 ): ReviewCommentTransformResult {
   const findings = { ...input.findings };
-  const reviewContent = input.reviewContent.replace(
+  const reviewContentWithSuppressedFindings = input.reviewContent.replace(
     /\*\*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\*\*\s*·\s*([^\n]+)/g,
     (line, rawSeverity: string, summary: string) => {
       if (summary.startsWith('Catalogued false positive:')) return line;
@@ -280,7 +280,19 @@ function suppressFalsePositiveReviewerComment(
     },
   );
 
+  const status =
+    findings.critical + findings.high + findings.medium > 0 ? 'CHANGES_REQUESTED' : 'APPROVED';
+  const reviewContent = rewriteReviewStatus(reviewContentWithSuppressedFindings, status);
+
   return { reviewContent, findings };
+}
+
+function rewriteReviewStatus(reviewContent: string, status: 'APPROVED' | 'CHANGES_REQUESTED') {
+  const statusSection = /(^##\s+Status\s*\n)\s*(?:APPROVED|CHANGES_REQUESTED)\b/im;
+  if (statusSection.test(reviewContent)) {
+    return reviewContent.replace(statusSection, `$1${status}`);
+  }
+  return `${reviewContent.trimEnd()}\n\n## Status\n${status}`;
 }
 
 async function buildFalsePositiveReviewerCommentTransform(

@@ -45,6 +45,17 @@ function normalizeKind(kind: ReviewDispatchIntentKind | undefined): ReviewDispat
   return kind ?? 'review_dispatch';
 }
 
+/** Prefer a specialist-scoped slot when sharding leaves duplicate pending rows. */
+function pickPendingExternalReviewMatch(
+  matches: PendingExternalReviewIntent[],
+): PendingExternalReviewIntent | null {
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0]!;
+  const withSpecialist = matches.filter((intent) => typeof intent.specialistId === 'string');
+  const pool = withSpecialist.length > 0 ? withSpecialist : matches;
+  return [...pool].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]!;
+}
+
 function reviewDispatchFileName(externalId: string, specialistId?: string): string {
   // Draft reviewers share an item but not an outbox slot — keep separate files so a
   // later plan sync cannot clobber a parked spec intent (or vice versa).
@@ -268,7 +279,7 @@ export class ReviewDispatchOutbox {
         intent.prNumber === input.prNumber &&
         intent.targetRevision === input.targetRevision,
     );
-    return matches.length === 1 ? matches[0]! : null;
+    return pickPendingExternalReviewMatch(matches);
   }
 
   private async findPendingExternalReviewCandidates(
@@ -316,7 +327,7 @@ export class ReviewDispatchOutbox {
         typeof intent.createdAt === 'string' &&
         typeof intent.expiresAt === 'string',
     );
-    return matches.length === 1 ? matches[0]! : null;
+    return pickPendingExternalReviewMatch(matches);
   }
 
   async list(): Promise<ReviewDispatchIntent[]> {

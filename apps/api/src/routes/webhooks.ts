@@ -644,8 +644,28 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             (item.productSlug === config.product.slug &&
               isBeforeWorkflowStage(item.currentStage, expectedStage)))
         ) {
+          // Convert pending_external_review → review_dispatch so stage-transition
+          // replay can resume; leaving the pending row alone strands readiness
+          // until expiry because replay only walks review_dispatch intents.
+          const specialistId = matched?.specialistId ?? specialistForReviewReadiness(artifactKind);
+          await persistReviewDispatchIntent({
+            productSlug: config.product.slug,
+            externalId,
+            specialistId,
+            prNumber: prNumber ?? undefined,
+            targetRevision: event.targetRevision,
+            triggeredBy: 'webhook:external-review-ready:awaiting-draft-stage',
+          });
+          await clearPendingExternalReview({
+            productSlug: config.product.slug,
+            externalId,
+            specialistId: specialistForReviewReadiness(artifactKind),
+            provider: event.provider,
+            prNumber: prNumber ?? undefined,
+            targetRevision: event.targetRevision,
+          });
           console.info(
-            `[webhooks/github] external review readiness preserved — item not yet in ${expectedStage}`,
+            `[webhooks/github] external review readiness re-parked — item not yet in ${expectedStage}`,
           );
           return c.json({ processed: true });
         }

@@ -2646,7 +2646,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
     });
 
-    it('preserves pending draft external review when readiness arrives before the draft stage', async () => {
+    it('re-parks draft external review as review_dispatch when readiness arrives before the draft stage', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({
         product: { slug: 'test-app', name: 'Test' },
         issue_tracker: {
@@ -2690,7 +2690,22 @@ describe('POST /api/webhooks/github', () => {
       );
 
       expect(res.status).toBe(200);
-      expect(mockClearPendingExternalReview).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        specialistId: 'spec-draft-reviewer',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        triggeredBy: 'webhook:external-review-ready:awaiting-draft-stage',
+      });
+      expect(mockClearPendingExternalReview).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        specialistId: 'spec-draft-reviewer',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+      });
       expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
       expect(mockResumePendingExternalReviewByRevision).not.toHaveBeenCalled();
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();

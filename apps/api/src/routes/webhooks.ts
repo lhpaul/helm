@@ -397,9 +397,8 @@ webhooksRouter.post('/webhooks/github', async (c) => {
 
         const item = await itemStore.get(parsed.externalId);
         const expectedStage = parsed.kind === 'spec' ? 'spec-draft' : 'plan-draft';
+        const specialistId = parsed.kind === 'spec' ? 'spec-draft-reviewer' : 'plan-draft-reviewer';
         if (item?.currentStage === expectedStage && item.productSlug === config.product.slug) {
-          const specialistId =
-            parsed.kind === 'spec' ? 'spec-draft-reviewer' : 'plan-draft-reviewer';
           const outcome = await scheduleItemDispatch({
             productSlug: config.product.slug,
             externalId: parsed.externalId,
@@ -421,6 +420,18 @@ webhooksRouter.post('/webhooks/github', async (c) => {
               `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} — dispatch deferred: ${outcome.reason}`,
             );
           }
+        } else if (item?.productSlug === config.product.slug) {
+          await persistReviewDispatchIntent({
+            productSlug: config.product.slug,
+            externalId: parsed.externalId,
+            specialistId,
+            prNumber: event.prNumber,
+            targetRevision: event.headSha,
+            triggeredBy: `webhook:${parsed.kind}-pr-sync:awaiting-${expectedStage}`,
+          });
+          console.info(
+            `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} queued — stage '${item.currentStage}' (expected ${expectedStage})`,
+          );
         } else {
           console.info(
             `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} ignored — stage '${item?.currentStage ?? 'missing'}' (expected ${expectedStage})`,

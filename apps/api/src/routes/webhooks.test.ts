@@ -1277,6 +1277,86 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
+    it('queues spec-draft-reviewer when the spec PR opens before spec-draft', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { early_loop: { enabled: true } },
+      } as never);
+      const body = mergedPrPayload('helm/spec/LEA-192', {
+        action: 'opened',
+        merged: false,
+        prNumber: 81,
+        headSha: 'sha-spec-early-192',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'discovery',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-192',
+        specialistId: 'spec-draft-reviewer',
+        prNumber: 81,
+        targetRevision: 'sha-spec-early-192',
+        triggeredBy: 'webhook:spec-pr-sync:awaiting-spec-draft',
+      });
+    });
+
+    it('queues plan-draft-reviewer when the plan PR opens before plan-draft', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { early_loop: { enabled: true } },
+      } as never);
+      const body = mergedPrPayload('helm/plan/LEA-192', {
+        action: 'opened',
+        merged: false,
+        prNumber: 82,
+        headSha: 'sha-plan-early-192',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'spec-ready',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-192',
+        specialistId: 'plan-draft-reviewer',
+        prNumber: 82,
+        targetRevision: 'sha-plan-early-192',
+        triggeredBy: 'webhook:plan-pr-sync:awaiting-plan-draft',
+      });
+    });
+
     it('skips draft PR dispatch when the webhook repository does not match the knowledge repo', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({
         product: { slug: 'test-app', name: 'Test' },

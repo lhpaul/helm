@@ -1152,6 +1152,75 @@ describe('pending external review readiness cleanup', () => {
     });
     await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toBeNull();
   });
+
+  it('replays a queued plan-draft reviewer dispatch after the stage transition', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'plan-draft-reviewer',
+      prNumber: 43,
+      targetRevision: 'sha-webhook',
+      triggeredBy: 'webhook:plan-pr-sync:awaiting-plan-draft',
+    });
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'plan-draft',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockImplementation(
+      (_stage, specialistId) => specialistId as string | undefined,
+    );
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+    mockResolveOpenPrMetadataForRepo.mockResolvedValue({
+      headRef: 'helm/plan/LEA-1',
+      headSha: 'sha-live-plan',
+    });
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      job: {
+        jobId: '00000000-0000-4000-8000-000000000005',
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        specialistId: 'plan-draft-reviewer',
+        status: 'running',
+        targetRevision: 'sha-live-plan',
+        startedAt: '2026-07-22T10:00:00.000Z',
+      },
+    });
+
+    await runDispatchJob({ jobId: 'job-current' } as never, {
+      product: { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'plan-draft',
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot,
+      specialistId: 'plan-writer',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    expect(mockResolveOpenPrMetadataForRepo).toHaveBeenCalledWith({
+      repo: { owner: 'o', repo: 'k' },
+      prNumber: 43,
+      githubToken: 'token',
+    });
+    expect(mockCreateJobIfNoRunning).toHaveBeenCalledWith({
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'plan-draft-reviewer',
+      targetRevision: 'sha-live-plan',
+    });
+    await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toBeNull();
+  });
 });
 
 describe('runDispatchJob failure handling', () => {

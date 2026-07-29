@@ -1478,6 +1478,52 @@ describe('dispatchStageHandler > early-stage remediators', () => {
     );
   });
 
+  it('returns error when spec-draft reviewer cannot resolve an open draft PR', async () => {
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: true } };
+    vi.mocked(findArtifactPRUrl).mockResolvedValueOnce(null);
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-draft' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'tok', fetchFn: make404Fetch() },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe('no open spec PR found for issue_1 on helm/spec/issue_1');
+    expect(findArtifactPRUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'spec', externalId: 'issue_1', githubToken: 'tok' }),
+      undefined,
+    );
+    expect(fanoutReviewers).not.toHaveBeenCalled();
+  });
+
+  it('returns error when plan-draft reviewer PR lookup fails', async () => {
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: true } };
+    vi.mocked(findArtifactPRUrl).mockRejectedValueOnce(new Error('GitHub unavailable'));
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-draft' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'tok', fetchFn: make404Fetch() },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe('Failed to find plan PR');
+    expect(findArtifactPRUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'plan', externalId: 'issue_1', githubToken: 'tok' }),
+      undefined,
+    );
+    expect(fanoutReviewers).not.toHaveBeenCalled();
+  });
+
   it('does not run spec-draft-reviewer on spec-ready even when early_loop is enabled', async () => {
     const product = makeProduct();
     product.review = { early_loop: { enabled: true } };

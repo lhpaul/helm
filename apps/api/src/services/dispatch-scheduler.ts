@@ -224,6 +224,7 @@ export async function persistReviewDispatchIntent(input: {
 export async function resumePendingExternalReview(input: {
   productSlug: string;
   externalId: string;
+  specialistId?: string;
   provider: string;
   prNumber: number;
   targetRevision: string;
@@ -266,6 +267,7 @@ export async function resumePendingExternalReviewByRevision(input: {
 export async function clearPendingExternalReview(input: {
   productSlug: string;
   externalId?: string;
+  specialistId?: string;
   provider: string;
   prNumber?: number;
   targetRevision: string;
@@ -276,6 +278,7 @@ export async function clearPendingExternalReview(input: {
       ? await outbox.findPendingExternalReview({
           productSlug: input.productSlug,
           externalId: input.externalId,
+          specialistId: input.specialistId,
           provider: input.provider,
           prNumber: input.prNumber,
           targetRevision: input.targetRevision,
@@ -292,6 +295,7 @@ export async function clearPendingExternalReview(input: {
     kind: 'pending_external_review',
     updatedAt: intent.updatedAt,
     targetRevision: intent.targetRevision,
+    specialistId: intent.specialistId,
     provider: intent.provider,
     reason: intent.reason,
     prNumber: intent.prNumber,
@@ -323,6 +327,7 @@ async function finalizePendingExternalReviewResume(
     kind: 'pending_external_review' as const,
     updatedAt: intent.updatedAt,
     targetRevision: intent.targetRevision,
+    specialistId: intent.specialistId,
     provider: intent.provider,
     reason: intent.reason,
     prNumber: intent.prNumber,

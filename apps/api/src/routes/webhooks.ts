@@ -73,6 +73,14 @@ function stageForReviewReadiness(kind: ReviewReadinessArtifactKind): string {
   return 'code-review';
 }
 
+function specialistForReviewReadiness(
+  kind: ReviewReadinessArtifactKind,
+): 'reviewer-fanout' | 'spec-draft-reviewer' | 'plan-draft-reviewer' {
+  if (kind === 'spec') return 'spec-draft-reviewer';
+  if (kind === 'plan') return 'plan-draft-reviewer';
+  return 'reviewer-fanout';
+}
+
 function isBeforeWorkflowStage(currentStage: string | undefined, expectedStage: string): boolean {
   if (!currentStage) return false;
   const currentIndex = WORKFLOW_STAGES.indexOf(currentStage as WorkflowStage);
@@ -644,6 +652,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         await clearPendingExternalReview({
           productSlug: config.product.slug,
           externalId,
+          specialistId: specialistForReviewReadiness(artifactKind),
           provider: event.provider,
           prNumber: prNumber ?? undefined,
           targetRevision: event.targetRevision,
@@ -663,6 +672,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         : await resumePendingExternalReview({
             productSlug: config.product.slug,
             externalId,
+            specialistId: specialistForReviewReadiness(artifactKind),
             provider: event.provider,
             prNumber,
             targetRevision: event.targetRevision,

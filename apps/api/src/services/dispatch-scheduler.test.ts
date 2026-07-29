@@ -930,6 +930,122 @@ describe('pending external review readiness cleanup', () => {
     ).resolves.toBeNull();
   });
 
+  it('resumes concurrent spec and plan pending external reviews without clobbering either slot', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    const spec = await outbox.put({
+      kind: 'pending_external_review',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'spec-draft-reviewer',
+      provider: 'haystack',
+      reason: 'analysis_pending',
+      prNumber: 41,
+      targetRevision: 'sha-spec',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      triggeredBy: 'test:spec',
+    });
+    const plan = await outbox.put({
+      kind: 'pending_external_review',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'plan-draft-reviewer',
+      provider: 'haystack',
+      reason: 'analysis_pending',
+      prNumber: 42,
+      targetRevision: 'sha-plan',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      triggeredBy: 'test:plan',
+    });
+    let currentStage = 'spec-draft';
+    const get = vi.fn().mockImplementation(async () => ({
+      externalId: 'LEA-1',
+      productSlug: 'test-product',
+      currentStage,
+    }));
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({ get } as never);
+    vi.mocked(resolveSpecialistId).mockImplementation(
+      (_stage, specialistId) => specialistId as string | undefined,
+    );
+    mockCreateJobIfNoRunning
+      .mockResolvedValueOnce({
+        job: {
+          jobId: '00000000-0000-4000-8000-000000000041',
+          productSlug: 'test-product',
+          externalId: 'LEA-1',
+          specialistId: 'spec-draft-reviewer',
+          status: 'running',
+          targetRevision: 'sha-spec',
+          startedAt: '2026-07-22T10:00:00.000Z',
+        },
+      })
+      .mockResolvedValueOnce({
+        job: {
+          jobId: '00000000-0000-4000-8000-000000000042',
+          productSlug: 'test-product',
+          externalId: 'LEA-1',
+          specialistId: 'plan-draft-reviewer',
+          status: 'running',
+          targetRevision: 'sha-plan',
+          startedAt: '2026-07-22T10:01:00.000Z',
+        },
+      });
+
+    await expect(
+      resumePendingExternalReviewByRevision({
+        productSlug: 'test-product',
+        provider: 'haystack',
+        targetRevision: 'sha-spec',
+        triggeredBy: 'test:spec-ready',
+      }),
+    ).resolves.toEqual({
+      scheduled: true,
+      jobId: '00000000-0000-4000-8000-000000000041',
+      externalId: 'LEA-1',
+    });
+
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review', 'spec-draft-reviewer'),
+    ).resolves.toBeNull();
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review', 'plan-draft-reviewer'),
+    ).resolves.toEqual(plan);
+
+    currentStage = 'plan-draft';
+
+    await expect(
+      resumePendingExternalReviewByRevision({
+        productSlug: 'test-product',
+        provider: 'haystack',
+        targetRevision: 'sha-plan',
+        triggeredBy: 'test:plan-ready',
+      }),
+    ).resolves.toEqual({
+      scheduled: true,
+      jobId: '00000000-0000-4000-8000-000000000042',
+      externalId: 'LEA-1',
+    });
+
+    expect(mockCreateJobIfNoRunning).toHaveBeenNthCalledWith(1, {
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'spec-draft-reviewer',
+      targetRevision: 'sha-spec',
+    });
+    expect(mockCreateJobIfNoRunning).toHaveBeenNthCalledWith(2, {
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'plan-draft-reviewer',
+      targetRevision: 'sha-plan',
+    });
+    expect(spec.targetRevision).toBe('sha-spec');
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review', 'plan-draft-reviewer'),
+    ).resolves.toBeNull();
+  });
+
   it('infers the spec draft reviewer for legacy pending external reviews without a specialist', async () => {
     const { outbox } = await putPending('2099-01-01T00:00:00.000Z', 'reviewer-fanout', {
       omitSpecialistId: true,

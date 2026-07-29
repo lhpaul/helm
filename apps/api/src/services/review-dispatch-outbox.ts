@@ -53,6 +53,18 @@ function reviewDispatchFileName(externalId: string, specialistId?: string): stri
   return `${externalId}.json`;
 }
 
+function pendingExternalReviewFileName(externalId: string, specialistId?: string): string {
+  // External analysis deferrals are per artifact. A spec-draft and plan-draft
+  // review can be pending for the same item at the same time.
+  if (specialistId === 'spec-draft-reviewer') {
+    return `${externalId}.spec-draft-pending-external-review.json`;
+  }
+  if (specialistId === 'plan-draft-reviewer') {
+    return `${externalId}.plan-draft-pending-external-review.json`;
+  }
+  return `${externalId}.pending-external-review.json`;
+}
+
 export class ReviewDispatchOutbox {
   constructor(private readonly outboxDir: string) {}
 
@@ -63,11 +75,11 @@ export class ReviewDispatchOutbox {
     specialistId?: string,
   ): string {
     assertSafeIntentKey(productSlug, externalId);
-    // Separate files per kind so review_dispatch and pending_external_review
-    // cannot clobber each other under concurrent sync + defer.
+    // Separate files per kind and draft reviewer so concurrent sync + defer,
+    // spec-draft, and plan-draft review intents cannot clobber each other.
     const fileName =
       kind === 'pending_external_review'
-        ? `${externalId}.pending-external-review.json`
+        ? pendingExternalReviewFileName(externalId, specialistId)
         : reviewDispatchFileName(externalId, specialistId);
     return join(this.outboxDir, productSlug, fileName);
   }
@@ -135,6 +147,36 @@ export class ReviewDispatchOutbox {
     return intents;
   }
 
+  /** All pending external-review intents for an item (impl + draft specialist slots). */
+  async listPendingExternalReviews(
+    productSlug: string,
+    externalId: string,
+  ): Promise<PendingExternalReviewIntent[]> {
+    assertSafeIntentKey(productSlug, externalId);
+    const specialists = [undefined, 'spec-draft-reviewer', 'plan-draft-reviewer'] as const;
+    const intents: PendingExternalReviewIntent[] = [];
+    for (const specialistId of specialists) {
+      const intent = await this.get(
+        productSlug,
+        externalId,
+        'pending_external_review',
+        specialistId,
+      );
+      if (
+        intent?.kind === 'pending_external_review' &&
+        typeof intent.provider === 'string' &&
+        intent.reason === 'analysis_pending' &&
+        typeof intent.prNumber === 'number' &&
+        typeof intent.targetRevision === 'string' &&
+        typeof intent.createdAt === 'string' &&
+        typeof intent.expiresAt === 'string'
+      ) {
+        intents.push(intent as PendingExternalReviewIntent);
+      }
+    }
+    return intents;
+  }
+
   /**
    * Removes an intent only when the stored identity still matches `expected`.
    * Prevents a concurrent newer put from being deleted by a stale replay.
@@ -155,6 +197,9 @@ export class ReviewDispatchOutbox {
     if (!current) return false;
     if (current.updatedAt !== expected.updatedAt) return false;
     if ((current.targetRevision ?? null) !== (expected.targetRevision ?? null)) return false;
+    if (expected.specialistId !== undefined && current.specialistId !== expected.specialistId) {
+      return false;
+    }
     if (expected.provider !== undefined && current.provider !== expected.provider) return false;
     if (expected.reason !== undefined && current.reason !== expected.reason) return false;
     if (expected.prNumber !== undefined && current.prNumber !== expected.prNumber) return false;
@@ -190,6 +235,7 @@ export class ReviewDispatchOutbox {
         kind: 'pending_external_review',
         updatedAt: intent.updatedAt,
         targetRevision: intent.targetRevision,
+        specialistId: intent.specialistId,
         provider: intent.provider,
         reason: intent.reason,
         prNumber: intent.prNumber,
@@ -205,16 +251,48 @@ export class ReviewDispatchOutbox {
     provider: string;
     prNumber: number;
     targetRevision: string;
+    specialistId?: string;
   }): Promise<PendingExternalReviewIntent | null> {
-    const intent = await this.get(input.productSlug, input.externalId, 'pending_external_review');
-    if (!intent) return null;
-    if (intent.kind !== 'pending_external_review') return null;
-    if (intent.provider !== input.provider) return null;
-    if (intent.reason !== 'analysis_pending') return null;
-    if (intent.prNumber !== input.prNumber) return null;
-    if (intent.targetRevision !== input.targetRevision) return null;
-    if (!intent.createdAt || !intent.expiresAt) return null;
-    return intent as PendingExternalReviewIntent;
+    const candidates =
+      input.specialistId === undefined
+        ? await this.listPendingExternalReviews(input.productSlug, input.externalId)
+        : await this.findPendingExternalReviewCandidates(
+            input.productSlug,
+            input.externalId,
+            input.specialistId,
+          );
+    const matches = candidates.filter(
+      (intent) =>
+        intent.provider === input.provider &&
+        intent.reason === 'analysis_pending' &&
+        intent.prNumber === input.prNumber &&
+        intent.targetRevision === input.targetRevision,
+    );
+    return matches.length === 1 ? matches[0]! : null;
+  }
+
+  private async findPendingExternalReviewCandidates(
+    productSlug: string,
+    externalId: string,
+    specialistId: string,
+  ): Promise<PendingExternalReviewIntent[]> {
+    const specialistIntent = await this.get(
+      productSlug,
+      externalId,
+      'pending_external_review',
+      specialistId,
+    );
+    const shouldCheckLegacy =
+      specialistId === 'spec-draft-reviewer' || specialistId === 'plan-draft-reviewer';
+    const legacyIntent = shouldCheckLegacy
+      ? await this.get(productSlug, externalId, 'pending_external_review')
+      : null;
+    return [specialistIntent, legacyIntent].filter(
+      (intent): intent is PendingExternalReviewIntent =>
+        intent?.kind === 'pending_external_review' &&
+        typeof intent.createdAt === 'string' &&
+        typeof intent.expiresAt === 'string',
+    );
   }
 
   /**

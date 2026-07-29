@@ -721,6 +721,7 @@ export async function dispatchStageHandler(
       loadResolvedProductDecisions: options.loadResolvedProductDecisions,
       targetRevision: options.targetRevision,
       onExternalReviewDeferred: options.onExternalReviewDeferred,
+      externalReviewDeps: options.externalReviewDeps,
     });
 
     return {

@@ -1270,6 +1270,66 @@ describe('runCodeReviewLoop', () => {
     },
   );
 
+  it('remediates genuine external blockers when catalogued false positives coexist', async () => {
+    const builtInCatalog = builtInFalsePositiveEntries();
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        early_loop: { enabled: true },
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
+    };
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInCatalog);
+    vi.mocked(runExternalReviewIfConfigured)
+      .mockResolvedValueOnce({
+        status: 'needs_fixes',
+        blockers: [
+          {
+            id: 'adv-plan-missing',
+            severity: 'high',
+            blocking: true,
+            summary: 'plan file is missing while spec remains in spec-draft',
+            path: 'specs/issue_1.md',
+          },
+          {
+            id: 'real-blocker',
+            severity: 'high',
+            blocking: true,
+            summary: 'Spec omits the webhook persistence guard',
+            path: 'specs/issue_1.md',
+          },
+        ],
+        advisories: [],
+      })
+      .mockResolvedValueOnce({ status: 'skipped', reason: 'not_configured' });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(buildRemediationParams).toHaveBeenCalled();
+    expect(handleRemediationResult).toHaveBeenCalled();
+    const findingsByKind = vi.mocked(buildRemediationParams).mock.calls.at(-1)![4] as Map<
+      string,
+      string
+    >;
+    expect(findingsByKind.get('code')).toContain('Spec omits the webhook persistence guard');
+    expect(findingsByKind.get('code')).not.toContain(
+      'plan file is missing while spec remains in spec-draft',
+    );
+  });
+
   it('escalates when review-adjudicator requires human input (ADR-037)', async () => {
     const product: Product = {
       ...baseProduct,

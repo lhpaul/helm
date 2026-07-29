@@ -1424,13 +1424,14 @@ describe('dispatchStageHandler > early-stage remediators', () => {
     product.review = { early_loop: { enabled: true } };
     vi.mocked(shouldRemediate).mockReturnValue(false);
     const runtime = new MockAgentRuntime({ messages: [] });
+    const externalReviewDeps = { runHaystack: vi.fn() };
 
     const result = await dispatchStageHandler(
       { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-draft' },
       product,
       runtime,
       transition as ItemTransitionFn,
-      { workdir, githubToken: 'tok', fetchFn: make404Fetch() },
+      { workdir, githubToken: 'tok', fetchFn: make404Fetch(), externalReviewDeps },
     );
 
     expect(result.specialistId).toBe('spec-draft-reviewer');
@@ -1452,6 +1453,12 @@ describe('dispatchStageHandler > early-stage remediators', () => {
       { url: 'https://github.com/test-org/test-knowledge', default_branch: 'main', role: 'docs' },
       'helm/spec/issue_1',
     );
+    expect(runExternalReviewIfConfigured).toHaveBeenCalledWith(
+      product,
+      'https://github.com/test-org/test-knowledge/pull/7',
+      externalReviewDeps,
+      undefined,
+    );
     expect(transition).not.toHaveBeenCalled();
     expect(runEarlyRemediation).not.toHaveBeenCalled();
   });
@@ -1461,19 +1468,26 @@ describe('dispatchStageHandler > early-stage remediators', () => {
     product.review = { early_loop: { enabled: true } };
     vi.mocked(shouldRemediate).mockReturnValue(false);
     const runtime = new MockAgentRuntime({ messages: [] });
+    const externalReviewDeps = { runHaystack: vi.fn() };
 
     const result = await dispatchStageHandler(
       { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-draft' },
       product,
       runtime,
       transition as ItemTransitionFn,
-      { workdir, githubToken: 'tok', fetchFn: make404Fetch() },
+      { workdir, githubToken: 'tok', fetchFn: make404Fetch(), externalReviewDeps },
     );
 
     expect(result.specialistId).toBe('plan-draft-reviewer');
     expect(result.status).toBe('done');
     expect(findArtifactPRUrl).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'plan' }),
+      undefined,
+    );
+    expect(runExternalReviewIfConfigured).toHaveBeenCalledWith(
+      product,
+      'https://github.com/test-org/test-knowledge/pull/7',
+      externalReviewDeps,
       undefined,
     );
   });

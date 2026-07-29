@@ -450,27 +450,31 @@ webhooksRouter.post('/webhooks/github', async (c) => {
               triggeredBy: `webhook:${parsed.kind}-pr-sync`,
             });
             if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+              if (event.headSha || event.prNumber !== undefined) {
+                await persistReviewDispatchIntent({
+                  productSlug: config.product.slug,
+                  externalId: parsed.externalId,
+                  specialistId,
+                  prNumber: event.prNumber,
+                  targetRevision: event.headSha,
+                  triggeredBy: `webhook:${parsed.kind}-pr-sync`,
+                });
+              }
+              console.info(
+                `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} — dispatch deferred: ${outcome.reason}`,
+              );
+            }
+          } else if (item?.productSlug === config.product.slug) {
+            if (event.headSha || event.prNumber !== undefined) {
               await persistReviewDispatchIntent({
                 productSlug: config.product.slug,
                 externalId: parsed.externalId,
                 specialistId,
                 prNumber: event.prNumber,
                 targetRevision: event.headSha,
-                triggeredBy: `webhook:${parsed.kind}-pr-sync`,
+                triggeredBy: `webhook:${parsed.kind}-pr-sync:awaiting-${expectedStage}`,
               });
-              console.info(
-                `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} — dispatch deferred: ${outcome.reason}`,
-              );
             }
-          } else if (item?.productSlug === config.product.slug) {
-            await persistReviewDispatchIntent({
-              productSlug: config.product.slug,
-              externalId: parsed.externalId,
-              specialistId,
-              prNumber: event.prNumber,
-              targetRevision: event.headSha,
-              triggeredBy: `webhook:${parsed.kind}-pr-sync:awaiting-${expectedStage}`,
-            });
             console.info(
               `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} queued — stage '${item.currentStage}' (expected ${expectedStage})`,
             );

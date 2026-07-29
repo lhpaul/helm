@@ -1132,6 +1132,77 @@ describe('runCodeReviewLoop', () => {
     );
   });
 
+  it.each([
+    {
+      kind: 'spec' as const,
+      id: 'adv-plan-missing',
+      summary: 'plan file is missing while spec remains in spec-draft',
+    },
+    {
+      kind: 'plan' as const,
+      id: 'adv-pair-sequencing',
+      summary: 'pair-spec-and-plan-files sequencing',
+    },
+  ])(
+    'suppresses sequential $kind-draft external blockers before remediation',
+    async ({ kind, id, summary }) => {
+      const builtInCatalog = builtInFalsePositiveEntries();
+      const product: Product = {
+        ...baseProduct,
+        review: {
+          early_loop: { enabled: true },
+          external: {
+            provider: 'haystack',
+            haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+          },
+        },
+      };
+      vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInCatalog);
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'needs_fixes',
+        blockers: [
+          {
+            id,
+            severity: 'high',
+            blocking: true,
+            summary,
+            path: kind === 'spec' ? 'specs/issue_1.md' : 'plans/issue_1.md',
+          },
+        ],
+        advisories: [],
+      });
+
+      const result = await runEarlyArtifactReviewLoop({
+        kind,
+        externalId: 'issue_1',
+        product,
+        prUrl: 'https://github.com/o/k/pull/7',
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      expect(result.status).toBe('done');
+      expect(buildRemediationParams).not.toHaveBeenCalled();
+      expect(handleRemediationResult).not.toHaveBeenCalled();
+      expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prUrl: 'https://github.com/o/k/pull/7',
+          stage: kind === 'spec' ? 'spec-draft' : 'plan-draft',
+          catalog: builtInCatalog,
+          advisories: [
+            expect.objectContaining({
+              id,
+              summary,
+              blocking: false,
+            }),
+          ],
+        }),
+      );
+    },
+  );
+
   it('escalates when review-adjudicator requires human input (ADR-037)', async () => {
     const product: Product = {
       ...baseProduct,

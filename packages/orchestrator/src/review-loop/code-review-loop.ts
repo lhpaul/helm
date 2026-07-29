@@ -36,7 +36,7 @@ import { postPRComment } from '../specialists/pr-helpers.js';
 import { resolveReviewLoopConfig, type ReviewLoopConfig } from './config.js';
 import { formatReviewLoopEscalationComment } from './escalation-comment.js';
 import { evaluateExternalReviewStopRule } from './external-stop-rule.js';
-import { fetchFalsePositivesCatalog } from './false-positives.js';
+import { fetchFalsePositivesCatalog, type FalsePositiveEntry } from './false-positives.js';
 import { upsertReviewLoopSummaryComment } from './summary.js';
 import {
   countBlockingFindings,
@@ -202,6 +202,49 @@ async function postReviewLoopSummaryBestEffort(
   } catch {
     // Best-effort — clean loop exit is still valid without the summary comment.
   }
+}
+
+function stageForLoopParams(params: RunCodeReviewLoopParams): WorkflowStage {
+  if (params.mode !== 'early-artifact') return 'code-review';
+  return params.kind === 'spec' ? 'spec-draft' : 'plan-draft';
+}
+
+function findFalsePositiveMatch(
+  finding: NormalizedFinding,
+  catalog: FalsePositiveEntry[],
+  stage: WorkflowStage,
+): FalsePositiveEntry | undefined {
+  return catalog.find(
+    (entry) =>
+      (entry.appliesTo === undefined || entry.appliesTo.includes(stage)) &&
+      entry.matchesSummary(finding.summary),
+  );
+}
+
+async function suppressFalsePositiveExternalFindings(
+  params: RunCodeReviewLoopParams,
+  findings: NormalizedFinding[],
+): Promise<{ blockers: NormalizedFinding[]; suppressed: NormalizedFinding[] }> {
+  if (findings.length === 0) return { blockers: [], suppressed: [] };
+
+  const stage = stageForLoopParams(params);
+  const catalog = await fetchFalsePositivesCatalog(
+    params.product,
+    params.githubToken,
+    params.fetchFn,
+  );
+  const blockers: NormalizedFinding[] = [];
+  const suppressed: NormalizedFinding[] = [];
+
+  for (const finding of findings) {
+    if (findFalsePositiveMatch(finding, catalog, stage)) {
+      suppressed.push({ ...finding, blocking: false });
+    } else {
+      blockers.push(finding);
+    }
+  }
+
+  return { blockers, suppressed };
 }
 
 type ExternalReviewLoopOutcome =
@@ -520,8 +563,31 @@ export async function runCodeReviewLoop(
     const external = externalOutcome.external;
 
     if (external.status === 'needs_fixes') {
-      const blockerCount = external.blockers.length;
-      const currentFingerprints = new Set(external.blockers.map((finding) => finding.id));
+      const { blockers, suppressed } = await suppressFalsePositiveExternalFindings(
+        params,
+        external.blockers,
+      );
+      if (blockers.length === 0) {
+        if (suppressed.length > 0 || external.advisories.length > 0) {
+          await postReviewLoopSummaryBestEffort(params, {
+            cyclesCompleted: cycle,
+            advisories: [...suppressed, ...external.advisories],
+            stage: stageForLoopParams(params),
+            externalProvider: params.product.review?.external?.provider,
+          });
+        }
+        return {
+          status: 'done',
+          prUrl: fanout.prUrl,
+          costUsd: totalCost,
+          durationMs: maxDuration,
+          cyclesCompleted: cycle,
+          newStage: ranRemediation && params.mode !== 'early-artifact' ? 'code-review' : undefined,
+        };
+      }
+
+      const blockerCount = blockers.length;
+      const currentFingerprints = new Set(blockers.map((finding) => finding.id));
       const stickyRemaining = observeStickyLane(externalSticky, currentFingerprints);
       noProgressStreak = nextNoProgressStreak(
         bestBlockerCount,
@@ -559,7 +625,7 @@ export async function runCodeReviewLoop(
         fanoutResult: fanout,
         totalCost,
         maxDuration,
-        externalFindingsBody: formatExternalBlockersForRemediation(external.blockers),
+        externalFindingsBody: formatExternalBlockersForRemediation(blockers),
         loopConfig,
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,

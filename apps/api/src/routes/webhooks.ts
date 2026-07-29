@@ -23,6 +23,7 @@ import { createItem, transitionItem } from '../services/item-service.js';
 import {
   scheduleItemDispatch,
   persistReviewDispatchIntent,
+  replayPendingReviewDispatchForItem,
   peekPendingExternalReviewByRevision,
   clearPendingExternalReview,
   resumePendingExternalReview,
@@ -184,6 +185,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
     }
   } else if (event.type === 'item_updated' && event.subStage != null) {
     try {
+      const config = await getProductConfig();
       // transitionItem applies writeback, but webhook:github-projects is
       // tracker-originated → anti-echo skips it, preventing a tracker→store→
       // tracker echo loop.
@@ -191,6 +193,11 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         externalId: event.externalId,
         toStage: event.subStage,
         triggeredBy: 'webhook:github-projects',
+      });
+      await replayPendingReviewDispatchForItem({
+        product: config,
+        productSlug: config.product.slug,
+        externalId: event.externalId,
       });
     } catch (err) {
       if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
@@ -727,6 +734,11 @@ webhooksRouter.post('/webhooks/linear', async (c) => {
         externalId: event.externalId,
         toStage: event.subStage,
         triggeredBy: 'webhook:linear',
+      });
+      await replayPendingReviewDispatchForItem({
+        product: config,
+        productSlug: config.product.slug,
+        externalId: event.externalId,
       });
     } catch (err) {
       if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {

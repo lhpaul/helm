@@ -5,14 +5,31 @@ import { _resetForTests } from '../services/index.js';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-const { mockParseWebhook, mockCreate, mockTransition, mockSetSubStage, mockEnsureSubStages } =
-  vi.hoisted(() => ({
-    mockParseWebhook: vi.fn(),
-    mockCreate: vi.fn(),
-    mockTransition: vi.fn(),
-    mockSetSubStage: vi.fn(),
-    mockEnsureSubStages: vi.fn(),
-  }));
+const {
+  mockParseWebhook,
+  mockCreate,
+  mockTransition,
+  mockSetSubStage,
+  mockEnsureSubStages,
+  mockReplayPendingReviewDispatchForItem,
+} = vi.hoisted(() => ({
+  mockParseWebhook: vi.fn(),
+  mockCreate: vi.fn(),
+  mockTransition: vi.fn(),
+  mockSetSubStage: vi.fn(),
+  mockEnsureSubStages: vi.fn(),
+  mockReplayPendingReviewDispatchForItem: vi.fn(),
+}));
+
+vi.mock('../services/dispatch-scheduler.js', () => ({
+  scheduleItemDispatch: vi.fn(),
+  persistReviewDispatchIntent: vi.fn(),
+  replayPendingReviewDispatchForItem: mockReplayPendingReviewDispatchForItem,
+  peekPendingExternalReviewByRevision: vi.fn(),
+  clearPendingExternalReview: vi.fn(),
+  resumePendingExternalReview: vi.fn(),
+  resumePendingExternalReviewByRevision: vi.fn(),
+}));
 
 vi.mock('../services/index.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../services/index.js')>();
@@ -60,6 +77,7 @@ describe('POST /api/webhooks/linear', () => {
     _resetForTests();
     vi.clearAllMocks();
     process.env.LINEAR_WEBHOOK_SECRET = TEST_SECRET;
+    mockReplayPendingReviewDispatchForItem.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -165,6 +183,25 @@ describe('POST /api/webhooks/linear', () => {
       // Anti-echo (ADR-033): a Linear-originated transition (webhook:linear) must
       // NOT be written back to Linear.
       expect(mockSetSubStage).not.toHaveBeenCalled();
+    });
+
+    it('replays pending draft review dispatch after a Linear stage transition', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'item_updated',
+        externalId: 'MOM-5',
+        subStage: 'plan-draft',
+        timestamp: 't',
+      });
+      mockTransition.mockResolvedValue({ history: [], currentStage: 'plan-draft' });
+
+      const res = await post(body);
+      expect(res.status).toBe(200);
+      expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalledWith({
+        product: expect.objectContaining({ product: { slug: 'mome', name: 'MOME' } }),
+        productSlug: 'mome',
+        externalId: 'MOM-5',
+      });
     });
 
     it('returns 200 on WorkflowTransitionError (not a delivery problem)', async () => {

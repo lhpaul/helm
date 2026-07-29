@@ -21,6 +21,7 @@ const {
   mockEnsureSubStages,
   mockScheduleItemDispatch,
   mockPersistReviewDispatchIntent,
+  mockReplayPendingReviewDispatchForItem,
   mockPeekPendingExternalReviewByRevision,
   mockClearPendingExternalReview,
   mockResumePendingExternalReview,
@@ -41,6 +42,7 @@ const {
   mockEnsureSubStages: vi.fn(),
   mockScheduleItemDispatch: vi.fn(),
   mockPersistReviewDispatchIntent: vi.fn(),
+  mockReplayPendingReviewDispatchForItem: vi.fn(),
   mockPeekPendingExternalReviewByRevision: vi.fn(),
   mockClearPendingExternalReview: vi.fn(),
   mockResumePendingExternalReview: vi.fn(),
@@ -55,6 +57,7 @@ const {
 vi.mock('../services/dispatch-scheduler.js', () => ({
   scheduleItemDispatch: mockScheduleItemDispatch,
   persistReviewDispatchIntent: mockPersistReviewDispatchIntent,
+  replayPendingReviewDispatchForItem: mockReplayPendingReviewDispatchForItem,
   peekPendingExternalReviewByRevision: mockPeekPendingExternalReviewByRevision,
   clearPendingExternalReview: mockClearPendingExternalReview,
   resumePendingExternalReview: mockResumePendingExternalReview,
@@ -340,6 +343,7 @@ describe('POST /api/webhooks/github', () => {
     mockSetSubStage.mockResolvedValue(undefined);
     mockScheduleItemDispatch.mockResolvedValue({ scheduled: true, jobId: 'job-sync-1' });
     mockPersistReviewDispatchIntent.mockResolvedValue(undefined);
+    mockReplayPendingReviewDispatchForItem.mockResolvedValue(undefined);
     mockPeekPendingExternalReviewByRevision.mockResolvedValue(null);
     mockResumePendingExternalReview.mockResolvedValue({ scheduled: true, jobId: 'job-resume-1' });
     mockResumePendingExternalReviewByRevision.mockResolvedValue({
@@ -459,6 +463,25 @@ describe('POST /api/webhooks/github', () => {
       // (webhook:github-projects), so it must NOT be written back — otherwise it
       // would loop tracker → store → tracker.
       expect(mockSetSubStage).not.toHaveBeenCalled();
+    });
+
+    it('replays pending draft review dispatch after a tracker stage transition', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'item_updated',
+        externalId: 'issue_5',
+        subStage: 'spec-draft',
+        timestamp: 't',
+      });
+      mockTransition.mockResolvedValue({ history: [], currentStage: 'spec-draft' });
+
+      const res = await post(body, 'projects_v2_item');
+      expect(res.status).toBe(200);
+      expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalledWith({
+        product: expect.objectContaining({ product: { slug: 'test-app', name: 'Test' } }),
+        productSlug: 'test-app',
+        externalId: 'issue_5',
+      });
     });
 
     it('returns 200 on WorkflowTransitionError (not a delivery problem)', async () => {

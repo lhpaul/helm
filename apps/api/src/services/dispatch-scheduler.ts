@@ -393,6 +393,21 @@ async function replayPendingReviewDispatch(input: {
   }
 }
 
+/** Replay a parked review dispatch after an external state transition. */
+export async function replayPendingReviewDispatchForItem(input: {
+  product: Product;
+  productSlug: string;
+  externalId: string;
+}): Promise<void> {
+  await replayPendingReviewDispatch({
+    product: input.product,
+    productSlug: input.productSlug,
+    externalId: input.externalId,
+    dataRoot: dataRootFromEnv(),
+    githubToken: readGitHubTokenFromEnv(),
+  });
+}
+
 async function scheduleReviewAfterImplementerCompletion(input: {
   product: Product;
   item: ItemState;

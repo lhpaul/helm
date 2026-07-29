@@ -351,6 +351,27 @@ async function finalizePendingExternalReviewResume(
     return outcome;
   }
 
+  // Draft external readiness arrived before the item reached the matching
+  // draft stage. Re-park a review_dispatch intent so the next stage-transition
+  // replay can resume instead of leaving the pending_external_review stranded
+  // until expiry.
+  if (outcome.reason === DRAFT_REVIEWER_NOT_YET_APPLICABLE) {
+    await persistPendingReviewDispatch({
+      dataRoot: dataRootFromEnv(),
+      productSlug: intent.productSlug,
+      externalId: intent.externalId,
+      specialistId,
+      prNumber: intent.prNumber,
+      targetRevision: intent.targetRevision,
+      triggeredBy: `${triggeredBy}:awaiting-draft-stage`,
+    });
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
+    return {
+      scheduled: false,
+      reason: 'Draft reviewer not yet applicable — queued review dispatch for stage transition',
+    };
+  }
+
   // Readiness arrived while another job is still running (often the deferred
   // job exiting). Park a review_dispatch intent so the post-job replay path
   // schedules fanout after the conflict clears — do not drop the signal.

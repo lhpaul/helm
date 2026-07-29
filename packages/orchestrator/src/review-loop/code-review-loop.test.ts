@@ -1255,6 +1255,10 @@ describe('runCodeReviewLoop', () => {
       kind: 'plan' as const,
       summary: 'pair-spec-and-plan-files sequencing',
     },
+    {
+      kind: 'plan' as const,
+      summary: 'spec file is missing while plan remains in plan-draft',
+    },
   ])(
     'suppresses sequential $kind-draft reviewer findings before remediation',
     async ({ kind, summary }) => {
@@ -1449,6 +1453,11 @@ describe('runCodeReviewLoop', () => {
       kind: 'plan' as const,
       id: 'adv-pair-sequencing',
       summary: 'pair-spec-and-plan-files sequencing',
+    },
+    {
+      kind: 'plan' as const,
+      id: 'adv-spec-missing',
+      summary: 'spec file is missing while plan remains in plan-draft',
     },
   ])(
     'suppresses sequential $kind-draft external blockers before remediation',

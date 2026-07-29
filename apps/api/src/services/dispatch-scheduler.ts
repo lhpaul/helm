@@ -438,6 +438,35 @@ async function replayOnePendingReviewDispatch(input: {
       targetRevision: intent.targetRevision,
       specialistId: intent.specialistId,
     });
+  const reparkDraftIntent = async (updatedTargetRevision: string) => {
+    if (!isDraftReviewSpecialist(replaySpecialist)) return;
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: intent.productSlug,
+      externalId: intent.externalId,
+      specialistId: replaySpecialist,
+      prNumber: intent.prNumber,
+      targetRevision: updatedTargetRevision,
+      triggeredBy: `outbox:${intent.triggeredBy}:awaiting-draft-stage`,
+    });
+    await removeIntent();
+  };
+  const handleReplayOutcome = async (
+    outcome: ScheduleItemDispatchResult,
+    updatedTargetRevision: string,
+  ) => {
+    if (
+      outcome.scheduled ||
+      outcome.reason === 'Duplicate target revision' ||
+      outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
+    ) {
+      await removeIntent();
+      return;
+    }
+    if (outcome.reason === DRAFT_REVIEWER_NOT_YET_APPLICABLE) {
+      await reparkDraftIntent(updatedTargetRevision);
+    }
+  };
 
   let targetRevision = intent.targetRevision;
   const replaySpecialist = await resolveReviewDispatchReplaySpecialist(intent);
@@ -486,13 +515,7 @@ async function replayOnePendingReviewDispatch(input: {
           prNumber: intent.prNumber,
           triggeredBy: `outbox:${intent.triggeredBy}`,
         });
-        if (
-          outcome.scheduled ||
-          outcome.reason === 'Duplicate target revision' ||
-          outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
-        ) {
-          await removeIntent();
-        }
+        await handleReplayOutcome(outcome, targetRevision);
         return;
       } else {
         if (!targetRevision) return;
@@ -504,13 +527,7 @@ async function replayOnePendingReviewDispatch(input: {
           prNumber: intent.prNumber,
           triggeredBy: `outbox:${intent.triggeredBy}`,
         });
-        if (
-          outcome.scheduled ||
-          outcome.reason === 'Duplicate target revision' ||
-          outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
-        ) {
-          await removeIntent();
-        }
+        await handleReplayOutcome(outcome, targetRevision);
         return;
       }
     }
@@ -542,13 +559,7 @@ async function replayOnePendingReviewDispatch(input: {
     prNumber: intent.prNumber,
     triggeredBy: `outbox:${intent.triggeredBy}`,
   });
-  if (
-    outcome.scheduled ||
-    outcome.reason === 'Duplicate target revision' ||
-    outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
-  ) {
-    await removeIntent();
-  }
+  await handleReplayOutcome(outcome, targetRevision);
 }
 
 /** Replay a parked review dispatch after an external state transition. */

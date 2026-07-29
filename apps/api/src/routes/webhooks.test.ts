@@ -2228,6 +2228,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockResumePendingExternalReview).toHaveBeenCalledWith({
         productSlug: 'test-app',
         externalId: 'issue_42',
+        specialistId: 'reviewer-fanout',
         provider: 'haystack',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -2263,6 +2264,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockResumePendingExternalReview).toHaveBeenCalledWith({
         productSlug: 'test-app',
         externalId: 'issue_42',
+        specialistId: 'reviewer-fanout',
         provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -2366,6 +2368,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockResumePendingExternalReview).toHaveBeenCalledWith({
         productSlug: 'test-app',
         externalId: 'issue_42',
+        specialistId: 'reviewer-fanout',
         provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -2534,6 +2537,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockResumePendingExternalReview).toHaveBeenCalledWith({
         productSlug: 'test-app',
         externalId: 'issue_42',
+        specialistId: 'spec-draft-reviewer',
         provider: 'haystack',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -2742,6 +2746,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockClearPendingExternalReview).toHaveBeenCalledWith({
         productSlug: 'test-app',
         externalId: 'issue_42',
+        specialistId: 'reviewer-fanout',
         provider: 'haystack',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -2825,6 +2830,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockClearPendingExternalReview).toHaveBeenCalledWith({
         productSlug: 'test-app',
         externalId: 'issue_42',
+        specialistId: 'reviewer-fanout',
         provider: 'haystack',
         prNumber: 42,
         targetRevision: 'sha-42',

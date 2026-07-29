@@ -1642,7 +1642,7 @@ describe('pending external review readiness cleanup', () => {
     ).resolves.toBeNull();
   });
 
-  it('retains parked draft intents when replayed before the item reaches the draft stage', async () => {
+  it('re-parks draft intents with live PR metadata when replayed before the draft stage', async () => {
     const outbox = await getReviewDispatchOutbox(dataRoot);
     await outbox.put({
       kind: 'review_dispatch',
@@ -1668,7 +1668,7 @@ describe('pending external review readiness cleanup', () => {
     );
     mockResolveOpenPrMetadataForRepo.mockResolvedValue({
       headRef: 'helm/spec/LEA-1',
-      headSha: 'sha-awaiting',
+      headSha: 'sha-awaiting-live',
     });
 
     await runDispatchJob({ jobId: 'job-current' } as never, {
@@ -1690,7 +1690,8 @@ describe('pending external review readiness cleanup', () => {
       outbox.get('test-product', 'LEA-1', 'review_dispatch', 'spec-draft-reviewer'),
     ).resolves.toMatchObject({
       specialistId: 'spec-draft-reviewer',
-      targetRevision: 'sha-awaiting',
+      targetRevision: 'sha-awaiting-live',
+      triggeredBy: 'outbox:webhook:spec-pr-sync:awaiting-spec-draft:awaiting-draft-stage',
     });
   });
 

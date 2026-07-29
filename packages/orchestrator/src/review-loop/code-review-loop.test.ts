@@ -1305,6 +1305,67 @@ describe('runCodeReviewLoop', () => {
     },
   );
 
+  it('still remediates a sequential-artifact-looking reviewer finding in code-review mode', async () => {
+    const builtInCatalog = builtInFalsePositiveEntries();
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInCatalog);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(
+        makeFanout(
+          {
+            reviewerResults: [
+              {
+                kind: 'code',
+                status: 'done',
+                costUsd: 0.01,
+                durationMs: 50,
+                commentPosted: true,
+                findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+                commentBody:
+                  '# Code Review\n\n## Findings\n- **HIGH** · pair-spec-and-plan-files sequencing\n\n## Status\nCHANGES_REQUESTED',
+              },
+            ],
+          },
+          undefined,
+        ),
+      )
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+    vi.mocked(shouldRemediate).mockImplementation((results) =>
+      results.some(
+        (result) =>
+          result.findings !== undefined &&
+          result.findings.critical + result.findings.high + result.findings.medium > 0,
+      ),
+    );
+
+    const result = await runCodeReviewLoop({
+      externalId: 'issue_1',
+      product: baseProduct,
+      prUrl: PR_URL,
+      codeRepo: baseProduct.code_repos[0]!,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(shouldRemediate).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+          commentBody: expect.stringContaining('**HIGH** · pair-spec-and-plan-files sequencing'),
+        }),
+      ],
+      'critical_high',
+    );
+    expect(buildRemediationParams).toHaveBeenCalled();
+    const findingsByKind = vi.mocked(buildRemediationParams).mock.calls[0]![4] as Map<
+      string,
+      string
+    >;
+    expect(findingsByKind.get('code')).toContain('pair-spec-and-plan-files sequencing');
+  });
+
   it.each([
     {
       kind: 'spec' as const,

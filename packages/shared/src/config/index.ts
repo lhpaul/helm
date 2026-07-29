@@ -1,4 +1,9 @@
-export { ProductSchema } from './product-schema.js';
+export {
+  DEFAULT_BUGBOT_BLOCKING_SEVERITIES,
+  DEFAULT_BUGBOT_CHECK_NAMES,
+  DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES,
+  ProductSchema,
+} from './product-schema.js';
 export type { Product, IssueTracker, CodeRepo, Specialist } from './product-schema.js';
 export {
   parseProductConfig,

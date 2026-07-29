@@ -1,5 +1,6 @@
 import type { Product } from '@helm/shared';
 import { parseGitHubRepoUrl } from '../specialists/fetch-product-context.js';
+import { createBugbotExternalReviewAdapter, type BugbotAdapterDeps } from './bugbot/adapter.js';
 import {
   createHaystackExternalReviewAdapter,
   type HaystackAdapterDeps,
@@ -15,7 +16,7 @@ export function parsePullRequestRef(
   return { owner: match[1]!, repo: match[2]!, prNumber: Number(match[3]) };
 }
 
-export type RunExternalReviewDeps = HaystackAdapterDeps;
+export type RunExternalReviewDeps = HaystackAdapterDeps & BugbotAdapterDeps;
 
 /**
  * Runs the configured external reviewer when `review.external.provider` is set.
@@ -24,6 +25,7 @@ export async function runExternalReviewIfConfigured(
   product: Product,
   prUrl: string,
   deps?: RunExternalReviewDeps,
+  targetRevision?: string,
 ): Promise<ExternalReviewResult> {
   const provider = product.review?.external?.provider;
   if (!provider) {
@@ -47,10 +49,16 @@ export async function runExternalReviewIfConfigured(
     prNumber: prRef.prNumber,
     prUrl,
     defaultBranch: codeRepo.default_branch,
+    ...(targetRevision ? { targetRevision } : {}),
   };
 
   if (provider === 'haystack') {
     const adapter = createHaystackExternalReviewAdapter(product, deps);
+    return adapter.reviewPullRequest(ctx);
+  }
+
+  if (provider === 'bugbot') {
+    const adapter = createBugbotExternalReviewAdapter(product, deps);
     return adapter.reviewPullRequest(ctx);
   }
 

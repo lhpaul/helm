@@ -15,6 +15,7 @@ export type ExternalReviewContext = {
   prNumber: number;
   prUrl: string;
   defaultBranch: string;
+  targetRevision?: string;
 };
 
 export type ExternalReviewResult =

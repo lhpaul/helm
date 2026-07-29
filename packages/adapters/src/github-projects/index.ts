@@ -8,3 +8,4 @@ export {
 } from './errors.js';
 export { verifyGitHubSignature } from './webhook-signature.js';
 export { parseGitHubWebhook } from './webhook-parser.js';
+export type { ExternalReviewWebhookTrustConfig } from './webhook-parser.js';

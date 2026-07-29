@@ -2098,6 +2098,49 @@ describe('runCodeReviewLoop', () => {
     },
   );
 
+  it.each([
+    { kind: 'spec' as const, branchName: 'helm/spec/issue_1', expectedPath: 'specs/issue_1.md' },
+    { kind: 'plan' as const, branchName: 'helm/plan/issue_1', expectedPath: 'plans/issue_1.md' },
+  ])(
+    'fails closed when the checked-out $kind draft artifact is missing',
+    async ({ kind, branchName, expectedPath }) => {
+      const workspacePath = await mkdtemp(join(tmpdir(), `helm-${kind}-draft-missing-`));
+      tempDirs.push(workspacePath);
+      vi.mocked(provisionReviewerWorkspace).mockResolvedValue({
+        workspacePath,
+        branchName,
+        artifactsPath: `${workspacePath}-artifacts`,
+      });
+      vi.mocked(shouldRemediate).mockReturnValue(true);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const result = await runEarlyArtifactReviewLoop({
+          kind,
+          externalId: 'issue_1',
+          product: productWithAdjudicator(),
+          prUrl: PR_URL,
+          githubToken: 'token',
+          runtime: new MockAgentRuntime({ messages: [] }),
+          transition: transition as ItemTransitionFn,
+          runGit,
+        });
+
+        expect(result.status).toBe('error');
+        expect(result.error).toBe('Review adjudication failed');
+        expect(buildReviewAdjudicatorParams).not.toHaveBeenCalled();
+        expect(handleReviewAdjudicatorResult).not.toHaveBeenCalled();
+        expect(consoleSpy).toHaveBeenCalledWith(
+          '[code-review-loop] Review adjudication failed:',
+          `Draft ${kind} artifact not found at ${expectedPath}`,
+        );
+      } finally {
+        consoleSpy.mockRestore();
+      }
+    },
+  );
+
   it('fails runAdjudicationPass when fetchSpecForPlan throws a non-ENOENT error', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());

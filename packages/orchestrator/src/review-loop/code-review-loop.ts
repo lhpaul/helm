@@ -933,17 +933,16 @@ async function runAdjudicationPass(input: {
         }
       | undefined;
     if (input.mode === 'early-artifact' && input.kind) {
+      const artifactRelPath =
+        input.kind === 'spec' ? `specs/${input.externalId}.md` : `plans/${input.externalId}.md`;
       try {
-        const artifactRelPath =
-          input.kind === 'spec' ? `specs/${input.externalId}.md` : `plans/${input.externalId}.md`;
         draftArtifact = {
           kind: input.kind,
           content: await readFile(join(workspacePath, artifactRelPath), 'utf-8'),
         };
       } catch (err) {
-        if (!isEnoentError(err)) {
-          throw err;
-        }
+        if (!isEnoentError(err)) throw err;
+        throw new Error(`Draft ${input.kind} artifact not found at ${artifactRelPath}`);
       }
     } else {
       try {

@@ -89,6 +89,12 @@ function looksLikeImplReviewTrigger(triggeredBy: string | undefined): boolean {
   );
 }
 
+function isDraftReviewSpecialist(
+  specialistId: string | undefined,
+): specialistId is 'spec-draft-reviewer' | 'plan-draft-reviewer' {
+  return specialistId === 'spec-draft-reviewer' || specialistId === 'plan-draft-reviewer';
+}
+
 async function inferPendingReviewSpecialist(input: {
   productSlug: string;
   externalId: string;
@@ -375,6 +381,16 @@ async function replayOnePendingReviewDispatch(input: {
 
   let targetRevision = intent.targetRevision;
   let replaySpecialist = await resolveReviewDispatchReplaySpecialist(intent);
+  if (
+    isDraftReviewSpecialist(replaySpecialist) &&
+    input.product.review?.early_loop?.enabled !== true
+  ) {
+    console.info(
+      `[dispatch-scheduler] pending replay skipped — ${replaySpecialist} requires review.early_loop.enabled=true`,
+    );
+    await removeIntent();
+    return;
+  }
   if (intent.prNumber !== undefined) {
     if (replaySpecialist !== 'reviewer-fanout') {
       const inferredFromStageOnly =

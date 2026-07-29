@@ -56,6 +56,7 @@ vi.mock('./github-pr.js', () => ({
 
 import {
   clearPendingExternalReview,
+  replayPendingReviewDispatchForItem,
   resumePendingExternalReview,
   resumePendingExternalReviewByRevision,
   runDispatchJob,
@@ -1510,6 +1511,82 @@ describe('pending external review readiness cleanup', () => {
     expect(mockResolveOpenPrMetadata).not.toHaveBeenCalled();
     expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
     await expect(outbox.get('test-product', 'LEA-1')).resolves.toBeNull();
+  });
+
+  it('drops parked draft reviewer dispatches when early loop is disabled', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'spec-draft-reviewer',
+      prNumber: 42,
+      targetRevision: 'sha-parked',
+      triggeredBy: 'webhook:spec-pr-sync:awaiting-spec-draft',
+    });
+
+    await replayPendingReviewDispatchForItem({
+      product: baseProduct,
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+    });
+
+    expect(mockResolveOpenPrMetadataForRepo).not.toHaveBeenCalled();
+    expect(mockResolveOpenPrMetadata).not.toHaveBeenCalled();
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'review_dispatch', 'spec-draft-reviewer'),
+    ).resolves.toBeNull();
+  });
+
+  it('still replays parked reviewer-fanout dispatches when early loop is disabled', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'reviewer-fanout',
+      prNumber: 80,
+      targetRevision: 'sha-impl-parked',
+      triggeredBy: 'operator:remediation',
+    });
+    mockResolveOpenPrMetadata.mockResolvedValue({
+      headRef: 'helm/impl/LEA-1',
+      headSha: 'sha-impl-live',
+    });
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      job: {
+        jobId: '00000000-0000-4000-8000-000000000080',
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        specialistId: 'reviewer-fanout',
+        status: 'running',
+        targetRevision: 'sha-impl-live',
+        startedAt: '2026-07-22T10:00:00.000Z',
+      },
+    });
+
+    await replayPendingReviewDispatchForItem({
+      product: baseProduct,
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+    });
+
+    expect(mockResolveOpenPrMetadataForRepo).not.toHaveBeenCalled();
+    expect(mockResolveOpenPrMetadata).toHaveBeenCalledWith({
+      product: baseProduct,
+      prNumber: 80,
+      githubToken: 'test-github-token',
+    });
+    expect(mockCreateJobIfNoRunning).toHaveBeenCalledWith({
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'reviewer-fanout',
+      targetRevision: 'sha-impl-live',
+    });
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'review_dispatch', 'reviewer-fanout'),
+    ).resolves.toBeNull();
   });
 });
 

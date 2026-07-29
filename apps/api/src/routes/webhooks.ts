@@ -55,8 +55,15 @@ function artifactKindForPendingExternalReview(
 ): ReviewReadinessArtifactKind {
   if (specialistId === 'spec-draft-reviewer') return 'spec';
   if (specialistId === 'plan-draft-reviewer') return 'plan';
-  if (currentStage === 'spec-draft') return 'spec';
-  if (currentStage === 'plan-draft') return 'plan';
+  // Explicit impl fanout must not be reclassified by draft stage — a deferred
+  // code-review intent parked while the item was still in draft would otherwise
+  // fail headRef matching against helm/impl/* and never resume.
+  if (specialistId === 'reviewer-fanout') return 'impl';
+  // Legacy pending intents may omit specialistId — infer from current stage.
+  if (!specialistId) {
+    if (currentStage === 'spec-draft') return 'spec';
+    if (currentStage === 'plan-draft') return 'plan';
+  }
   return 'impl';
 }
 
@@ -184,8 +191,8 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       }
     }
   } else if (event.type === 'item_updated' && event.subStage != null) {
+    const config = await getProductConfig();
     try {
-      const config = await getProductConfig();
       // transitionItem applies writeback, but webhook:github-projects is
       // tracker-originated → anti-echo skips it, preventing a tracker→store→
       // tracker echo loop.
@@ -194,19 +201,29 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         toStage: event.subStage,
         triggeredBy: 'webhook:github-projects',
       });
+    } catch (err) {
+      if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
+        // Not a delivery problem — log and still attempt replay below so a
+        // prior successful transition whose replay failed can recover on retry.
+        console.error('[webhooks/github] Transition not applied:', err.message);
+      } else {
+        console.error('[webhooks/github] Unexpected error during transition:', err);
+        return c.json({ error: 'Internal server error' }, 500);
+      }
+    }
+    try {
       await replayPendingReviewDispatchForItem({
         product: config,
         productSlug: config.product.slug,
         externalId: event.externalId,
       });
     } catch (err) {
-      if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
-        // Not a delivery problem — log and return 200.
-        console.error('[webhooks/github] Transition not applied:', err.message);
-      } else {
-        console.error('[webhooks/github] Unexpected error during transition:', err);
-        return c.json({ error: 'Internal server error' }, 500);
-      }
+      // Transition already applied (or was a no-op) — do not fail the webhook
+      // delivery or leave GitHub/Linear retrying a durable store write.
+      console.error(
+        '[webhooks/github] Pending review replay failed:',
+        err instanceof Error ? err.message : String(err),
+      );
     }
   } else if (event.type === 'comment_added') {
     console.info(`[webhooks/github] comment_added on ${event.externalId} — no action in v0`);
@@ -390,65 +407,72 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         }
       }
     } else if (parsed?.kind === 'spec' || parsed?.kind === 'plan') {
-      try {
-        const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
-        if (config.review?.early_loop?.enabled !== true) {
-          console.info('[webhooks/github] draft PR sync ignored — early review loop disabled');
-          return c.json({ processed: true });
-        }
-        const repo = parseGitHubRepoUrl(config.knowledge_repo.url);
-        if (event.owner !== repo.owner || event.repo !== repo.repo) {
-          console.info('[webhooks/github] draft PR sync ignored — repository mismatch');
-          return c.json({ processed: true });
-        }
+      if (isOrchestratorSender(event.senderLogin)) {
+        console.info(
+          `[webhooks/github] ${parsed.kind} PR sync ignored — orchestrator sender '${event.senderLogin}'`,
+        );
+      } else {
+        try {
+          const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
+          if (config.review?.early_loop?.enabled !== true) {
+            console.info('[webhooks/github] draft PR sync ignored — early review loop disabled');
+            return c.json({ processed: true });
+          }
+          const repo = parseGitHubRepoUrl(config.knowledge_repo.url);
+          if (event.owner !== repo.owner || event.repo !== repo.repo) {
+            console.info('[webhooks/github] draft PR sync ignored — repository mismatch');
+            return c.json({ processed: true });
+          }
 
-        const item = await itemStore.get(parsed.externalId);
-        const expectedStage = parsed.kind === 'spec' ? 'spec-draft' : 'plan-draft';
-        const specialistId = parsed.kind === 'spec' ? 'spec-draft-reviewer' : 'plan-draft-reviewer';
-        if (item?.currentStage === expectedStage && item.productSlug === config.product.slug) {
-          const outcome = await scheduleItemDispatch({
-            productSlug: config.product.slug,
-            externalId: parsed.externalId,
-            specialistId,
-            targetRevision: event.headSha,
-            prNumber: event.prNumber,
-            triggeredBy: `webhook:${parsed.kind}-pr-sync`,
-          });
-          if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+          const item = await itemStore.get(parsed.externalId);
+          const expectedStage = parsed.kind === 'spec' ? 'spec-draft' : 'plan-draft';
+          const specialistId =
+            parsed.kind === 'spec' ? 'spec-draft-reviewer' : 'plan-draft-reviewer';
+          if (item?.currentStage === expectedStage && item.productSlug === config.product.slug) {
+            const outcome = await scheduleItemDispatch({
+              productSlug: config.product.slug,
+              externalId: parsed.externalId,
+              specialistId,
+              targetRevision: event.headSha,
+              prNumber: event.prNumber,
+              triggeredBy: `webhook:${parsed.kind}-pr-sync`,
+            });
+            if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+              await persistReviewDispatchIntent({
+                productSlug: config.product.slug,
+                externalId: parsed.externalId,
+                specialistId,
+                prNumber: event.prNumber,
+                targetRevision: event.headSha,
+                triggeredBy: `webhook:${parsed.kind}-pr-sync`,
+              });
+              console.info(
+                `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} — dispatch deferred: ${outcome.reason}`,
+              );
+            }
+          } else if (item?.productSlug === config.product.slug) {
             await persistReviewDispatchIntent({
               productSlug: config.product.slug,
               externalId: parsed.externalId,
               specialistId,
               prNumber: event.prNumber,
               targetRevision: event.headSha,
-              triggeredBy: `webhook:${parsed.kind}-pr-sync`,
+              triggeredBy: `webhook:${parsed.kind}-pr-sync:awaiting-${expectedStage}`,
             });
             console.info(
-              `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} — dispatch deferred: ${outcome.reason}`,
+              `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} queued — stage '${item.currentStage}' (expected ${expectedStage})`,
+            );
+          } else {
+            console.info(
+              `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} ignored — stage '${item?.currentStage ?? 'missing'}' (expected ${expectedStage})`,
             );
           }
-        } else if (item?.productSlug === config.product.slug) {
-          await persistReviewDispatchIntent({
-            productSlug: config.product.slug,
-            externalId: parsed.externalId,
-            specialistId,
-            prNumber: event.prNumber,
-            targetRevision: event.headSha,
-            triggeredBy: `webhook:${parsed.kind}-pr-sync:awaiting-${expectedStage}`,
-          });
-          console.info(
-            `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} queued — stage '${item.currentStage}' (expected ${expectedStage})`,
-          );
-        } else {
-          console.info(
-            `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} ignored — stage '${item?.currentStage ?? 'missing'}' (expected ${expectedStage})`,
+        } catch (err) {
+          console.error(
+            '[webhooks/github] Failed to schedule draft PR sync dispatch:',
+            err instanceof Error ? err.message : String(err),
           );
         }
-      } catch (err) {
-        console.error(
-          '[webhooks/github] Failed to schedule draft PR sync dispatch:',
-          err instanceof Error ? err.message : String(err),
-        );
       }
     }
   } else if (event.type === 'external_review_ready') {
@@ -735,18 +759,27 @@ webhooksRouter.post('/webhooks/linear', async (c) => {
         toStage: event.subStage,
         triggeredBy: 'webhook:linear',
       });
+    } catch (err) {
+      if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
+        // Not a delivery problem — still attempt replay below so a prior
+        // successful transition whose replay failed can recover on retry.
+        console.error('[webhooks/linear] Transition not applied:', err.message);
+      } else {
+        console.error('[webhooks/linear] Unexpected error during transition:', err);
+        return c.json({ error: 'Internal server error' }, 500);
+      }
+    }
+    try {
       await replayPendingReviewDispatchForItem({
         product: config,
         productSlug: config.product.slug,
         externalId: event.externalId,
       });
     } catch (err) {
-      if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
-        console.error('[webhooks/linear] Transition not applied:', err.message);
-      } else {
-        console.error('[webhooks/linear] Unexpected error during transition:', err);
-        return c.json({ error: 'Internal server error' }, 500);
-      }
+      console.error(
+        '[webhooks/linear] Pending review replay failed:',
+        err instanceof Error ? err.message : String(err),
+      );
     }
   } else if (event.type === 'comment_added') {
     console.info(`[webhooks/linear] comment_added on ${event.externalId} — no action in v0`);

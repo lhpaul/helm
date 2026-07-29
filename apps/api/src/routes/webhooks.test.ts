@@ -515,6 +515,45 @@ describe('POST /api/webhooks/github', () => {
       const res = await post(body, 'projects_v2_item');
       expect(res.status).toBe(200);
     });
+
+    it('returns 200 when replay fails after a successful stage transition', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'item_updated',
+        externalId: 'issue_5',
+        subStage: 'spec-draft',
+        timestamp: 't',
+      });
+      mockTransition.mockResolvedValue({ history: [], currentStage: 'spec-draft' });
+      mockReplayPendingReviewDispatchForItem.mockRejectedValue(new Error('github lookup failed'));
+
+      const res = await post(body, 'projects_v2_item');
+      expect(res.status).toBe(200);
+      expect(mockTransition).toHaveBeenCalled();
+      expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalled();
+    });
+
+    it('still attempts replay when transition is a no-op WorkflowTransitionError', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'item_updated',
+        externalId: 'issue_5',
+        subStage: 'spec-draft',
+        timestamp: 't',
+      });
+      const { WorkflowTransitionError } = await import('@helm/workflow');
+      mockTransition.mockRejectedValue(
+        new WorkflowTransitionError('already there', 'spec-draft', 'spec-draft'),
+      );
+
+      const res = await post(body, 'projects_v2_item');
+      expect(res.status).toBe(200);
+      expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalledWith({
+        product: expect.objectContaining({ product: { slug: 'test-app', name: 'Test' } }),
+        productSlug: 'test-app',
+        externalId: 'issue_5',
+      });
+    });
   });
 
   describe('dispatch: other event types', () => {
@@ -1221,7 +1260,7 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
-    it('schedules draft PR dispatch when helm-bot syncs the branch', async () => {
+    it('ignores draft PR sync when push is from helm-bot (orchestrator self-echo)', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({
         product: { slug: 'test-app', name: 'Test' },
         issue_tracker: {
@@ -1251,14 +1290,8 @@ describe('POST /api/webhooks/github', () => {
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
-        productSlug: 'test-app',
-        externalId: 'LEA-192',
-        specialistId: 'spec-draft-reviewer',
-        targetRevision: 'sha-spec-bot-192',
-        prNumber: 76,
-        triggeredBy: 'webhook:spec-pr-sync',
-      });
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
     });
 
     it('schedules plan-draft-reviewer when a helm/plan/ PR opens and early loop is enabled', async () => {
@@ -1975,6 +2008,64 @@ describe('POST /api/webhooks/github', () => {
         triggeredBy: 'webhook:external-review-ready',
       });
       expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+    });
+
+    it('keeps reviewer-fanout intents as impl even when the item is still in draft', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/knowledge-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+      } as never);
+      mockPeekPendingExternalReviewByRevision.mockResolvedValue({
+        kind: 'pending_external_review',
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        specialistId: 'reviewer-fanout',
+        provider: 'haystack',
+        reason: 'analysis_pending',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        createdAt: '2026-07-22T10:00:00.000Z',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        triggeredBy: 'test',
+        updatedAt: '2026-07-22T10:00:00.000Z',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'spec-draft',
+        history: [],
+      });
+
+      const res = await post(
+        haystackCheckRunPayload({
+          headRef: 'helm/impl/issue_42',
+          repo: 'test-repo',
+        }),
+        'check_run',
+      );
+
+      expect(res.status).toBe(200);
+      // Fanout intents stay impl (not reclassified as draft), so helm/impl/*
+      // passes artifact matching and the stale pending entry is cleared for
+      // the wrong stage instead of being left parked forever.
+      expect(mockClearPendingExternalReview).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+      });
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+      expect(mockResumePendingExternalReviewByRevision).not.toHaveBeenCalled();
     });
 
     it('rejects legacy spec pending replay when check run headRef points at plan', async () => {

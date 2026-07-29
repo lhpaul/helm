@@ -236,6 +236,23 @@ describe('POST /api/webhooks/linear', () => {
       expect(res.status).toBe(200);
     });
 
+    it('returns 200 when replay fails after a successful Linear stage transition', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'item_updated',
+        externalId: 'MOM-5',
+        subStage: 'spec-draft',
+        timestamp: 't',
+      });
+      mockTransition.mockResolvedValue({ history: [], currentStage: 'spec-draft' });
+      mockReplayPendingReviewDispatchForItem.mockRejectedValue(new Error('github lookup failed'));
+
+      const res = await post(body);
+      expect(res.status).toBe(200);
+      expect(mockTransition).toHaveBeenCalled();
+      expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalled();
+    });
+
     it('returns 500 on unexpected transition error', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({

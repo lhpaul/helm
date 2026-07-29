@@ -25,6 +25,7 @@ import {
 import { createGitHubBugbotReviewLoader } from './bugbot-review-loader.js';
 
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
+const DRAFT_REVIEWER_NO_LONGER_APPLICABLE = 'Draft reviewer no longer applicable';
 
 function isSafeWorkdirSegment(value: string): boolean {
   return EXTERNAL_ID_REGEX.test(value) && value !== '.' && value !== '..';
@@ -352,7 +353,11 @@ async function replayPendingReviewDispatch(input: {
         prNumber: intent.prNumber,
         triggeredBy: `outbox:${intent.triggeredBy}`,
       });
-      if (outcome.scheduled || outcome.reason === 'Duplicate target revision') {
+      if (
+        outcome.scheduled ||
+        outcome.reason === 'Duplicate target revision' ||
+        outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
+      ) {
         await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
           updatedAt: intent.updatedAt,
           targetRevision: intent.targetRevision,
@@ -385,7 +390,11 @@ async function replayPendingReviewDispatch(input: {
     prNumber: intent.prNumber,
     triggeredBy: `outbox:${intent.triggeredBy}`,
   });
-  if (outcome.scheduled || outcome.reason === 'Duplicate target revision') {
+  if (
+    outcome.scheduled ||
+    outcome.reason === 'Duplicate target revision' ||
+    outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
+  ) {
     await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
       updatedAt: intent.updatedAt,
       targetRevision: intent.targetRevision,
@@ -684,7 +693,7 @@ export async function scheduleItemDispatch(input: {
     );
     return {
       scheduled: false,
-      reason: DISPATCH_UNAVAILABLE,
+      reason: DRAFT_REVIEWER_NO_LONGER_APPLICABLE,
     };
   }
   if (!dispatchSpecialist) {

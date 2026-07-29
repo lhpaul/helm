@@ -2,7 +2,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JobStore } from './job-store.js';
 
 let jobsDir: string;
@@ -291,6 +291,37 @@ describe('createJobIfNoRunning', () => {
     expect(second).toEqual({ duplicate: true, existingJobId: first.job.jobId });
     const jobs = await store.listJobsForItem(BASE_INPUT.productSlug, BASE_INPUT.externalId);
     expect(jobs.filter((job) => job.targetRevision === 'sha-a')).toHaveLength(1);
+  });
+
+  it('returns a conflict for duplicate concurrent create attempts before the job is visible', async () => {
+    const originalListJobsForItem = store.listJobsForItem.bind(store);
+    let releaseFirstList!: () => void;
+    const firstListStarted = new Promise<void>((resolve) => {
+      vi.spyOn(store, 'listJobsForItem').mockImplementationOnce(async (...args) => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseFirstList = release;
+        });
+        return originalListJobsForItem(...args);
+      });
+    });
+
+    const first = store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+    await firstListStarted;
+
+    const second = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-b' });
+
+    expect(second).toEqual({
+      conflict: true,
+      runningJobId: '',
+      runningTargetRevision: undefined,
+    });
+
+    releaseFirstList();
+    const firstOutcome = await first;
+    expect(firstOutcome).toMatchObject({ job: { targetRevision: 'sha-a' } });
+    const jobs = await originalListJobsForItem(BASE_INPUT.productSlug, BASE_INPUT.externalId);
+    expect(jobs).toHaveLength(1);
   });
 });
 

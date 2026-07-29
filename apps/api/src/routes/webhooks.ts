@@ -50,9 +50,12 @@ type ReviewReadinessArtifactKind = 'impl' | 'spec' | 'plan';
 
 function artifactKindForPendingExternalReview(
   specialistId: string | undefined,
+  currentStage: string | undefined,
 ): ReviewReadinessArtifactKind {
   if (specialistId === 'spec-draft-reviewer') return 'spec';
   if (specialistId === 'plan-draft-reviewer') return 'plan';
+  if (currentStage === 'spec-draft') return 'spec';
+  if (currentStage === 'plan-draft') return 'plan';
   return 'impl';
 }
 
@@ -446,6 +449,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       let externalId: string | null = null;
       let prNumber: number | null = event.prNumber ?? null;
       let matchedByRevision = false;
+      let matchedItem: Awaited<ReturnType<typeof itemStore.get>> | null = null;
 
       // Revision-first: locate the pending intent by SHA, then validate optional
       // branch/PR metadata against that match so multi-PR payloads cannot steer.
@@ -455,7 +459,11 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         targetRevision: event.targetRevision,
       });
       if (matched) {
-        const matchedArtifactKind = artifactKindForPendingExternalReview(matched.specialistId);
+        matchedItem = await itemStore.get(matched.externalId);
+        const matchedArtifactKind = artifactKindForPendingExternalReview(
+          matched.specialistId,
+          matchedItem?.currentStage,
+        );
         if (matched.targetRevision !== event.targetRevision) {
           console.info('[webhooks/github] external review readiness ignored — SHA/intent mismatch');
           return c.json({ processed: true });
@@ -519,7 +527,8 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       }
 
       const expectedStage = stageForReviewReadiness(artifactKind);
-      const item = await itemStore.get(externalId);
+      const item =
+        matchedItem?.externalId === externalId ? matchedItem : await itemStore.get(externalId);
       if (item?.productSlug !== config.product.slug || item.currentStage !== expectedStage) {
         await clearPendingExternalReview({
           productSlug: config.product.slug,

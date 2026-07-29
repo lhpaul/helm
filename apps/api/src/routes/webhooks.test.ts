@@ -2123,31 +2123,45 @@ describe('POST /api/webhooks/github', () => {
     });
 
     it('skips opened draft PR dispatch and intent persistence when early loop is disabled', async () => {
-      vi.mocked(getProductConfig).mockResolvedValue({
-        product: { slug: 'test-app', name: 'Test' },
-        issue_tracker: {
-          provider: 'github_projects',
-          org: 'test-org',
-          project_number: 1,
-          custom_field_name: 'Helm Stage',
+      for (const artifact of [
+        {
+          headRef: 'helm/spec/LEA-192',
+          prNumber: 83,
+          headSha: 'sha-spec-disabled-192',
         },
-        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
-        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
-        workflow: { final_stage: 'released' },
-        review: { early_loop: { enabled: false } },
-      } as never);
-      const body = mergedPrPayload('helm/spec/LEA-192', {
-        action: 'opened',
-        merged: false,
-        prNumber: 83,
-        headSha: 'sha-spec-disabled-192',
-      });
+        {
+          headRef: 'helm/plan/LEA-192',
+          prNumber: 84,
+          headSha: 'sha-plan-disabled-192',
+        },
+      ]) {
+        vi.clearAllMocks();
+        vi.mocked(getProductConfig).mockResolvedValue({
+          product: { slug: 'test-app', name: 'Test' },
+          issue_tracker: {
+            provider: 'github_projects',
+            org: 'test-org',
+            project_number: 1,
+            custom_field_name: 'Helm Stage',
+          },
+          code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+          knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+          workflow: { final_stage: 'released' },
+          review: { early_loop: { enabled: false } },
+        } as never);
+        const body = mergedPrPayload(artifact.headRef, {
+          action: 'opened',
+          merged: false,
+          prNumber: artifact.prNumber,
+          headSha: artifact.headSha,
+        });
 
-      const res = await post(body, 'pull_request');
-      expect(res.status).toBe(200);
-      expect(mockGet).not.toHaveBeenCalled();
-      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
-      expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
+        const res = await post(body, 'pull_request');
+        expect(res.status).toBe(200);
+        expect(mockGet).not.toHaveBeenCalled();
+        expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+        expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
+      }
     });
 
     it('does not persist deferred draft dispatch when PR metadata and head SHA are absent', async () => {

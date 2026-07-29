@@ -118,6 +118,20 @@ describe('GET /api/product', () => {
     expect(body.review?.early_loop?.enabled).toBe(true);
   });
 
+  it('redacts secret notification configuration from the response', async () => {
+    const yaml = `${VALID_PRODUCT_YAML}\nnotifications:\n  slack_webhook: https://hooks.slack.com/services/T000/B000/secret\n`;
+    await writeFile(join(testDir, '.helm', 'product.yaml'), yaml, 'utf-8');
+    process.env.HELM_KNOWLEDGE_REPO_PATH = testDir;
+
+    const res = await app.request('/api/product');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      notifications?: { slack_webhook?: string };
+    };
+    expect(body.notifications).toEqual({});
+  });
+
   it('returns 404 when product.yaml does not exist at expected location', async () => {
     // dir exists but no .helm/product.yaml
     process.env.HELM_KNOWLEDGE_REPO_PATH = testDir;

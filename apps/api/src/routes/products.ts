@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { getProductRegistry, getItemStore } from '../services/index.js';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
+import { publicProductResponse } from './product-response.js';
 
 export const productsRouter = new Hono();
 
@@ -40,7 +41,7 @@ const ProductItemParamsSchema = z
 productsRouter.get('/products', async (c) => {
   try {
     const products = await getProductRegistry();
-    return c.json(products);
+    return c.json(products.map(publicProductResponse));
   } catch (err) {
     console.error('[products] Failed to load product registry:', err);
     return c.json({ error: 'Failed to load product registry' }, 500);
@@ -57,7 +58,7 @@ productsRouter.get('/products/:slug', async (c) => {
     const products = await getProductRegistry();
     const product = products.find((p) => p.product.slug === slug);
     if (!product) return c.json({ error: `Product not found: ${slug}` }, 404);
-    return c.json(product);
+    return c.json(publicProductResponse(product));
   } catch (err) {
     console.error(`[products] Failed to load product ${slug}:`, err);
     return c.json({ error: 'Failed to load product registry' }, 500);

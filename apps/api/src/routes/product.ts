@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { join } from 'node:path';
 import { ProductConfigError, parseProductConfigFromFile } from '@helm/shared';
+import { publicProductResponse } from './product-response.js';
 
 export const productRouter = new Hono();
 
@@ -15,7 +16,7 @@ productRouter.get('/product', async (c) => {
 
   try {
     const product = await parseProductConfigFromFile(configPath);
-    return c.json(product);
+    return c.json(publicProductResponse(product));
   } catch (err) {
     // File not found — check err.code directly (preserved by parseProductConfigFromFile)
     if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {

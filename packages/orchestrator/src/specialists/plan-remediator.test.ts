@@ -129,6 +129,33 @@ describe('runPlanRemediation', () => {
     expect(pushCall?.join(' ')).not.toContain('--force');
   });
 
+  it('keeps operator-triggered remediation enabled when early_loop is false', async () => {
+    const calls: string[][] = [];
+    const runGit = makeRunGit({ dirty: true, calls });
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: false } };
+    const runtime = new MockAgentRuntime({
+      messages: [{ role: 'agent', content: 'Editing plan', timestamp: new Date().toISOString() }],
+      sideEffects: async (workdir) => {
+        await writeFile(join(workdir, 'plans', 'HLM-42.md'), `${CURRENT_PLAN}\n2. Backfill.`);
+      },
+    });
+
+    const result = await runPlanRemediation({
+      externalId: 'HLM-42',
+      product,
+      prUrl: PR_URL,
+      feedback: FEEDBACK,
+      githubToken: 'test-token',
+      runtime,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(result.pushed).toBe(true);
+    expect(calls.some((a) => a[0] === 'push')).toBe(true);
+  });
+
   it('missing artifact: returns error when the branch has no plan file', async () => {
     const calls: string[][] = [];
     const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {

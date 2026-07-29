@@ -97,7 +97,7 @@ import { fetchSpecForPlan } from '../specialists/fetch-product-context.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
 import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
-import { upsertReviewLoopSummaryComment } from './summary.js';
+import { buildAdvisorySummaryRows, upsertReviewLoopSummaryComment } from './summary.js';
 import { builtInFalsePositiveEntries, fetchFalsePositivesCatalog } from './false-positives.js';
 import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
 
@@ -1066,6 +1066,17 @@ describe('runCodeReviewLoop', () => {
         ]),
       }),
     );
+    expect(
+      buildAdvisorySummaryRows(
+        summaryInput.advisories,
+        summaryInput.catalog,
+        summaryInput.stage,
+      )[0],
+    ).toMatchObject({
+      disposition: 'Rejected',
+      rationale:
+        'Draft artifact review may see only one side of the spec/plan pair before the operator merges the current artifact PR.',
+    });
   });
 
   it('routes plan-draft advisories through draft-stage false-positive disposition', async () => {

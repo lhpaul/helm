@@ -170,6 +170,36 @@ describe('runSpecRemediation', () => {
     expect(calls.some((a) => a[0] === 'push')).toBe(false);
   });
 
+  it('keeps operator-triggered remediation enabled when early_loop is false', async () => {
+    const calls: string[][] = [];
+    const runGit = makeRunGit({ dirty: true, calls });
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: false } };
+    const runtime = new MockAgentRuntime({
+      messages: [{ role: 'agent', content: 'Editing spec', timestamp: new Date().toISOString() }],
+      sideEffects: async (workdir) => {
+        await writeFile(
+          join(workdir, 'specs', 'HLM-42.md'),
+          `${CURRENT_SPEC}\n\n## Acceptance Criteria`,
+        );
+      },
+    });
+
+    const result = await runSpecRemediation({
+      externalId: 'HLM-42',
+      product,
+      prUrl: PR_URL,
+      feedback: FEEDBACK,
+      githubToken: 'test-token',
+      runtime,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(result.pushed).toBe(true);
+    expect(calls.some((a) => a[0] === 'push')).toBe(true);
+  });
+
   it('agent error: returns error, no push attempted', async () => {
     const calls: string[][] = [];
     const runGit = makeRunGit({ dirty: true, calls });

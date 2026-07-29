@@ -380,12 +380,6 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         }
       }
     } else if (parsed?.kind === 'spec' || parsed?.kind === 'plan') {
-      if (isOrchestratorSender(event.senderLogin)) {
-        console.info(
-          `[webhooks/github] draft PR sync ignored — orchestrator sender '${event.senderLogin}'`,
-        );
-        return c.json({ processed: true });
-      }
       try {
         const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
         if (config.review?.early_loop?.enabled !== true) {

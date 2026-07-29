@@ -1198,17 +1198,44 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
-    it('skips draft PR dispatch when an orchestrator sender syncs the branch', async () => {
+    it('schedules draft PR dispatch when helm-bot syncs the branch', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { early_loop: { enabled: true } },
+      } as never);
       const body = mergedPrPayload('helm/spec/LEA-192', {
         action: 'synchronize',
         merged: false,
         senderLogin: 'helm-bot',
+        prNumber: 76,
+        headSha: 'sha-spec-bot-192',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'spec-draft',
+        history: [],
       });
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockGet).not.toHaveBeenCalled();
-      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-192',
+        specialistId: 'spec-draft-reviewer',
+        targetRevision: 'sha-spec-bot-192',
+        prNumber: 76,
+        triggeredBy: 'webhook:spec-pr-sync',
+      });
     });
 
     it('schedules plan-draft-reviewer when a helm/plan/ PR opens and early loop is enabled', async () => {

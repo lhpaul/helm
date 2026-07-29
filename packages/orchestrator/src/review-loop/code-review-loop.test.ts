@@ -1,5 +1,6 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Product } from '@helm/shared';
 import type { ItemTransitionFn } from '../specialists/spec-writer.js';
@@ -169,9 +170,11 @@ function makeFanout(
 describe('runCodeReviewLoop', () => {
   let transition: ReturnType<typeof vi.fn>;
   let runGit: RunGit;
+  let tempDirs: string[];
 
   beforeEach(() => {
     vi.clearAllMocks();
+    tempDirs = [];
     transition = vi.fn().mockResolvedValue({ currentStage: 'code-review' });
     runGit = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === 'clone') {
@@ -198,7 +201,8 @@ describe('runCodeReviewLoop', () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(tempDirs.map((tempDir) => rm(tempDir, { recursive: true, force: true })));
     vi.mocked(provisionReviewerWorkspace).mockResolvedValue({
       workspacePath: '/tmp/ws',
       branchName: 'helm/impl/issue_1',
@@ -2000,6 +2004,90 @@ describe('runCodeReviewLoop', () => {
       },
     );
   });
+
+  it.each([
+    {
+      kind: 'spec' as const,
+      artifactDir: 'specs',
+      branchName: 'helm/spec/issue_1',
+      content: '# Draft Spec\n\nchecked-out branch content',
+    },
+    {
+      kind: 'plan' as const,
+      artifactDir: 'plans',
+      branchName: 'helm/plan/issue_1',
+      content: '# Draft Plan\n\nchecked-out branch content',
+    },
+  ])(
+    'passes checked-out $kind draft content to adjudication without fetching the default-branch spec',
+    async ({ kind, artifactDir, branchName, content }) => {
+      const workspacePath = await mkdtemp(join(tmpdir(), `helm-${kind}-draft-`));
+      tempDirs.push(workspacePath);
+      await mkdir(join(workspacePath, artifactDir), { recursive: true });
+      await writeFile(join(workspacePath, artifactDir, 'issue_1.md'), content, 'utf-8');
+      vi.mocked(provisionReviewerWorkspace).mockResolvedValue({
+        workspacePath,
+        branchName,
+        artifactsPath: `${workspacePath}-artifacts`,
+      });
+      vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+      vi.mocked(fanoutReviewers)
+        .mockResolvedValueOnce(makeFanout())
+        .mockResolvedValueOnce(
+          makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }),
+        );
+      vi.mocked(fetchSpecForPlan).mockResolvedValue('stale default-branch spec');
+      vi.mocked(buildReviewAdjudicatorParams).mockReturnValue({
+        specialistId: 'review-adjudicator',
+        prompt: 'adjudicate',
+        workdir: workspacePath,
+        productSlug: 'test',
+        externalId: 'issue_1',
+        permissionMode: 'acceptEdits',
+        timeoutMs: 1000,
+      });
+      vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+        status: 'done',
+        costUsd: 0,
+        durationMs: 1,
+        commentPosted: true,
+        parsed: {
+          status: 'AUTO_REMEDIATE',
+          unifiedPlan: '- **AUTO** · Fix',
+          body: '# Review Adjudication\n\n## Status\nAUTO_REMEDIATE',
+          conflictsSection: '',
+          conflicts: [],
+        },
+      });
+
+      const result = await runEarlyArtifactReviewLoop({
+        kind,
+        externalId: 'issue_1',
+        product: productWithAdjudicator(),
+        prUrl: PR_URL,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      expect(result.status).toBe('done');
+      expect(fetchSpecForPlan).not.toHaveBeenCalled();
+      expect(buildReviewAdjudicatorParams).toHaveBeenCalledWith(
+        'issue_1',
+        expect.anything(),
+        workspacePath,
+        PR_URL,
+        expect.any(Map),
+        expect.objectContaining({
+          draftArtifact: { kind, content },
+          spec: undefined,
+          codeRepo: { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
+          branchName,
+        }),
+      );
+    },
+  );
 
   it('fails runAdjudicationPass when fetchSpecForPlan throws a non-ENOENT error', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);

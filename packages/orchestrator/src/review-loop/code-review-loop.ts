@@ -1,4 +1,5 @@
-import { rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { CodeRepo, Product } from '@helm/shared';
 import type { IAgentRuntime } from '../runtime.js';
 import type { ItemTransitionFn } from '../specialists/spec-writer.js';
@@ -897,6 +898,8 @@ async function runAdjudicationPass(input: {
   prUrl: string;
   codeRepo: CodeRepo;
   branchName?: string;
+  mode?: 'code' | 'early-artifact';
+  kind?: 'spec' | 'plan';
   githubToken: string;
   runtime: IAgentRuntime;
   runGit?: RunGit;
@@ -923,19 +926,40 @@ async function runAdjudicationPass(input: {
 
     const findingsByKind = buildFindingsByKind(input.fanoutResult, input.externalFindingsBody);
     let spec: string | undefined;
-    try {
-      spec =
-        (await fetchSpecForPlan(
-          input.product,
-          input.externalId,
-          input.githubToken,
-          input.fetchFn ?? fetch,
-        )) ?? undefined;
-    } catch (err) {
-      if (!isEnoentError(err)) {
-        throw err;
+    let draftArtifact:
+      | {
+          kind: 'spec' | 'plan';
+          content: string;
+        }
+      | undefined;
+    if (input.mode === 'early-artifact' && input.kind) {
+      try {
+        const artifactRelPath =
+          input.kind === 'spec' ? `specs/${input.externalId}.md` : `plans/${input.externalId}.md`;
+        draftArtifact = {
+          kind: input.kind,
+          content: await readFile(join(workspacePath, artifactRelPath), 'utf-8'),
+        };
+      } catch (err) {
+        if (!isEnoentError(err)) {
+          throw err;
+        }
       }
-      spec = undefined;
+    } else {
+      try {
+        spec =
+          (await fetchSpecForPlan(
+            input.product,
+            input.externalId,
+            input.githubToken,
+            input.fetchFn ?? fetch,
+          )) ?? undefined;
+      } catch (err) {
+        if (!isEnoentError(err)) {
+          throw err;
+        }
+        spec = undefined;
+      }
     }
 
     const params = buildReviewAdjudicatorParams(
@@ -946,6 +970,7 @@ async function runAdjudicationPass(input: {
       findingsByKind,
       {
         spec,
+        draftArtifact,
         resolvedProductDecisions: input.resolvedProductDecisions,
         codeRepo: input.codeRepo,
         branchName: input.branchName,
@@ -1065,6 +1090,8 @@ async function runAdjudicationIfEnabled(input: {
   prUrl: string;
   codeRepo: CodeRepo;
   branchName?: string;
+  mode?: 'code' | 'early-artifact';
+  kind?: 'spec' | 'plan';
   githubToken: string;
   runtime: IAgentRuntime;
   runGit?: RunGit;
@@ -1127,6 +1154,8 @@ async function runRemediationPass(input: {
   prUrl: string;
   codeRepo: CodeRepo;
   branchName?: string;
+  mode?: 'code' | 'early-artifact';
+  kind?: 'spec' | 'plan';
   githubToken: string;
   runtime: IAgentRuntime;
   transition: ItemTransitionFn;
@@ -1151,6 +1180,8 @@ async function runRemediationPass(input: {
     prUrl: input.prUrl,
     codeRepo: input.codeRepo,
     branchName: input.branchName,
+    mode: input.mode,
+    kind: input.kind,
     githubToken: input.githubToken,
     runtime: input.runtime,
     runGit: input.runGit,

@@ -39,6 +39,10 @@ export function buildReviewAdjudicatorParams(
   findingsByKind: Map<ReviewerKind, string>,
   options: {
     spec?: string;
+    draftArtifact?: {
+      kind: 'spec' | 'plan';
+      content: string;
+    };
     resolvedProductDecisions?: StoredResolvedProductDecision[];
     codeRepo?: CodeRepo;
     branchName?: string;
@@ -62,7 +66,17 @@ export function buildReviewAdjudicatorParams(
     }
   }
 
-  const specSection = options.spec ? ['', '## Spec', '', options.spec, ''].join('\n') : '';
+  const specSection = options.draftArtifact
+    ? [
+        '',
+        `## Draft ${options.draftArtifact.kind === 'spec' ? 'Spec' : 'Plan'}`,
+        '',
+        options.draftArtifact.content,
+        '',
+      ].join('\n')
+    : options.spec
+      ? ['', '## Spec', '', options.spec, ''].join('\n')
+      : '';
   const settledDecisionSection = formatSettledDecisionSection(
     options.resolvedProductDecisions ?? [],
   );

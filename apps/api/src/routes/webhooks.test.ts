@@ -1331,6 +1331,40 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
+    it('does not persist stale early-loop dispatches when draft reviewer no longer applies', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue(
+        parsedGitHubProduct(['review:', '  early_loop:', '    enabled: true'].join('\n')) as never,
+      );
+      mockScheduleItemDispatch.mockResolvedValue({
+        scheduled: false,
+        reason: 'Draft reviewer no longer applicable',
+      });
+      const body = mergedPrPayload('helm/spec/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+        prNumber: 76,
+        headSha: 'sha-spec-stale-192',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'spec-draft',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-192',
+        specialistId: 'spec-draft-reviewer',
+        targetRevision: 'sha-spec-stale-192',
+        prNumber: 76,
+        triggeredBy: 'webhook:spec-pr-sync',
+      });
+      expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
+    });
+
     it('persists a deferred plan-draft dispatch when scheduleItemDispatch cannot run immediately', async () => {
       vi.mocked(getProductConfig).mockResolvedValue(
         parsedGitHubProduct(['review:', '  early_loop:', '    enabled: true'].join('\n')) as never,
@@ -1671,7 +1705,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
     });
 
-    it('schedules draft review when head.repo is omitted but the webhook repo is canonical', async () => {
+    it('ignores draft PR sync when head.repo is omitted', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({
         product: { slug: 'test-app', name: 'Test' },
         issue_tracker: {
@@ -1702,14 +1736,8 @@ describe('POST /api/webhooks/github', () => {
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
-      expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
-        productSlug: 'test-app',
-        externalId: 'LEA-192',
-        specialistId: 'spec-draft-reviewer',
-        targetRevision: 'sha-null-head-192',
-        prNumber: 76,
-        triggeredBy: 'webhook:spec-pr-sync',
-      });
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
     });
 
     it('schedules plan-draft-reviewer when a helm/plan/ PR opens and early loop is enabled', async () => {

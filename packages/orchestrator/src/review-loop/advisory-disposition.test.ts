@@ -75,4 +75,46 @@ describe('resolveAdvisoryDispositions', () => {
       disposition: 'Deferred',
     });
   });
+
+  it('matches pair-spec-and-plan-files through path or fixHint alone', () => {
+    const catalog = [
+      {
+        title: 'Sequential artifact',
+        pattern: 'pair-spec-and-plan-files',
+        appliesTo: ['spec-draft', 'plan-draft'],
+        rationale: 'Spec and plan artifacts are reviewed sequentially.',
+        matchesSummary: (summary: string) => summary.includes('pair-spec-and-plan-files'),
+      },
+    ] satisfies FalsePositiveEntry[];
+
+    const pathOnlyRows = resolveAdvisoryDispositions(
+      [
+        {
+          id: 'adv-path',
+          severity: 'low',
+          blocking: false,
+          summary: 'Artifact ordering',
+          path: 'docs/reviews/pair-spec-and-plan-files.md',
+        },
+      ],
+      catalog,
+      'spec-draft',
+    );
+    const fixHintOnlyRows = resolveAdvisoryDispositions(
+      [
+        {
+          id: 'adv-fixhint',
+          severity: 'low',
+          blocking: false,
+          summary: 'Artifact ordering',
+          fixHint: 'See pair-spec-and-plan-files before changing the workflow.',
+        },
+      ],
+      catalog,
+      'plan-draft',
+    );
+
+    expect(pathOnlyRows[0]).toMatchObject({ disposition: 'Rejected' });
+    expect(fixHintOnlyRows[0]).toMatchObject({ disposition: 'Rejected' });
+  });
 });

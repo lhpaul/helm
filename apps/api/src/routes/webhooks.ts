@@ -443,13 +443,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             console.info('[webhooks/github] draft PR sync ignored — repository mismatch');
             return c.json({ processed: true });
           }
-          // Option A (product decision): only same-repo heads may trigger early-loop.
-          // When GitHub omits pull_request.head.repo (null headOwner/headRepo), fall
-          // back to the webhook repository — already verified as the knowledge repo
-          // above — rather than dropping same-repo draft opens/syncs.
-          const headOwner = event.headOwner ?? event.owner;
-          const headRepo = event.headRepo ?? event.repo;
-          if (headOwner !== repo.owner || headRepo !== repo.repo) {
+          if (event.headOwner !== repo.owner || event.headRepo !== repo.repo) {
             console.info(
               `[webhooks/github] draft PR sync ignored — head repo '${event.headOwner}/${event.headRepo}' is not canonical knowledge repo`,
             );
@@ -470,7 +464,10 @@ webhooksRouter.post('/webhooks/github', async (c) => {
               triggeredBy: `webhook:${parsed.kind}-pr-sync`,
             });
             if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
-              if (event.headSha || event.prNumber !== undefined) {
+              if (
+                outcome.reason !== 'Draft reviewer no longer applicable' &&
+                (event.headSha || event.prNumber !== undefined)
+              ) {
                 await persistReviewDispatchIntent({
                   productSlug: config.product.slug,
                   externalId: parsed.externalId,

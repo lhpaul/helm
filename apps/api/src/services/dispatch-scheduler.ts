@@ -380,7 +380,7 @@ async function replayOnePendingReviewDispatch(input: {
     });
 
   let targetRevision = intent.targetRevision;
-  let replaySpecialist = await resolveReviewDispatchReplaySpecialist(intent);
+  const replaySpecialist = await resolveReviewDispatchReplaySpecialist(intent);
   if (
     isDraftReviewSpecialist(replaySpecialist) &&
     input.product.review?.early_loop?.enabled !== true
@@ -393,10 +393,6 @@ async function replayOnePendingReviewDispatch(input: {
   }
   if (intent.prNumber !== undefined) {
     if (replaySpecialist !== 'reviewer-fanout') {
-      const inferredFromStageOnly =
-        !intent.specialistId &&
-        !draftReviewerFromTriggeredBy(intent.triggeredBy) &&
-        !looksLikeImplReviewTrigger(intent.triggeredBy);
       const artifactKind =
         replaySpecialist === 'spec-draft-reviewer'
           ? 'spec'
@@ -411,42 +407,33 @@ async function replayOnePendingReviewDispatch(input: {
         });
         const expectedHeadRef = `helm/${artifactKind}/${intent.externalId}`;
         if (pr.headRef !== expectedHeadRef) {
-          // Trigger-bearing impl intents can recover from draft-stage inference,
-          // but legacy stage-only draft inference must stay in the knowledge-repo
-          // context it just validated instead of reusing the same PR number
-          // against the primary code repo.
-          if (!inferredFromStageOnly) {
-            console.info(
-              `[dispatch-scheduler] pending replay falling back to reviewer-fanout — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
-            );
-            replaySpecialist = 'reviewer-fanout';
-          } else {
-            console.info(
-              `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
-            );
-            await removeIntent();
-            return;
-          }
-        } else {
-          targetRevision = pr.headSha;
-          if (!targetRevision) return;
-          const outcome = await scheduleItemDispatch({
-            productSlug: intent.productSlug,
-            externalId: intent.externalId,
-            specialistId: replaySpecialist,
-            targetRevision,
-            prNumber: intent.prNumber,
-            triggeredBy: `outbox:${intent.triggeredBy}`,
-          });
-          if (
-            outcome.scheduled ||
-            outcome.reason === 'Duplicate target revision' ||
-            outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
-          ) {
-            await removeIntent();
-          }
+          // Never reuse a knowledge-repo PR number against the code repo.
+          // Impl intents without a specialistId are routed to reviewer-fanout
+          // before this draft branch via looksLikeImplReviewTrigger.
+          console.info(
+            `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
+          );
+          await removeIntent();
           return;
         }
+        targetRevision = pr.headSha;
+        if (!targetRevision) return;
+        const outcome = await scheduleItemDispatch({
+          productSlug: intent.productSlug,
+          externalId: intent.externalId,
+          specialistId: replaySpecialist,
+          targetRevision,
+          prNumber: intent.prNumber,
+          triggeredBy: `outbox:${intent.triggeredBy}`,
+        });
+        if (
+          outcome.scheduled ||
+          outcome.reason === 'Duplicate target revision' ||
+          outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
+        ) {
+          await removeIntent();
+        }
+        return;
       } else {
         if (!targetRevision) return;
         const outcome = await scheduleItemDispatch({

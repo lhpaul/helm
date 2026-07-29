@@ -444,12 +444,12 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             return c.json({ processed: true });
           }
           // Option A (product decision): only same-repo heads may trigger early-loop.
-          if (
-            event.headOwner == null ||
-            event.headRepo == null ||
-            event.headOwner !== repo.owner ||
-            event.headRepo !== repo.repo
-          ) {
+          // When GitHub omits pull_request.head.repo (null headOwner/headRepo), fall
+          // back to the webhook repository — already verified as the knowledge repo
+          // above — rather than dropping same-repo draft opens/syncs.
+          const headOwner = event.headOwner ?? event.owner;
+          const headRepo = event.headRepo ?? event.repo;
+          if (headOwner !== repo.owner || headRepo !== repo.repo) {
             console.info(
               `[webhooks/github] draft PR sync ignored — head repo '${event.headOwner}/${event.headRepo}' is not canonical knowledge repo`,
             );

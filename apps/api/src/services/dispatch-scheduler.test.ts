@@ -1392,6 +1392,53 @@ describe('pending external review readiness cleanup', () => {
     ).resolves.toBeNull();
   });
 
+  it('clears stage-inferred draft intents on knowledge headRef mismatch without code-repo lookup', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      prNumber: 44,
+      targetRevision: 'sha-stale',
+      triggeredBy: 'legacy:unknown',
+    });
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'spec-draft',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockImplementation(
+      (_stage, specialistId) => specialistId as string | undefined,
+    );
+    mockResolveOpenPrMetadataForRepo.mockResolvedValue({
+      headRef: 'helm/plan/LEA-1',
+      headSha: 'sha-other',
+    });
+
+    await runDispatchJob({ jobId: 'job-current' } as never, {
+      product: { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'code-review',
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot,
+      specialistId: 'code-remediator',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    expect(mockResolveOpenPrMetadataForRepo).toHaveBeenCalled();
+    expect(mockResolveOpenPrMetadata).not.toHaveBeenCalled();
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+  });
+
   it('replays impl fanout intents without specialistId even when the item is still in a draft stage', async () => {
     const outbox = await getReviewDispatchOutbox(dataRoot);
     await outbox.put({

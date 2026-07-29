@@ -1,4 +1,7 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseProductConfig } from '@helm/shared';
 import { app } from '../app.js';
@@ -18,6 +21,9 @@ const {
   mockTransitionIfCurrentStage,
   mockList,
   mockGet,
+  mockGetProductRegistry,
+  mockCreateJobIfNoRunning,
+  mockUpdateJob,
   mockSetSubStage,
   mockEnsureSubStages,
   mockScheduleItemDispatch,
@@ -32,6 +38,9 @@ const {
   mockGetPrimaryCodeRepo,
   mockListPrIssueComments,
   mockUpsertResolvedProductDecision,
+  mockDispatchStageHandler,
+  mockResolveSpecialistId,
+  mockCreateRuntimeForProduct,
 } = vi.hoisted(() => ({
   mockParseWebhook: vi.fn(),
   mockCreate: vi.fn(),
@@ -39,6 +48,9 @@ const {
   mockTransitionIfCurrentStage: vi.fn(),
   mockList: vi.fn(),
   mockGet: vi.fn(),
+  mockGetProductRegistry: vi.fn(),
+  mockCreateJobIfNoRunning: vi.fn(),
+  mockUpdateJob: vi.fn(),
   mockSetSubStage: vi.fn(),
   mockEnsureSubStages: vi.fn(),
   mockScheduleItemDispatch: vi.fn(),
@@ -53,7 +65,19 @@ const {
   mockGetPrimaryCodeRepo: vi.fn(),
   mockListPrIssueComments: vi.fn(),
   mockUpsertResolvedProductDecision: vi.fn(),
+  mockDispatchStageHandler: vi.fn(),
+  mockResolveSpecialistId: vi.fn(),
+  mockCreateRuntimeForProduct: vi.fn(),
 }));
+
+vi.mock('@helm/orchestrator', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@helm/orchestrator')>();
+  return {
+    ...real,
+    dispatchStageHandler: mockDispatchStageHandler,
+    resolveSpecialistId: mockResolveSpecialistId,
+  };
+});
 
 vi.mock('../services/dispatch-scheduler.js', () => ({
   scheduleItemDispatch: mockScheduleItemDispatch,
@@ -94,6 +118,11 @@ vi.mock('../services/index.js', async (importOriginal) => {
       get: mockGet,
       upsertResolvedProductDecision: mockUpsertResolvedProductDecision,
     }),
+    getProductRegistry: mockGetProductRegistry,
+    getJobStore: vi.fn().mockResolvedValue({
+      createJobIfNoRunning: mockCreateJobIfNoRunning,
+      updateJob: mockUpdateJob,
+    }),
     getProductConfig: vi.fn().mockResolvedValue({
       product: { slug: 'test-app', name: 'Test' },
       issue_tracker: {
@@ -108,6 +137,10 @@ vi.mock('../services/index.js', async (importOriginal) => {
     }),
   };
 });
+
+vi.mock('../services/runtime-factory.js', () => ({
+  createRuntimeForProduct: mockCreateRuntimeForProduct,
+}));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -368,7 +401,7 @@ const HUMAN_REQUIRED_ADJUDICATION = [
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('POST /api/webhooks/github', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     _resetForTests();
     vi.clearAllMocks();
     process.env.GITHUB_WEBHOOK_SECRET = TEST_SECRET;
@@ -418,6 +451,21 @@ describe('POST /api/webhooks/github', () => {
       inserted: true,
       state: { currentStage: 'code-review' },
     });
+    mockGetProductRegistry.mockResolvedValue([await getProductConfig()]);
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      job: {
+        jobId: 'job-sync-1',
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        specialistId: 'reviewer-fanout',
+        status: 'running',
+        startedAt: '2026-07-22T10:00:00.000Z',
+      },
+    });
+    mockUpdateJob.mockResolvedValue(undefined);
+    mockDispatchStageHandler.mockResolvedValue({ status: 'done' });
+    mockResolveSpecialistId.mockReturnValue('reviewer-fanout');
+    mockCreateRuntimeForProduct.mockReturnValue({ spawn: vi.fn() });
     mockGet.mockResolvedValue(null);
     vi.mocked(getIssueTrackerAdapter).mockResolvedValue({
       setSubStage: mockSetSubStage,
@@ -428,6 +476,7 @@ describe('POST /api/webhooks/github', () => {
   afterEach(() => {
     delete process.env.GITHUB_WEBHOOK_SECRET;
     delete process.env.GITHUB_TOKEN;
+    delete process.env.HELM_DATA_DIR;
   });
 
   describe('authentication', () => {
@@ -1220,6 +1269,107 @@ describe('POST /api/webhooks/github', () => {
         prNumber: 76,
         triggeredBy: 'webhook:spec-pr-sync',
       });
+    });
+
+    it('drives a draft-artifact webhook through scheduler dispatch with catalogued advisory context', async () => {
+      const dataRoot = join(tmpdir(), `helm-webhook-e2e-${randomUUID()}`);
+      process.env.HELM_DATA_DIR = dataRoot;
+      try {
+        const actualScheduler = await vi.importActual<
+          typeof import('../services/dispatch-scheduler.js')
+        >('../services/dispatch-scheduler.js');
+        mockScheduleItemDispatch.mockImplementation(actualScheduler.scheduleItemDispatch);
+
+        const product = parsedGitHubProduct(
+          ['review:', '  early_loop:', '    enabled: true'].join('\n'),
+        );
+        vi.mocked(getProductConfig).mockResolvedValue(product as never);
+        mockGetProductRegistry.mockResolvedValue([product]);
+        mockGet.mockResolvedValue({
+          externalId: 'LEA-192',
+          productSlug: 'test-app',
+          currentStage: 'spec-draft',
+          history: [],
+        });
+        mockResolveSpecialistId.mockImplementation(
+          (_stage, specialistId) => specialistId as string | undefined,
+        );
+        mockCreateJobIfNoRunning.mockResolvedValue({
+          job: {
+            jobId: 'job-draft-review',
+            productSlug: 'test-app',
+            externalId: 'LEA-192',
+            specialistId: 'spec-draft-reviewer',
+            status: 'running',
+            targetRevision: 'sha-spec-192',
+            startedAt: '2026-07-22T10:00:00.000Z',
+          },
+        });
+        mockDispatchStageHandler.mockResolvedValue({
+          status: 'done',
+          advisories: [
+            {
+              severity: 'INFO',
+              title: 'Spec plan artifact ordering',
+              summary: 'pair-spec-and-plan-files',
+              disposition: 'Rejected',
+            },
+          ],
+        });
+
+        const body = mergedPrPayload('helm/spec/LEA-192', {
+          action: 'opened',
+          merged: false,
+          prNumber: 76,
+          headSha: 'sha-spec-192',
+        });
+
+        const res = await post(body, 'pull_request');
+        expect(res.status).toBe(200);
+
+        expect(mockCreateJobIfNoRunning).toHaveBeenCalledWith({
+          productSlug: 'test-app',
+          externalId: 'LEA-192',
+          specialistId: 'spec-draft-reviewer',
+          targetRevision: 'sha-spec-192',
+        });
+        await vi.waitFor(() => {
+          expect(mockDispatchStageHandler).toHaveBeenCalled();
+        });
+        const [item, dispatchedProduct, , , options] = mockDispatchStageHandler.mock.calls[0]!;
+        expect(item).toEqual({
+          externalId: 'LEA-192',
+          productSlug: 'test-app',
+          currentStage: 'spec-draft',
+        });
+        expect(dispatchedProduct).toEqual(
+          expect.objectContaining({
+            product: { slug: 'test-app', name: 'Test' },
+            review: expect.objectContaining({ early_loop: { enabled: true } }),
+          }),
+        );
+        expect(options).toEqual(
+          expect.objectContaining({
+            specialistId: 'spec-draft-reviewer',
+            targetRevision: 'sha-spec-192',
+          }),
+        );
+        await vi.waitFor(() => {
+          expect(mockUpdateJob).toHaveBeenCalledWith(
+            'job-draft-review',
+            expect.objectContaining({
+              status: 'done',
+              result: expect.objectContaining({
+                advisories: expect.arrayContaining([
+                  expect.objectContaining({ summary: 'pair-spec-and-plan-files' }),
+                ]),
+              }),
+            }),
+          );
+        });
+      } finally {
+        await rm(dataRoot, { recursive: true, force: true });
+      }
     });
 
     it('skips draft review from a parsed product config when review is omitted', async () => {

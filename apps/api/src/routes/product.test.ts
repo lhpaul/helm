@@ -114,7 +114,7 @@ describe('GET /api/product', () => {
     expect(body.error).toContain('.helm/product.yaml');
   });
 
-  it('returns 500 with field path when schema is invalid', async () => {
+  it('returns a generic 500 when schema is invalid', async () => {
     await writeFile(join(testDir, '.helm', 'product.yaml'), INVALID_SCHEMA_YAML, 'utf-8');
     process.env.HELM_KNOWLEDGE_REPO_PATH = testDir;
 
@@ -122,7 +122,20 @@ describe('GET /api/product', () => {
 
     expect(res.status).toBe(500);
     const body = (await res.json()) as { error: string };
-    expect(body.error).toContain('product.slug');
+    expect(body.error).toBe('Failed to load product config');
+    expect(body.error).not.toContain(testDir);
+  });
+
+  it('returns a generic 500 for non-ENOENT config read errors', async () => {
+    await mkdir(join(testDir, '.helm', 'product.yaml'));
+    process.env.HELM_KNOWLEDGE_REPO_PATH = testDir;
+
+    const res = await app.request('/api/product');
+
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('Failed to load product config');
+    expect(body.error).not.toContain(testDir);
   });
 
   it('returns 500 when HELM_KNOWLEDGE_REPO_PATH is not set', async () => {

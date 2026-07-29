@@ -30,9 +30,11 @@ productRouter.get('/product', async (c) => {
         404,
       );
     }
-    // Validation or YAML parse error — message already contains the field path
+    // Validation, YAML parse, or non-ENOENT read errors may include local paths.
+    // Keep those details server-side and return a stable client-facing error.
     if (err instanceof ProductConfigError) {
-      return c.json({ error: err.message }, 500);
+      console.error('[product] Failed to load product config:', err);
+      return c.json({ error: 'Failed to load product config' }, 500);
     }
     // Unexpected error — let Hono handle it as 500
     throw err;

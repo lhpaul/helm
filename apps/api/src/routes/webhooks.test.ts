@@ -1813,6 +1813,65 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
+    it.each([
+      {
+        kind: 'spec' as const,
+        headRef: 'helm/spec/LEA-192',
+        currentStage: 'spec-draft',
+        specialistId: 'spec-draft-reviewer',
+        prNumber: 80,
+        headSha: 'sha-spec-reopened-192',
+      },
+      {
+        kind: 'plan' as const,
+        headRef: 'helm/plan/LEA-192',
+        currentStage: 'plan-draft',
+        specialistId: 'plan-draft-reviewer',
+        prNumber: 81,
+        headSha: 'sha-plan-reopened-192',
+      },
+    ])(
+      'schedules $kind draft review when a canonical artifact PR reopens',
+      async ({ kind, headRef, currentStage, specialistId, prNumber, headSha }) => {
+        vi.mocked(getProductConfig).mockResolvedValue({
+          product: { slug: 'test-app', name: 'Test' },
+          issue_tracker: {
+            provider: 'github_projects',
+            org: 'test-org',
+            project_number: 1,
+            custom_field_name: 'Helm Stage',
+          },
+          code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+          knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+          workflow: { final_stage: 'released' },
+          review: { early_loop: { enabled: true } },
+        } as never);
+        const body = mergedPrPayload(headRef, {
+          action: 'reopened',
+          merged: false,
+          prNumber,
+          headSha,
+        });
+        mockGet.mockResolvedValue({
+          externalId: 'LEA-192',
+          productSlug: 'test-app',
+          currentStage,
+          history: [],
+        });
+
+        const res = await post(body, 'pull_request');
+        expect(res.status).toBe(200);
+        expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
+          productSlug: 'test-app',
+          externalId: 'LEA-192',
+          specialistId,
+          targetRevision: headSha,
+          prNumber,
+          triggeredBy: `webhook:${kind}-pr-sync`,
+        });
+      },
+    );
+
     it('queues spec-draft-reviewer when the spec PR opens before spec-draft', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({
         product: { slug: 'test-app', name: 'Test' },
@@ -2007,6 +2066,41 @@ describe('POST /api/webhooks/github', () => {
       expect(res.status).toBe(200);
       expect(mockGet).not.toHaveBeenCalled();
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('skips reopened draft PR dispatch when the head repo is not the canonical knowledge repo', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { early_loop: { enabled: true } },
+      } as never);
+      const body = mergedPrPayload('helm/spec/LEA-192', {
+        action: 'reopened',
+        merged: false,
+        prNumber: 86,
+        headSha: 'sha-reopened-fork-192',
+        headOwner: 'attacker',
+        headRepo: 'test-repo',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'spec-draft',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
     });
 
     it('skips draft PR dispatch when early loop is disabled', async () => {

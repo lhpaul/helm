@@ -212,6 +212,32 @@ describe('parseGitHubWebhook', () => {
       });
     });
 
+    it('pull_request action:reopened on early artifact branch → pull_request_synchronized', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'reopened',
+          pull_request: {
+            number: 44,
+            merged: false,
+            head: { ref: 'helm/spec/issue_42', sha: 'ghi789' },
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result).toEqual({
+        type: 'pull_request_synchronized',
+        headRef: 'helm/spec/issue_42',
+        owner: 'owner',
+        repo: 'repo',
+        headOwner: null,
+        headRepo: null,
+        prNumber: 44,
+        headSha: 'ghi789',
+        senderLogin: null,
+        timestamp: expect.any(String),
+      });
+    });
+
     it('pull_request action:synchronize → pull_request_synchronized with headRef', () => {
       const result = parseGitHubWebhook(
         ctx('pull_request', {
@@ -275,6 +301,20 @@ describe('parseGitHubWebhook', () => {
       const result = parseGitHubWebhook(
         ctx('pull_request', {
           action: 'opened',
+          pull_request: {
+            number: 12,
+            merged: false,
+            head: { ref: 'feature/foo', sha: 'abc123' },
+          },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('pull_request action:reopened on non-artifact branch → unknown', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'reopened',
           pull_request: {
             number: 12,
             merged: false,

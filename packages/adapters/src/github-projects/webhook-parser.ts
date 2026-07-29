@@ -248,7 +248,7 @@ export function parseGitHubWebhook(
       }
       if (
         action === 'synchronize' ||
-        (action === 'opened' && isEarlyDraftArtifactBranch(pr.head.ref))
+        ((action === 'opened' || action === 'reopened') && isEarlyDraftArtifactBranch(pr.head.ref))
       ) {
         return {
           type: 'pull_request_synchronized',

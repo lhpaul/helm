@@ -67,7 +67,7 @@ export type NormalizedEvent =
       timestamp: string;
     }
   /**
-   * A pull request head became available or changed (actions: opened/synchronize).
+   * A pull request head became available or changed (actions: opened/reopened/synchronize).
    * headRef is the PR source branch (e.g. `helm/impl/LEA-192`).
    */
   | {

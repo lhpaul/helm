@@ -603,6 +603,32 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
+    it.each([
+      { subStage: 'spec-draft', specialistId: 'spec-remediator' },
+      { subStage: 'plan-draft', specialistId: 'plan-remediator' },
+    ])('replays pending $specialistId work when early loop is disabled', async ({ subStage }) => {
+      const product = parsedGitHubProduct(
+        ['review:', '  early_loop:', '    enabled: false'].join('\n'),
+      );
+      vi.mocked(getProductConfig).mockResolvedValue(product as never);
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'item_updated',
+        externalId: 'issue_5',
+        subStage,
+        timestamp: 't',
+      });
+      mockTransition.mockResolvedValue({ history: [], currentStage: subStage });
+
+      const res = await post(body, 'projects_v2_item');
+      expect(res.status).toBe(200);
+      expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalledWith({
+        product: expect.objectContaining({ review: { early_loop: { enabled: false } } }),
+        productSlug: 'test-app',
+        externalId: 'issue_5',
+      });
+    });
+
     it('returns 200 on WorkflowTransitionError (not a delivery problem)', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({

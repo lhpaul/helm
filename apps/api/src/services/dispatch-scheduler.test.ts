@@ -528,6 +528,56 @@ describe('scheduleItemDispatch', () => {
     expect(options.specialistId).toBe('spec-remediator');
   });
 
+  it.each([
+    {
+      currentStage: 'spec-draft',
+      specialistId: 'spec-remediator',
+      jobId: 'job-disabled-spec-remediator',
+    },
+    {
+      currentStage: 'plan-draft',
+      specialistId: 'plan-remediator',
+      jobId: 'job-disabled-plan-remediator',
+    },
+  ])(
+    'routes explicit $specialistId when early loop is disabled',
+    async ({ currentStage, specialistId, jobId }) => {
+      vi.mocked(getProductRegistry).mockResolvedValue([
+        { ...baseProduct, review: { early_loop: { enabled: false } } } as never,
+      ]);
+      vi.mocked(getItemStore).mockResolvedValue({
+        get: vi.fn().mockResolvedValue({
+          externalId: 'LEA-1',
+          productSlug: 'test-product',
+          currentStage,
+        }),
+      } as never);
+      vi.mocked(resolveSpecialistId).mockReturnValue(specialistId);
+      mockCreateJobIfNoRunning.mockResolvedValue({ job: { jobId } });
+
+      await expect(
+        scheduleItemDispatch({
+          productSlug: 'test-product',
+          externalId: 'LEA-1',
+          specialistId,
+          triggeredBy: 'operator:remediation',
+        }),
+      ).resolves.toEqual({ scheduled: true, jobId });
+
+      expect(resolveSpecialistId).toHaveBeenCalledWith(currentStage, specialistId);
+      expect(mockCreateJobIfNoRunning).toHaveBeenCalledWith(
+        expect.objectContaining({ specialistId }),
+      );
+      await vi.waitFor(() => {
+        expect(dispatchStageHandler).toHaveBeenCalled();
+      });
+      const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+        specialistId?: string;
+      };
+      expect(options.specialistId).toBe(specialistId);
+    },
+  );
+
   it('does not schedule spec-draft-reviewer for spec-ready even when early loop is enabled', async () => {
     vi.mocked(getProductRegistry).mockResolvedValue([
       { ...baseProduct, review: { early_loop: { enabled: true } } } as never,

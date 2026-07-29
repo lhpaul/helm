@@ -28,6 +28,13 @@ const BUILT_IN_FALSE_POSITIVES: readonly Omit<FalsePositiveEntry, 'matchesSummar
     rationale:
       'Helm creates and reviews spec and plan artifacts sequentially; the downstream artifact can be absent during early review by design.',
   },
+  {
+    title: 'Plan spec artifact ordering',
+    pattern: 'spec file is missing while plan remains in plan-draft',
+    appliesTo: ['spec-draft', 'plan-draft'],
+    rationale:
+      'Helm creates and reviews spec and plan artifacts sequentially; the paired artifact can be absent during early review by design.',
+  },
 ];
 
 /** Parses `helm-knowledge/false-positives.md` sections into matchable entries. */

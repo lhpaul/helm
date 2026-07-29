@@ -629,6 +629,18 @@ export async function runCodeReviewLoop(
             externalProvider: params.product.review?.external?.provider,
           });
         }
+        if (fanout.status === 'error') {
+          return {
+            status: 'error',
+            prUrl: fanout.prUrl,
+            costUsd: totalCost,
+            durationMs: maxDuration,
+            cyclesCompleted: cycle,
+            newStage:
+              ranRemediation && params.mode !== 'early-artifact' ? 'code-review' : undefined,
+            error: `Reviewer fan-out reported an error (reviewer coverage may be incomplete): ${fanout.error}`,
+          };
+        }
         return {
           status: 'done',
           prUrl: fanout.prUrl,

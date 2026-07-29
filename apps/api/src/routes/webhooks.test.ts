@@ -1894,6 +1894,60 @@ describe('POST /api/webhooks/github', () => {
       });
     });
 
+    it.each([
+      {
+        kind: 'spec' as const,
+        headRef: 'helm/spec/LEA-194',
+        currentStage: 'spec-ready',
+        specialistId: 'spec-draft-reviewer',
+      },
+      {
+        kind: 'plan' as const,
+        headRef: 'helm/plan/LEA-195',
+        currentStage: 'plan-ready',
+        specialistId: 'plan-draft-reviewer',
+      },
+    ])(
+      'does not recreate stale $kind draft dispatches after the draft stage',
+      async ({ headRef, currentStage, specialistId }) => {
+        vi.mocked(getProductConfig).mockResolvedValue({
+          product: { slug: 'test-app', name: 'Test' },
+          issue_tracker: {
+            provider: 'github_projects',
+            org: 'test-org',
+            project_number: 1,
+            custom_field_name: 'Helm Stage',
+          },
+          code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+          knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+          workflow: { final_stage: 'released' },
+          review: { early_loop: { enabled: true } },
+        } as never);
+        mockGet.mockResolvedValue({
+          externalId: headRef.split('/').at(-1),
+          productSlug: 'test-app',
+          currentStage,
+          history: [],
+        });
+
+        const res = await post(
+          mergedPrPayload(headRef, {
+            action: 'synchronize',
+            merged: false,
+            prNumber: 85,
+            headSha: 'sha-stale-draft',
+          }),
+          'pull_request',
+        );
+
+        expect(res.status).toBe(200);
+        expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+        expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalledWith(
+          expect.objectContaining({ specialistId }),
+        );
+      },
+    );
+
     it('skips draft PR dispatch when the webhook repository does not match the knowledge repo', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({
         product: { slug: 'test-app', name: 'Test' },
@@ -2552,6 +2606,56 @@ describe('POST /api/webhooks/github', () => {
         triggeredBy: 'webhook:external-review-ready',
       });
       expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+    });
+
+    it('preserves pending draft external review when readiness arrives before the draft stage', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/knowledge-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+      } as never);
+      mockPeekPendingExternalReviewByRevision.mockResolvedValue({
+        kind: 'pending_external_review',
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        specialistId: 'spec-draft-reviewer',
+        provider: 'haystack',
+        reason: 'analysis_pending',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        createdAt: '2026-07-22T10:00:00.000Z',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        triggeredBy: 'test',
+        updatedAt: '2026-07-22T10:00:00.000Z',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'discovery',
+        history: [],
+      });
+
+      const res = await post(
+        haystackCheckRunPayload({
+          headRef: 'helm/spec/issue_42',
+          repo: 'knowledge-repo',
+        }),
+        'check_run',
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockClearPendingExternalReview).not.toHaveBeenCalled();
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+      expect(mockResumePendingExternalReviewByRevision).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
     });
 
     it('keeps reviewer-fanout intents as impl even when the item is still in draft', async () => {

@@ -1374,6 +1374,54 @@ describe('runCodeReviewLoop', () => {
     },
   );
 
+  it('returns error when fan-out errored and external blockers are all suppressed', async () => {
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        early_loop: { enabled: true },
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
+    };
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInFalsePositiveEntries());
+    vi.mocked(fanoutReviewers).mockResolvedValue(
+      makeFanout(
+        { status: 'error', error: 'security reviewer comment failed' },
+        { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+      ),
+    );
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'needs_fixes',
+      blockers: [
+        {
+          id: 'adv-plan-missing',
+          severity: 'high',
+          blocking: true,
+          summary: 'plan file is missing while spec remains in spec-draft',
+          path: 'specs/issue_1.md',
+        },
+      ],
+      advisories: [],
+    });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Reviewer fan-out reported an error');
+    expect(result.error).toContain('security reviewer comment failed');
+  });
+
   it('remediates genuine external blockers when catalogued false positives coexist', async () => {
     const builtInCatalog = builtInFalsePositiveEntries();
     const product: Product = {

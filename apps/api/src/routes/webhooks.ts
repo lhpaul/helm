@@ -10,7 +10,7 @@ import {
   decisionMatchesLatestAdjudication,
   parseHumanProductDecisionComment,
 } from '@helm/orchestrator';
-import { WorkflowTransitionError } from '@helm/workflow';
+import { WORKFLOW_STAGES, WorkflowTransitionError, type WorkflowStage } from '@helm/workflow';
 import { parseArtifactBranch } from '@helm/shared';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
 import {
@@ -71,6 +71,13 @@ function stageForReviewReadiness(kind: ReviewReadinessArtifactKind): string {
   if (kind === 'spec') return 'spec-draft';
   if (kind === 'plan') return 'plan-draft';
   return 'code-review';
+}
+
+function isBeforeWorkflowStage(currentStage: string | undefined, expectedStage: string): boolean {
+  if (!currentStage) return false;
+  const currentIndex = WORKFLOW_STAGES.indexOf(currentStage as WorkflowStage);
+  const expectedIndex = WORKFLOW_STAGES.indexOf(expectedStage as WorkflowStage);
+  return currentIndex >= 0 && expectedIndex >= 0 && currentIndex < expectedIndex;
 }
 
 function externalReviewTrustConfig(
@@ -481,7 +488,10 @@ webhooksRouter.post('/webhooks/github', async (c) => {
                 `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} — dispatch deferred: ${outcome.reason}`,
               );
             }
-          } else if (item?.productSlug === config.product.slug) {
+          } else if (
+            item?.productSlug === config.product.slug &&
+            isBeforeWorkflowStage(item.currentStage, expectedStage)
+          ) {
             if (event.headSha || event.prNumber !== undefined) {
               await persistReviewDispatchIntent({
                 productSlug: config.product.slug,
@@ -619,6 +629,17 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       const item =
         matchedItem?.externalId === externalId ? matchedItem : await itemStore.get(externalId);
       if (item?.productSlug !== config.product.slug || item.currentStage !== expectedStage) {
+        if (
+          (artifactKind === 'spec' || artifactKind === 'plan') &&
+          (!item ||
+            (item.productSlug === config.product.slug &&
+              isBeforeWorkflowStage(item.currentStage, expectedStage)))
+        ) {
+          console.info(
+            `[webhooks/github] external review readiness preserved — item not yet in ${expectedStage}`,
+          );
+          return c.json({ processed: true });
+        }
         await clearPendingExternalReview({
           productSlug: config.product.slug,
           externalId,

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { Product } from '@helm/shared';
@@ -61,9 +61,12 @@ function makeProduct(): Product {
   };
 }
 
-function makeRuntime(): IAgentRuntime {
+function makeRuntime(expectedBranch: string): IAgentRuntime {
   return {
     spawn: vi.fn().mockImplementation(async (params: SpawnParams): Promise<AgentSession> => {
+      await expect(readFile(`${params.workdir}/artifact-branch.txt`, 'utf-8')).resolves.toBe(
+        `${expectedBranch}\n`,
+      );
       const file = artifactFileFor(params.workdir, params.specialistId);
       await mkdir(dirname(file), { recursive: true });
       await writeFile(
@@ -104,7 +107,9 @@ describe('runEarlyArtifactReviewLoop provisioning', () => {
         if (args[0] === 'clone') {
           cloneCalls.push([...args]);
           const dest = args[args.length - 1]!;
+          const branch = args[args.indexOf('--branch') + 1]!;
           await mkdir(`${dest}/.git`, { recursive: true });
+          await writeFile(`${dest}/artifact-branch.txt`, `${branch}\n`);
         }
         return { stdout: '' };
       });
@@ -117,7 +122,7 @@ describe('runEarlyArtifactReviewLoop provisioning', () => {
         product: makeProduct(),
         prUrl: PR_URL,
         githubToken: 'test-token',
-        runtime: makeRuntime(),
+        runtime: makeRuntime(expectedBranch),
         transition: vi.fn(),
         runGit,
         runGh,

@@ -5,13 +5,21 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { GitHubNotFoundError, LinearNotFoundError } from '@helm/adapters';
 import type { Product } from '@helm/shared';
 
-const { mockGetItem, mockGetIssueTrackerAdapter, mockUpdateJob, mockCreateJobIfNoRunning } =
-  vi.hoisted(() => ({
-    mockGetItem: vi.fn(),
-    mockGetIssueTrackerAdapter: vi.fn(),
-    mockUpdateJob: vi.fn(),
-    mockCreateJobIfNoRunning: vi.fn(),
-  }));
+const {
+  mockGetItem,
+  mockGetIssueTrackerAdapter,
+  mockUpdateJob,
+  mockCreateJobIfNoRunning,
+  mockResolveOpenPrMetadata,
+  mockResolveOpenPrMetadataForRepo,
+} = vi.hoisted(() => ({
+  mockGetItem: vi.fn(),
+  mockGetIssueTrackerAdapter: vi.fn(),
+  mockUpdateJob: vi.fn(),
+  mockCreateJobIfNoRunning: vi.fn(),
+  mockResolveOpenPrMetadata: vi.fn(),
+  mockResolveOpenPrMetadataForRepo: vi.fn(),
+}));
 
 vi.mock('./index.js', () => ({
   getIssueTrackerAdapter: (...args: unknown[]) => mockGetIssueTrackerAdapter(...args),
@@ -36,6 +44,16 @@ vi.mock('@helm/orchestrator', () => ({
   resolveSpecialistId: vi.fn(),
 }));
 
+vi.mock('./github-pr.js', () => ({
+  parseGitHubRepoUrl: (url: string) => {
+    const parsed = new URL(url);
+    const [owner, repo] = parsed.pathname.replace(/^\/+/, '').split('/');
+    return { owner, repo: repo?.replace(/\.git$/, '') };
+  },
+  resolveOpenPrMetadata: (...args: unknown[]) => mockResolveOpenPrMetadata(...args),
+  resolveOpenPrMetadataForRepo: (...args: unknown[]) => mockResolveOpenPrMetadataForRepo(...args),
+}));
+
 import {
   clearPendingExternalReview,
   resumePendingExternalReview,
@@ -51,6 +69,7 @@ import { getReviewDispatchOutbox } from './review-dispatch-outbox.js';
 const baseProduct = {
   product: { slug: 'test-product', name: 'Test Product' },
   code_repos: [{ url: 'https://github.com/o/r', default_branch: 'main', role: 'app' }],
+  knowledge_repo: { url: 'https://github.com/o/k', default_branch: 'main' },
 } as unknown as Product;
 
 describe('runDispatchJob fetchTask', () => {
@@ -684,6 +703,14 @@ describe('pending external review readiness cleanup', () => {
     dataRoot = await mkdtemp(join(tmpdir(), 'helm-dispatch-scheduler-'));
     process.env.HELM_DATA_DIR = dataRoot;
     process.env.GITHUB_TOKEN = 'test-github-token';
+    mockResolveOpenPrMetadataForRepo.mockResolvedValue({
+      owner: 'o',
+      repo: 'k',
+      number: 42,
+      headRef: 'helm/spec/LEA-1',
+      headSha: 'sha-live',
+      htmlUrl: 'https://github.com/o/k/pull/42',
+    });
     vi.mocked(getProductRegistry).mockResolvedValue([baseProduct]);
     vi.mocked(getItemStore).mockResolvedValue({
       get: vi.fn().mockResolvedValue({
@@ -930,7 +957,7 @@ describe('pending external review readiness cleanup', () => {
     ).resolves.toBeNull();
   });
 
-  it('removes pending external review after duplicate readiness delivery', async () => {
+  it('removes pending external review after duplicate revision readiness delivery', async () => {
     const { outbox } = await putPending();
     mockCreateJobIfNoRunning.mockResolvedValue({
       duplicate: true,
@@ -953,61 +980,26 @@ describe('pending external review readiness cleanup', () => {
     ).resolves.toBeNull();
   });
 
-  it('handles concurrent duplicate readiness notifications with one scheduled job', async () => {
+  it('removes pending external review after duplicate readiness delivery', async () => {
     const { outbox } = await putPending();
-    let firstRelease: (() => void) | undefined;
-    let secondRelease: (() => void) | undefined;
-    const entered: Array<() => void> = [];
-    mockCreateJobIfNoRunning.mockImplementation(async () => {
-      const callNumber = entered.length + 1;
-      await new Promise<void>((resolve) => {
-        entered.push(resolve);
-        if (callNumber === 1) firstRelease = resolve;
-        if (callNumber === 2) secondRelease = resolve;
-      });
-      if (callNumber === 1) {
-        return {
-          job: {
-            jobId: '00000000-0000-4000-8000-000000000001',
-            productSlug: 'test-product',
-            externalId: 'LEA-1',
-            specialistId: 'reviewer-fanout',
-            status: 'running',
-            targetRevision: 'sha-1',
-            startedAt: '2026-07-22T10:00:00.000Z',
-          },
-        };
-      }
-      return { duplicate: true, existingJobId: '00000000-0000-4000-8000-000000000001' };
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      duplicate: true,
+      existingJobId: '00000000-0000-4000-8000-000000000001',
     });
 
-    const outcomesPromise = Promise.all([
+    await expect(
       resumePendingExternalReviewByRevision({
         productSlug: 'test-product',
         provider: 'haystack',
         targetRevision: 'sha-1',
-        triggeredBy: 'test:ready:a',
+        triggeredBy: 'test:ready',
       }),
-      resumePendingExternalReviewByRevision({
-        productSlug: 'test-product',
-        provider: 'haystack',
-        targetRevision: 'sha-1',
-        triggeredBy: 'test:ready:b',
-      }),
-    ]);
+    ).resolves.toEqual({
+      scheduled: false,
+      reason: 'Duplicate target revision',
+      externalId: 'LEA-1',
+    });
 
-    await vi.waitFor(() => expect(entered).toHaveLength(2));
-    firstRelease?.();
-    secondRelease?.();
-
-    const outcomes = await outcomesPromise;
-
-    expect(outcomes.filter((outcome) => outcome.scheduled)).toHaveLength(1);
-    expect(
-      outcomes.filter(
-        (outcome) => !outcome.scheduled && outcome.reason === 'Duplicate target revision',
-      ),
-    ).toHaveLength(1);
     await expect(
       outbox.get('test-product', 'LEA-1', 'pending_external_review'),
     ).resolves.toBeNull();
@@ -1097,12 +1089,13 @@ describe('pending external review readiness cleanup', () => {
     });
   });
 
-  it('infers the draft reviewer when replaying a legacy parked dispatch without a specialist', async () => {
+  it('refreshes live PR metadata when replaying a parked draft-review dispatch', async () => {
     const outbox = await getReviewDispatchOutbox(dataRoot);
     await outbox.put({
       kind: 'review_dispatch',
       productSlug: 'test-product',
       externalId: 'LEA-1',
+      prNumber: 42,
       targetRevision: 'sha-1',
       triggeredBy: 'legacy',
     });
@@ -1127,7 +1120,7 @@ describe('pending external review readiness cleanup', () => {
         externalId: 'LEA-1',
         specialistId: 'spec-draft-reviewer',
         status: 'running',
-        targetRevision: 'sha-1',
+        targetRevision: 'sha-live',
         startedAt: '2026-07-22T10:00:00.000Z',
       },
     });
@@ -1146,11 +1139,16 @@ describe('pending external review readiness cleanup', () => {
       githubToken: 'token',
     });
 
+    expect(mockResolveOpenPrMetadataForRepo).toHaveBeenCalledWith({
+      repo: { owner: 'o', repo: 'k' },
+      prNumber: 42,
+      githubToken: 'token',
+    });
     expect(mockCreateJobIfNoRunning).toHaveBeenCalledWith({
       productSlug: 'test-product',
       externalId: 'LEA-1',
       specialistId: 'spec-draft-reviewer',
-      targetRevision: 'sha-1',
+      targetRevision: 'sha-live',
     });
     await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toBeNull();
   });

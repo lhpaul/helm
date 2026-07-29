@@ -98,6 +98,19 @@ export async function resolveOpenPrMetadata(input: {
   githubToken: string;
 }): Promise<GitHubPrMetadata> {
   const repo = getPrimaryCodeRepo(input.product);
+  return resolveOpenPrMetadataForRepo({
+    repo,
+    prNumber: input.prNumber,
+    githubToken: input.githubToken,
+  });
+}
+
+export async function resolveOpenPrMetadataForRepo(input: {
+  repo: GitHubRepoRef;
+  prNumber: number;
+  githubToken: string;
+}): Promise<GitHubPrMetadata> {
+  const repo = input.repo;
   const pr = await fetchGitHubJson<{
     number: number;
     state: string;

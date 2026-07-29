@@ -406,6 +406,14 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             triggeredBy: `webhook:${parsed.kind}-pr-sync`,
           });
           if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+            await persistReviewDispatchIntent({
+              productSlug: config.product.slug,
+              externalId: parsed.externalId,
+              specialistId,
+              prNumber: event.prNumber,
+              targetRevision: event.headSha,
+              triggeredBy: `webhook:${parsed.kind}-pr-sync`,
+            });
             console.info(
               `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} — dispatch deferred: ${outcome.reason}`,
             );

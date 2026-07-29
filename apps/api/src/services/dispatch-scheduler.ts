@@ -17,7 +17,11 @@ import {
   getReviewDispatchOutbox,
   type PendingExternalReviewIntent,
 } from './review-dispatch-outbox.js';
-import { resolveOpenPrMetadata } from './github-pr.js';
+import {
+  parseGitHubRepoUrl,
+  resolveOpenPrMetadata,
+  resolveOpenPrMetadataForRepo,
+} from './github-pr.js';
 import { createGitHubBugbotReviewLoader } from './bugbot-review-loader.js';
 
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
@@ -318,6 +322,27 @@ async function replayPendingReviewDispatch(input: {
     })) ?? 'reviewer-fanout';
   if (intent.prNumber !== undefined) {
     if (replaySpecialist !== 'reviewer-fanout') {
+      const artifactKind =
+        replaySpecialist === 'spec-draft-reviewer'
+          ? 'spec'
+          : replaySpecialist === 'plan-draft-reviewer'
+            ? 'plan'
+            : undefined;
+      if (artifactKind) {
+        const pr = await resolveOpenPrMetadataForRepo({
+          repo: parseGitHubRepoUrl(input.product.knowledge_repo.url),
+          prNumber: intent.prNumber,
+          githubToken: input.githubToken,
+        });
+        const expectedHeadRef = `helm/${artifactKind}/${intent.externalId}`;
+        if (pr.headRef !== expectedHeadRef) {
+          console.info(
+            `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
+          );
+          return;
+        }
+        targetRevision = pr.headSha;
+      }
       if (!targetRevision) return;
       const outcome = await scheduleItemDispatch({
         productSlug: intent.productSlug,
@@ -698,21 +723,7 @@ export async function scheduleItemDispatch(input: {
     };
   }
   if ('conflict' in outcome) {
-    if (
-      input.targetRevision &&
-      outcome.runningTargetRevision !== undefined &&
-      outcome.runningTargetRevision !== input.targetRevision
-    ) {
-      await persistPendingReviewDispatch({
-        dataRoot,
-        productSlug: input.productSlug,
-        externalId: input.externalId,
-        specialistId: dispatchSpecialist,
-        prNumber: input.prNumber,
-        targetRevision: input.targetRevision,
-        triggeredBy: input.triggeredBy,
-      });
-    } else if (input.targetRevision && outcome.runningTargetRevision === undefined) {
+    if (input.targetRevision || input.prNumber !== undefined) {
       await persistPendingReviewDispatch({
         dataRoot,
         productSlug: input.productSlug,

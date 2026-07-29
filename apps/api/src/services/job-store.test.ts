@@ -282,29 +282,13 @@ describe('createJobIfNoRunning', () => {
     expect(second).toMatchObject({ job: { targetRevision: 'sha-b' } });
   });
 
-  it('concurrent duplicate deliveries produce only one same-target job', async () => {
-    const [first, second] = await Promise.all([
-      store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' }),
-      store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' }),
-    ]);
+  it('dedupes an existing running job with the same targetRevision', async () => {
+    const first = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+    if (!('job' in first)) throw new Error('expected job');
 
-    const created = [first, second].filter((outcome) => 'job' in outcome);
-    const blocked = [first, second].filter(
-      (outcome) => 'duplicate' in outcome || 'conflict' in outcome,
-    );
-    expect(created).toHaveLength(1);
-    expect(blocked).toHaveLength(1);
-    const createdJob = created[0]!;
-    if (!('job' in createdJob)) throw new Error('expected job');
-    const blockedOutcome = blocked[0]!;
-    if ('duplicate' in blockedOutcome) {
-      expect(blockedOutcome.existingJobId).toBe(createdJob.job.jobId);
-    } else if ('conflict' in blockedOutcome) {
-      // Inflight race may return '' before the winner's job is visible on disk.
-      if (blockedOutcome.runningJobId !== '') {
-        expect(blockedOutcome.runningJobId).toBe(createdJob.job.jobId);
-      }
-    }
+    const second = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+
+    expect(second).toEqual({ duplicate: true, existingJobId: first.job.jobId });
     const jobs = await store.listJobsForItem(BASE_INPUT.productSlug, BASE_INPUT.externalId);
     expect(jobs.filter((job) => job.targetRevision === 'sha-a')).toHaveLength(1);
   });

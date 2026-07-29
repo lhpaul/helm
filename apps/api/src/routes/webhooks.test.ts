@@ -1505,6 +1505,7 @@ describe('POST /api/webhooks/github', () => {
 
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
+      expect(mockGet).not.toHaveBeenCalled();
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
       expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
     });

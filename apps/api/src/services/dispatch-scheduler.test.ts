@@ -1010,6 +1010,67 @@ describe('pending external review readiness cleanup', () => {
     ).resolves.toBeNull();
   });
 
+  it('removes pending external review when an explicit draft reviewer is no longer applicable', async () => {
+    const { outbox } = await putPending('2099-01-01T00:00:00.000Z', 'spec-draft-reviewer');
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'spec-draft',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockReturnValue('spec-draft-reviewer');
+
+    await expect(
+      resumePendingExternalReview({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready',
+      }),
+    ).resolves.toEqual({ scheduled: false, reason: 'Draft reviewer no longer applicable' });
+
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+  });
+
+  it('removes pending external review when a draft reviewer intent is now post-draft', async () => {
+    const { outbox } = await putPending('2099-01-01T00:00:00.000Z', 'plan-draft-reviewer');
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'code-review',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockReturnValue('plan-draft-reviewer');
+
+    await expect(
+      resumePendingExternalReviewByRevision({
+        productSlug: 'test-product',
+        provider: 'haystack',
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready',
+      }),
+    ).resolves.toEqual({
+      scheduled: false,
+      reason: 'Draft reviewer no longer applicable',
+      externalId: 'LEA-1',
+    });
+
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+  });
+
   it('removes pending external review after duplicate revision readiness delivery', async () => {
     const { outbox } = await putPending();
     mockCreateJobIfNoRunning.mockResolvedValue({

@@ -39,9 +39,13 @@ vi.mock('../specialists/review-adjudicator.js', () => ({
   buildReviewAdjudicatorParams: vi.fn(),
   handleReviewAdjudicatorResult: vi.fn(),
 }));
-vi.mock('../specialists/fetch-product-context.js', () => ({
-  fetchSpecForPlan: vi.fn().mockResolvedValue(null),
-}));
+vi.mock('../specialists/fetch-product-context.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../specialists/fetch-product-context.js')>();
+  return {
+    ...actual,
+    fetchSpecForPlan: vi.fn().mockResolvedValue(null),
+  };
+});
 vi.mock('../specialists/code-workspace.js', () => ({
   provisionReviewerWorkspace: vi.fn().mockResolvedValue({
     workspacePath: '/tmp/ws',
@@ -1131,6 +1135,106 @@ describe('runCodeReviewLoop', () => {
       }),
     );
   });
+
+  it.each([
+    { kind: 'spec' as const, stage: 'spec-draft' as const, path: 'specs/issue_1.md' },
+    { kind: 'plan' as const, stage: 'plan-draft' as const, path: 'plans/issue_1.md' },
+  ])(
+    'suppresses pair-spec-and-plan-files through the real fetched catalog merge for $stage',
+    async ({ kind, stage, path }) => {
+      const actualFalsePositives =
+        await vi.importActual<typeof import('./false-positives.js')>('./false-positives.js');
+      vi.mocked(fetchFalsePositivesCatalog).mockImplementation(
+        actualFalsePositives.fetchFalsePositivesCatalog,
+      );
+      const fetchFn = vi.fn(async () => {
+        return new Response(
+          [
+            '# Code-review false positives',
+            '',
+            '---',
+            '',
+            '## Remote-only pattern',
+            '',
+            '**Pattern:** remote-only-pattern',
+            '',
+            '**Applies to:** code-review',
+            '',
+            "**Why it's a false positive:** Remote catalog entries are merged with built-ins.",
+            '',
+          ].join('\n'),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+      const product: Product = {
+        ...baseProduct,
+        review: {
+          early_loop: { enabled: true },
+          external: {
+            provider: 'haystack',
+            haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+          },
+        },
+      };
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'needs_fixes',
+        blockers: [
+          {
+            id: `adv-pair-${kind}`,
+            severity: 'high',
+            blocking: true,
+            summary: 'pair-spec-and-plan-files sequencing',
+            path,
+          },
+        ],
+        advisories: [],
+      });
+
+      const result = await runEarlyArtifactReviewLoop({
+        kind,
+        externalId: 'issue_1',
+        product,
+        prUrl: 'https://github.com/o/k/pull/7',
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+        fetchFn,
+      });
+
+      expect(result.status).toBe('done');
+      expect(fetchFn).toHaveBeenCalledWith(
+        'https://raw.githubusercontent.com/o/k/main/false-positives.md',
+        { headers: { Authorization: 'Bearer token' } },
+      );
+      expect(buildRemediationParams).not.toHaveBeenCalled();
+      expect(handleRemediationResult).not.toHaveBeenCalled();
+      expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prUrl: 'https://github.com/o/k/pull/7',
+          stage,
+          advisories: [
+            expect.objectContaining({
+              id: `adv-pair-${kind}`,
+              summary: 'pair-spec-and-plan-files sequencing',
+              blocking: false,
+            }),
+          ],
+          catalog: expect.arrayContaining([
+            expect.objectContaining({
+              pattern: 'pair-spec-and-plan-files',
+              appliesTo: ['spec-draft', 'plan-draft'],
+              source: 'built-in',
+            }),
+            expect.objectContaining({
+              pattern: 'remote-only-pattern',
+              source: 'remote',
+            }),
+          ]),
+        }),
+      );
+    },
+  );
 
   it.each([
     {

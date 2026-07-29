@@ -240,15 +240,17 @@ async function finalizePendingExternalReviewResume(
   intent: PendingExternalReviewIntent,
   triggeredBy: string,
 ): Promise<ScheduleItemDispatchResult> {
+  const pendingIntentMatch = {
+    kind: 'pending_external_review' as const,
+    updatedAt: intent.updatedAt,
+    targetRevision: intent.targetRevision,
+    provider: intent.provider,
+    reason: intent.reason,
+    prNumber: intent.prNumber,
+  };
+
   if (Date.parse(intent.expiresAt) <= Date.now()) {
-    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
-      kind: 'pending_external_review',
-      updatedAt: intent.updatedAt,
-      targetRevision: intent.targetRevision,
-      provider: intent.provider,
-      reason: intent.reason,
-      prNumber: intent.prNumber,
-    });
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
     return { scheduled: false, reason: 'Pending external review expired' };
   }
 
@@ -262,14 +264,11 @@ async function finalizePendingExternalReviewResume(
     triggeredBy,
   });
   if (outcome.scheduled || outcome.reason === 'Duplicate target revision') {
-    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
-      kind: 'pending_external_review',
-      updatedAt: intent.updatedAt,
-      targetRevision: intent.targetRevision,
-      provider: intent.provider,
-      reason: intent.reason,
-      prNumber: intent.prNumber,
-    });
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
+    return outcome;
+  }
+  if (outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE) {
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
     return outcome;
   }
 
@@ -286,14 +285,7 @@ async function finalizePendingExternalReviewResume(
       targetRevision: intent.targetRevision,
       triggeredBy: `${triggeredBy}:awaiting-job-exit`,
     });
-    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
-      kind: 'pending_external_review',
-      updatedAt: intent.updatedAt,
-      targetRevision: intent.targetRevision,
-      provider: intent.provider,
-      reason: intent.reason,
-      prNumber: intent.prNumber,
-    });
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
     return {
       scheduled: false,
       reason: 'Job already running — queued review dispatch for replay after exit',
@@ -310,11 +302,12 @@ async function replayPendingReviewDispatch(input: {
   dataRoot: string;
   githubToken: string | undefined;
 }): Promise<void> {
-  if (!input.githubToken) return;
+  const githubToken = input.githubToken;
+  if (!githubToken) return;
   const outbox = await getReviewDispatchOutbox(input.dataRoot);
   const intents = await outbox.listReviewDispatch(input.productSlug, input.externalId);
   for (const intent of intents) {
-    await replayOnePendingReviewDispatch({ ...input, outbox, intent });
+    await replayOnePendingReviewDispatch({ ...input, githubToken, outbox, intent });
   }
 }
 

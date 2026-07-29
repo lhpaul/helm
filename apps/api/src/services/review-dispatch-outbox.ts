@@ -93,6 +93,9 @@ export class ReviewDispatchOutbox {
     const stored: ReviewDispatchIntent = {
       ...intent,
       kind,
+      // Re-parking without a SHA must not wipe a previously stored revision —
+      // otherwise replay exits early with neither schedule nor cleanup.
+      targetRevision: intent.targetRevision ?? current?.targetRevision,
       createdAt: sameDeferredRevision ? (current.createdAt ?? now) : (intent.createdAt ?? now),
       updatedAt: now,
     };

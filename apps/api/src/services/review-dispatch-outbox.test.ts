@@ -63,6 +63,32 @@ describe('ReviewDispatchOutbox', () => {
     await expect(outbox.listReviewDispatch('helm', 'issue_1')).resolves.toEqual([spec, plan]);
   });
 
+  it('preserves an existing targetRevision when re-parking without a new SHA', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      productSlug: 'helm',
+      externalId: 'issue_1',
+      specialistId: 'spec-draft-reviewer',
+      triggeredBy: 'test:initial',
+      targetRevision: 'sha-keep',
+      prNumber: 7,
+    });
+
+    const reparked = await outbox.put({
+      productSlug: 'helm',
+      externalId: 'issue_1',
+      specialistId: 'spec-draft-reviewer',
+      triggeredBy: 'test:repark',
+      prNumber: 7,
+    });
+
+    expect(reparked.targetRevision).toBe('sha-keep');
+    expect(reparked.triggeredBy).toBe('test:repark');
+    await expect(
+      outbox.get('helm', 'issue_1', 'review_dispatch', 'spec-draft-reviewer'),
+    ).resolves.toMatchObject({ targetRevision: 'sha-keep', triggeredBy: 'test:repark' });
+  });
+
   it('removeIfMatches keeps a newer concurrent intent', async () => {
     const outbox = await getReviewDispatchOutbox(dataRoot);
     const first = await outbox.put({

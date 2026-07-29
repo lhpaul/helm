@@ -554,6 +554,31 @@ describe('scheduleItemDispatch', () => {
     expect(dispatchStageHandler).not.toHaveBeenCalled();
   });
 
+  it('keeps parked draft intents when the item has not reached the draft stage yet', async () => {
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'discovery',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockReturnValue('spec-draft-reviewer');
+
+    await expect(
+      scheduleItemDispatch({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        specialistId: 'spec-draft-reviewer',
+        triggeredBy: 'test',
+      }),
+    ).resolves.toEqual({ scheduled: false, reason: 'Draft reviewer not yet applicable' });
+
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+  });
+
   it('does not schedule plan-draft-reviewer for plan-ready even when early loop is enabled', async () => {
     vi.mocked(getProductRegistry).mockResolvedValue([
       { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
@@ -1390,6 +1415,58 @@ describe('pending external review readiness cleanup', () => {
     await expect(
       outbox.get('test-product', 'LEA-1', 'review_dispatch', 'spec-draft-reviewer'),
     ).resolves.toBeNull();
+  });
+
+  it('retains parked draft intents when replayed before the item reaches the draft stage', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'spec-draft-reviewer',
+      prNumber: 44,
+      targetRevision: 'sha-awaiting',
+      triggeredBy: 'webhook:spec-pr-sync:awaiting-spec-draft',
+    });
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'discovery',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockImplementation(
+      (_stage, specialistId) => specialistId as string | undefined,
+    );
+    mockResolveOpenPrMetadataForRepo.mockResolvedValue({
+      headRef: 'helm/spec/LEA-1',
+      headSha: 'sha-awaiting',
+    });
+
+    await runDispatchJob({ jobId: 'job-current' } as never, {
+      product: { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'discovery',
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot,
+      specialistId: 'spec-writer',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'review_dispatch', 'spec-draft-reviewer'),
+    ).resolves.toMatchObject({
+      specialistId: 'spec-draft-reviewer',
+      targetRevision: 'sha-awaiting',
+    });
   });
 
   it('clears stage-inferred draft intents on knowledge headRef mismatch without code-repo lookup', async () => {

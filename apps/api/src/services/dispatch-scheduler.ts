@@ -27,6 +27,36 @@ import { createGitHubBugbotReviewLoader } from './bugbot-review-loader.js';
 
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
 const DRAFT_REVIEWER_NO_LONGER_APPLICABLE = 'Draft reviewer no longer applicable';
+/** Parked early-loop intents may be replayed before the item reaches draft stage. */
+const DRAFT_REVIEWER_NOT_YET_APPLICABLE = 'Draft reviewer not yet applicable';
+
+/** Coarse stage rank so we can tell "awaiting draft" from "past draft". */
+const STAGE_RANK: Record<string, number> = {
+  discovery: 0,
+  'spec-draft': 10,
+  'spec-ready': 20,
+  'plan-draft': 30,
+  'plan-ready': 40,
+  'in-development': 50,
+  'code-review': 60,
+  remediation: 65,
+  merged: 70,
+  released: 80,
+};
+
+function draftReviewerSkipReason(input: {
+  earlyLoopEnabled: boolean;
+  itemStage: string;
+  draftStage: 'spec-draft' | 'plan-draft';
+}): typeof DRAFT_REVIEWER_NO_LONGER_APPLICABLE | typeof DRAFT_REVIEWER_NOT_YET_APPLICABLE | null {
+  if (!input.earlyLoopEnabled) return DRAFT_REVIEWER_NO_LONGER_APPLICABLE;
+  if (input.itemStage === input.draftStage) return null;
+  const itemRank = STAGE_RANK[input.itemStage] ?? Number.POSITIVE_INFINITY;
+  const draftRank = STAGE_RANK[input.draftStage] ?? 0;
+  // Unknown stages are treated as past-draft so we clear rather than strand forever.
+  if (itemRank < draftRank) return DRAFT_REVIEWER_NOT_YET_APPLICABLE;
+  return DRAFT_REVIEWER_NO_LONGER_APPLICABLE;
+}
 
 function isSafeWorkdirSegment(value: string): boolean {
   return EXTERNAL_ID_REGEX.test(value) && value !== '.' && value !== '..';
@@ -773,17 +803,21 @@ export async function scheduleItemDispatch(input: {
       : dispatchSpecialist === 'plan-draft-reviewer'
         ? 'plan-draft'
         : undefined;
-  if (
-    draftReviewerStage &&
-    (product.review?.early_loop?.enabled !== true || item.currentStage !== draftReviewerStage)
-  ) {
-    console.info(
-      `[dispatch-scheduler] skip: ${dispatchSpecialist} requires early_loop enabled and stage '${draftReviewerStage}' (${input.productSlug}/${input.externalId})`,
-    );
-    return {
-      scheduled: false,
-      reason: DRAFT_REVIEWER_NO_LONGER_APPLICABLE,
-    };
+  if (draftReviewerStage) {
+    const skipReason = draftReviewerSkipReason({
+      earlyLoopEnabled: product.review?.early_loop?.enabled === true,
+      itemStage: item.currentStage,
+      draftStage: draftReviewerStage,
+    });
+    if (skipReason) {
+      console.info(
+        `[dispatch-scheduler] skip: ${dispatchSpecialist} ${skipReason} (stage '${item.currentStage}', need '${draftReviewerStage}') (${input.productSlug}/${input.externalId})`,
+      );
+      return {
+        scheduled: false,
+        reason: skipReason,
+      };
+    }
   }
   if (!dispatchSpecialist) {
     console.info(

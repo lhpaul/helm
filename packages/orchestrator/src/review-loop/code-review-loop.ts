@@ -8,6 +8,9 @@ import {
   type ReviewerFanoutResult,
   type ReviewerKind,
   type ReviewerResult,
+  type ReviewCommentTransform,
+  type ReviewCommentTransformInput,
+  type ReviewCommentTransformResult,
 } from '../specialists/reviewer-fanout.js';
 import {
   buildRemediationParams,
@@ -252,6 +255,50 @@ async function suppressFalsePositiveExternalFindings(
   return { blockers, suppressed };
 }
 
+function suppressFalsePositiveReviewerComment(
+  input: ReviewCommentTransformInput,
+  catalog: FalsePositiveEntry[],
+  stage: WorkflowStage,
+): ReviewCommentTransformResult {
+  const findings = { ...input.findings };
+  const reviewContent = input.reviewContent.replace(
+    /\*\*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\*\*\s*·\s*([^\n]+)/g,
+    (line, rawSeverity: string, summary: string) => {
+      if (summary.startsWith('Catalogued false positive:')) return line;
+
+      const severity = rawSeverity.toLowerCase() as NormalizedFinding['severity'];
+      const finding: NormalizedFinding = {
+        id: `${input.kind}:${summary}`,
+        severity,
+        blocking: true,
+        summary,
+      };
+
+      if (!findFalsePositiveMatch(finding, catalog, stage)) return line;
+      if (findings[severity] > 0) findings[severity] -= 1;
+      return `**INFO** · Catalogued false positive: ${summary}`;
+    },
+  );
+
+  return { reviewContent, findings };
+}
+
+async function buildFalsePositiveReviewerCommentTransform(
+  params: RunCodeReviewLoopParams,
+): Promise<ReviewCommentTransform | undefined> {
+  if (params.mode !== 'early-artifact') return undefined;
+
+  const stage = stageForLoopParams(params);
+  const catalog = await fetchFalsePositivesCatalog(
+    params.product,
+    params.githubToken,
+    params.fetchFn,
+  );
+  if (catalog.length === 0) return undefined;
+
+  return (input) => suppressFalsePositiveReviewerComment(input, catalog, stage);
+}
+
 async function suppressFalsePositiveReviewerResults(
   params: RunCodeReviewLoopParams,
   results: ReviewerResult[],
@@ -268,26 +315,20 @@ async function suppressFalsePositiveReviewerResults(
 
   return results.map((result) => {
     if (!result.findings || !result.commentBody) return result;
-
-    const findings = { ...result.findings };
-    const commentBody = result.commentBody.replace(
-      /\*\*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\*\*\s*·\s*([^\n]+)/g,
-      (line, rawSeverity: string, summary: string) => {
-        const severity = rawSeverity.toLowerCase() as NormalizedFinding['severity'];
-        const finding: NormalizedFinding = {
-          id: `${result.kind}:${summary}`,
-          severity,
-          blocking: true,
-          summary,
-        };
-
-        if (!findFalsePositiveMatch(finding, catalog, stage)) return line;
-        if (findings[severity] > 0) findings[severity] -= 1;
-        return `**INFO** · Catalogued false positive: ${summary}`;
+    const transformed = suppressFalsePositiveReviewerComment(
+      {
+        kind: result.kind,
+        reviewContent: result.commentBody,
+        findings: result.findings,
       },
+      catalog,
+      stage,
     );
-
-    return { ...result, findings, commentBody };
+    return {
+      ...result,
+      findings: transformed.findings,
+      commentBody: transformed.reviewContent,
+    };
   });
 }
 
@@ -404,6 +445,7 @@ export async function runCodeReviewLoop(
 
   while (true) {
     while (true) {
+      const transformReviewComment = await buildFalsePositiveReviewerCommentTransform(params);
       const fanoutResult = await fanoutReviewers(
         params.externalId,
         params.product,
@@ -415,6 +457,7 @@ export async function runCodeReviewLoop(
         params.fetchFn,
         params.codeRepo,
         params.branchName,
+        transformReviewComment,
       );
       lastFanout = fanoutResult;
       totalCost += fanoutResult.costUsd;

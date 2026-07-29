@@ -82,6 +82,21 @@ export type ReviewerFanoutResult = {
   error?: string;
 };
 
+export type ReviewCommentTransformInput = {
+  kind: ReviewerKind;
+  reviewContent: string;
+  findings: Findings;
+};
+
+export type ReviewCommentTransformResult = {
+  reviewContent: string;
+  findings: Findings;
+};
+
+export type ReviewCommentTransform = (
+  input: ReviewCommentTransformInput,
+) => ReviewCommentTransformResult | Promise<ReviewCommentTransformResult>;
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 // Map ReviewerKind → product.specialists key
@@ -339,6 +354,7 @@ export async function handleReviewerResult(
   runGh?: RunGh,
   runGit?: RunGit,
   branchName?: string,
+  transformReviewComment?: ReviewCommentTransform,
 ): Promise<ReviewerResult> {
   const baseResult = {
     kind,
@@ -392,6 +408,25 @@ export async function handleReviewerResult(
     }
   }
 
+  // Parse and optionally transform findings before posting. Early artifact
+  // review loops use this to auto-dismiss catalogued draft sequencing findings
+  // before the comment becomes visible on the PR.
+  let findings = parseFindings(reviewContent);
+  if (transformReviewComment) {
+    try {
+      const transformed = await transformReviewComment({ kind, reviewContent, findings });
+      reviewContent = transformed.reviewContent;
+      findings = transformed.findings;
+    } catch (err) {
+      return {
+        ...baseResult,
+        status: 'error',
+        commentPosted: false,
+        error: `Failed to transform review comment: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
   // Post the review content as a PR comment.
   try {
     await postPRComment({ prUrl, body: reviewContent, githubToken }, runGh);
@@ -403,9 +438,6 @@ export async function handleReviewerResult(
       error: `Failed to post PR comment: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
-
-  // Parse findings from the posted body so the remediation gate can inspect them.
-  const findings = parseFindings(reviewContent);
 
   // If the push failed (code reviewer), report error — comment was still posted.
   if (pushError !== undefined) {
@@ -456,6 +488,7 @@ export async function fanoutReviewers(
   fetchFn?: FetchFn,
   selectedCodeRepo?: CodeRepo,
   selectedBranchName?: string,
+  transformReviewComment?: ReviewCommentTransform,
 ): Promise<ReviewerFanoutResult> {
   const codeRepo = selectedCodeRepo ?? product.code_repos[0];
   if (!codeRepo) {
@@ -555,6 +588,7 @@ export async function fanoutReviewers(
           runGh,
           runGit,
           branchName,
+          transformReviewComment,
         );
         return reviewerResult;
       }),

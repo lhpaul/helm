@@ -463,6 +463,46 @@ describe('handleReviewerResult', () => {
     expect(result.error).toContain('Failed to post PR comment');
   });
 
+  it('transforms findings before posting the PR comment', async () => {
+    await writeReviewArtifact(
+      workspacePath,
+      'security',
+      '# Security Review: HLM-42\n\n## Findings\n- **HIGH** · pair-spec-and-plan-files sequencing\n\n## Status\nCHANGES_REQUESTED',
+    );
+
+    const postedBodies: string[] = [];
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      const bodyIdx = args.indexOf('--body');
+      if (bodyIdx !== -1 && args[bodyIdx + 1]) postedBodies.push(args[bodyIdx + 1]!);
+      return { stdout: '' };
+    });
+    const runGit: RunGit = vi.fn().mockResolvedValue({ stdout: '' });
+
+    const result = await handleReviewerResult(
+      'security',
+      'HLM-42',
+      makeAgentResult(),
+      workspacePath,
+      PR_URL,
+      'test-token',
+      makeCodeRepo(),
+      runGh,
+      runGit,
+      undefined,
+      ({ findings }) => ({
+        findings: { ...findings, high: 0, info: findings.info + 1 },
+        reviewContent:
+          '# Security Review: HLM-42\n\n## Findings\n- **INFO** · Catalogued false positive: pair-spec-and-plan-files sequencing\n\n## Status\nAPPROVED',
+      }),
+    );
+
+    expect(result.status).toBe('done');
+    expect(result.findings).toEqual({ critical: 0, high: 0, medium: 0, low: 0, info: 1 });
+    expect(result.commentBody).toContain('Catalogued false positive');
+    expect(postedBodies).toEqual([expect.stringContaining('Catalogued false positive')]);
+    expect(postedBodies[0]!).not.toContain('**HIGH** · pair-spec-and-plan-files sequencing');
+  });
+
   it('code + push fails after comment: status:error, commentPosted:true, error contains push failed', async () => {
     await writeReviewArtifact(
       workspacePath,

@@ -258,6 +258,7 @@ describe('runCodeReviewLoop', () => {
       undefined,
       { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
       'helm/spec/issue_1',
+      undefined,
     );
     expect(buildRemediationParams).toHaveBeenCalledWith(
       'issue_1',
@@ -1034,6 +1035,7 @@ describe('runCodeReviewLoop', () => {
       undefined,
       { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
       'helm/spec/issue_1',
+      expect.any(Function),
     );
     expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
       expect.objectContaining({

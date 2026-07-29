@@ -216,11 +216,11 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       }
     }
   } else if (event.type === 'item_updated' && event.subStage != null) {
-    const config = await getProductConfig();
     try {
       // transitionItem applies writeback, but webhook:github-projects is
       // tracker-originated → anti-echo skips it, preventing a tracker→store→
-      // tracker echo loop.
+      // tracker echo loop. Load product config only after the transition so a
+      // config failure cannot drop a durable stage update.
       await transitionItem({
         externalId: event.externalId,
         toStage: event.subStage,
@@ -237,6 +237,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       }
     }
     try {
+      const config = await getProductConfig();
       await replayPendingReviewDispatchForItem({
         product: config,
         productSlug: config.product.slug,

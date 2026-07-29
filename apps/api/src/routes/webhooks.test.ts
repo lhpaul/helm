@@ -652,6 +652,40 @@ describe('POST /api/webhooks/github', () => {
       expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalled();
     });
 
+    it('still transitions when product config load fails before replay', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'item_updated',
+        externalId: 'issue_5',
+        subStage: 'spec-draft',
+        timestamp: 't',
+      });
+      mockTransition.mockResolvedValue({ history: [], currentStage: 'spec-draft' });
+      const product = {
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+      };
+      // First call is for projects_v2_item provider gating; second is for replay.
+      vi.mocked(getProductConfig)
+        .mockResolvedValueOnce(product as never)
+        .mockRejectedValueOnce(new Error('product config unavailable'));
+
+      const res = await post(body, 'projects_v2_item');
+      expect(res.status).toBe(200);
+      expect(mockTransition).toHaveBeenCalledWith(
+        expect.objectContaining({ externalId: 'issue_5', toStage: 'spec-draft' }),
+      );
+      expect(mockReplayPendingReviewDispatchForItem).not.toHaveBeenCalled();
+    });
+
     it('still attempts replay when transition is a no-op WorkflowTransitionError', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({

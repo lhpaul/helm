@@ -1730,6 +1730,55 @@ describe('pending external review readiness cleanup', () => {
     ).resolves.toBeNull();
   });
 
+  it('clears stale plan-draft review_dispatch intents when the item has left the draft stage', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'plan-draft-reviewer',
+      prNumber: 45,
+      targetRevision: 'sha-plan-stale',
+      triggeredBy: 'webhook:plan-pr-sync:awaiting-plan-draft',
+    });
+    vi.mocked(getProductRegistry).mockResolvedValue([
+      { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+    ]);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'plan-ready',
+      }),
+    } as never);
+    vi.mocked(resolveSpecialistId).mockImplementation(
+      (_stage, specialistId) => specialistId as string | undefined,
+    );
+    mockResolveOpenPrMetadataForRepo.mockResolvedValue({
+      headRef: 'helm/plan/LEA-1',
+      headSha: 'sha-plan-stale',
+    });
+
+    await runDispatchJob({ jobId: 'job-current' } as never, {
+      product: { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'plan-ready',
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot,
+      specialistId: 'plan-writer',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'review_dispatch', 'plan-draft-reviewer'),
+    ).resolves.toBeNull();
+  });
+
   it('re-parks draft intents with live PR metadata when replayed before the draft stage', async () => {
     const outbox = await getReviewDispatchOutbox(dataRoot);
     await outbox.put({

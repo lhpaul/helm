@@ -361,6 +361,14 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     if (result.success) expect(result.data.review).toBeUndefined();
   });
 
+  it('defines early_loop.enabled as an explicit default-false boolean when review is present', () => {
+    const result = ProductSchema.safeParse(withReview({ early_loop: {} }));
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.review?.early_loop).toEqual({ enabled: false });
+    }
+  });
+
   it('parses external haystack provider, loop overrides, and adjudication config', () => {
     const result = ProductSchema.safeParse(
       withReview({

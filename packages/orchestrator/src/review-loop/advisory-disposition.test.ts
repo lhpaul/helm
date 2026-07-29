@@ -67,6 +67,9 @@ describe('resolveAdvisoryDispositions', () => {
     expect(resolveAdvisoryDispositions([advisory], catalog, 'spec-draft')[0]).toMatchObject({
       disposition: 'Rejected',
     });
+    expect(resolveAdvisoryDispositions([advisory], catalog, 'plan-draft')[0]).toMatchObject({
+      disposition: 'Rejected',
+    });
     expect(resolveAdvisoryDispositions([advisory], catalog, 'code-review')[0]).toMatchObject({
       disposition: 'Deferred',
     });

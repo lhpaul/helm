@@ -227,7 +227,13 @@ describe('parseProductConfig', () => {
       const defaulted = parseProductConfig(GITHUB_WITHOUT_CUSTOM_FIELD);
 
       expect(enabled.review?.early_loop?.enabled).toBe(true);
-      expect(defaulted.review?.early_loop?.enabled).toBeUndefined();
+      expect(defaulted.review?.early_loop?.enabled).toBe(false);
+    });
+
+    it('materializes review.early_loop.enabled=false when the whole review section is omitted', () => {
+      const config = parseProductConfig(GITHUB_WITHOUT_CUSTOM_FIELD);
+
+      expect(config.review).toEqual({ early_loop: { enabled: false } });
     });
   });
 

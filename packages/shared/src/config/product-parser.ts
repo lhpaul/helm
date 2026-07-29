@@ -30,6 +30,18 @@ const LEGACY_SPECIALIST_KEYS: Record<string, string> = {
   remediation: 'code-remediator',
 };
 
+function materializeProductDefaults(product: Product): Product {
+  return {
+    ...product,
+    review: {
+      ...product.review,
+      early_loop: {
+        enabled: product.review?.early_loop?.enabled ?? false,
+      },
+    },
+  };
+}
+
 /**
  * Parses a YAML string and validates it against the ProductSchema.
  * Throws ProductConfigError with a path-aware message on failure.
@@ -85,7 +97,7 @@ export function parseProductConfig(yamlContent: string): Product {
     throw new ProductConfigError(`Invalid product.yaml — "${path}": ${message}`, result.error);
   }
 
-  return result.data;
+  return materializeProductDefaults(result.data);
 }
 
 /**

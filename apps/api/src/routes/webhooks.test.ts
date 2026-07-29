@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseProductConfig } from '@helm/shared';
 import { app } from '../app.js';
 import {
   _resetForTests,
@@ -129,6 +130,41 @@ async function post(
   };
   if (sig !== undefined) headers['x-hub-signature-256'] = sig;
   return app.request('/api/webhooks/github', { method: 'POST', headers, body });
+}
+
+function parsedGitHubProduct(reviewBlock = '') {
+  return parseProductConfig(
+    `
+helm_version: "0"
+product:
+  slug: test-app
+  name: Test
+issue_tracker:
+  provider: github_projects
+  org: test-org
+  project_number: 1
+code_repos:
+  - url: https://github.com/test-org/test-repo
+    default_branch: main
+    role: app
+knowledge_repo:
+  url: https://github.com/test-org/test-repo
+  default_branch: main
+workflow:
+  stages_enabled: [discovery, spec-draft, spec-ready, plan-draft, plan-ready, code-review, merged, released]
+${reviewBlock}
+specialists:
+  spec-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  plan-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  implementer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  code-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  security-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  test-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  spec-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+  plan-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+  code-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+`.trim(),
+  );
 }
 
 /** Builds a real pull_request webhook payload (parsed by the pure parseGitHubWebhook). */
@@ -1156,6 +1192,53 @@ describe('POST /api/webhooks/github', () => {
     });
 
     // ── Draft PR open/synchronize (helm/spec|plan/ → early review loop) ─────
+
+    it('dispatches draft review from a parsed product config when early loop is enabled', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue(
+        parsedGitHubProduct(['review:', '  early_loop:', '    enabled: true'].join('\n')) as never,
+      );
+      const body = mergedPrPayload('helm/spec/LEA-192', {
+        action: 'opened',
+        merged: false,
+        prNumber: 76,
+        headSha: 'sha-spec-192',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'spec-draft',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'LEA-192',
+        specialistId: 'spec-draft-reviewer',
+        targetRevision: 'sha-spec-192',
+        prNumber: 76,
+        triggeredBy: 'webhook:spec-pr-sync',
+      });
+    });
+
+    it('skips draft review from a parsed product config when review is omitted', async () => {
+      const parsedProduct = parsedGitHubProduct();
+      expect(parsedProduct.review?.early_loop?.enabled).toBe(false);
+      vi.mocked(getProductConfig).mockResolvedValue(parsedProduct as never);
+      const body = mergedPrPayload('helm/plan/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+        prNumber: 78,
+        headSha: 'sha-plan-192',
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
+    });
 
     it('schedules spec-draft-reviewer when a helm/spec/ PR opens and early loop is enabled', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({

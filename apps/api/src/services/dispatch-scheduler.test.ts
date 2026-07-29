@@ -1133,7 +1133,9 @@ describe('pending external review readiness cleanup', () => {
     await expect(
       outbox.get('test-product', 'LEA-1', 'pending_external_review'),
     ).resolves.toBeNull();
-    await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toMatchObject({
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'review_dispatch', 'plan-draft-reviewer'),
+    ).resolves.toMatchObject({
       kind: 'review_dispatch',
       specialistId: 'plan-draft-reviewer',
       targetRevision: 'sha-1',
@@ -1203,7 +1205,9 @@ describe('pending external review readiness cleanup', () => {
       specialistId: 'spec-draft-reviewer',
       targetRevision: 'sha-live',
     });
-    await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toBeNull();
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'review_dispatch', 'spec-draft-reviewer'),
+    ).resolves.toBeNull();
   });
 
   it('replays a queued plan-draft reviewer dispatch after the stage transition', async () => {
@@ -1272,7 +1276,9 @@ describe('pending external review readiness cleanup', () => {
       specialistId: 'plan-draft-reviewer',
       targetRevision: 'sha-live-plan',
     });
-    await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toBeNull();
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'review_dispatch', 'plan-draft-reviewer'),
+    ).resolves.toBeNull();
   });
 
   it('clears stale draft review_dispatch intents when the item has left the draft stage', async () => {
@@ -1319,7 +1325,9 @@ describe('pending external review readiness cleanup', () => {
     });
 
     expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
-    await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toBeNull();
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'review_dispatch', 'spec-draft-reviewer'),
+    ).resolves.toBeNull();
   });
 });
 

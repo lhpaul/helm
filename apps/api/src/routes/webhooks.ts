@@ -423,6 +423,18 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             console.info('[webhooks/github] draft PR sync ignored — repository mismatch');
             return c.json({ processed: true });
           }
+          // Option A (product decision): only same-repo heads may trigger early-loop.
+          if (
+            event.headOwner == null ||
+            event.headRepo == null ||
+            event.headOwner !== repo.owner ||
+            event.headRepo !== repo.repo
+          ) {
+            console.info(
+              `[webhooks/github] draft PR sync ignored — head repo '${event.headOwner}/${event.headRepo}' is not canonical knowledge repo`,
+            );
+            return c.json({ processed: true });
+          }
 
           const item = await itemStore.get(parsed.externalId);
           const expectedStage = parsed.kind === 'spec' ? 'spec-draft' : 'plan-draft';

@@ -45,6 +45,14 @@ function normalizeKind(kind: ReviewDispatchIntentKind | undefined): ReviewDispat
   return kind ?? 'review_dispatch';
 }
 
+function reviewDispatchFileName(externalId: string, specialistId?: string): string {
+  // Draft reviewers share an item but not an outbox slot — keep separate files so a
+  // later plan sync cannot clobber a parked spec intent (or vice versa).
+  if (specialistId === 'spec-draft-reviewer') return `${externalId}.spec-draft-review.json`;
+  if (specialistId === 'plan-draft-reviewer') return `${externalId}.plan-draft-review.json`;
+  return `${externalId}.json`;
+}
+
 export class ReviewDispatchOutbox {
   constructor(private readonly outboxDir: string) {}
 
@@ -52,6 +60,7 @@ export class ReviewDispatchOutbox {
     productSlug: string,
     externalId: string,
     kind: ReviewDispatchIntentKind = 'review_dispatch',
+    specialistId?: string,
   ): string {
     assertSafeIntentKey(productSlug, externalId);
     // Separate files per kind so review_dispatch and pending_external_review
@@ -59,7 +68,7 @@ export class ReviewDispatchOutbox {
     const fileName =
       kind === 'pending_external_review'
         ? `${externalId}.pending-external-review.json`
-        : `${externalId}.json`;
+        : reviewDispatchFileName(externalId, specialistId);
     return join(this.outboxDir, productSlug, fileName);
   }
 
@@ -69,7 +78,12 @@ export class ReviewDispatchOutbox {
     assertSafeIntentKey(intent.productSlug, intent.externalId);
     await mkdir(dir, { recursive: true });
     const now = new Date().toISOString();
-    const current = await this.get(intent.productSlug, intent.externalId, kind);
+    const current = await this.get(
+      intent.productSlug,
+      intent.externalId,
+      kind,
+      intent.specialistId,
+    );
     const sameDeferredRevision =
       kind === 'pending_external_review' &&
       current?.kind === 'pending_external_review' &&
@@ -82,7 +96,10 @@ export class ReviewDispatchOutbox {
       createdAt: sameDeferredRevision ? (current.createdAt ?? now) : (intent.createdAt ?? now),
       updatedAt: now,
     };
-    await writeJsonAtomic(this.intentPath(intent.productSlug, intent.externalId, kind), stored);
+    await writeJsonAtomic(
+      this.intentPath(intent.productSlug, intent.externalId, kind, intent.specialistId),
+      stored,
+    );
     return { ...stored };
   }
 
@@ -90,11 +107,29 @@ export class ReviewDispatchOutbox {
     productSlug: string,
     externalId: string,
     kind: ReviewDispatchIntentKind = 'review_dispatch',
+    specialistId?: string,
   ): Promise<ReviewDispatchIntent | null> {
     const intent = await readJson<ReviewDispatchIntent>(
-      this.intentPath(productSlug, externalId, kind),
+      this.intentPath(productSlug, externalId, kind, specialistId),
     );
     return intent ? { ...intent } : null;
+  }
+
+  /** All parked review_dispatch intents for an item (impl + draft specialist slots). */
+  async listReviewDispatch(
+    productSlug: string,
+    externalId: string,
+  ): Promise<ReviewDispatchIntent[]> {
+    assertSafeIntentKey(productSlug, externalId);
+    const specialists = [undefined, 'spec-draft-reviewer', 'plan-draft-reviewer'] as const;
+    const intents: ReviewDispatchIntent[] = [];
+    for (const specialistId of specialists) {
+      const intent = await this.get(productSlug, externalId, 'review_dispatch', specialistId);
+      if (intent && (intent.kind ?? 'review_dispatch') === 'review_dispatch') {
+        intents.push(intent);
+      }
+    }
+    return intents;
   }
 
   /**
@@ -106,20 +141,21 @@ export class ReviewDispatchOutbox {
     externalId: string,
     expected: Pick<ReviewDispatchIntent, 'updatedAt' | 'targetRevision'> & {
       kind?: ReviewDispatchIntentKind;
+      specialistId?: string;
       provider?: string;
       reason?: 'analysis_pending';
       prNumber?: number;
     },
   ): Promise<boolean> {
     const kind = normalizeKind(expected.kind);
-    const current = await this.get(productSlug, externalId, kind);
+    const current = await this.get(productSlug, externalId, kind, expected.specialistId);
     if (!current) return false;
     if (current.updatedAt !== expected.updatedAt) return false;
     if ((current.targetRevision ?? null) !== (expected.targetRevision ?? null)) return false;
     if (expected.provider !== undefined && current.provider !== expected.provider) return false;
     if (expected.reason !== undefined && current.reason !== expected.reason) return false;
     if (expected.prNumber !== undefined && current.prNumber !== expected.prNumber) return false;
-    await unlink(this.intentPath(productSlug, externalId, kind)).catch(
+    await unlink(this.intentPath(productSlug, externalId, kind, expected.specialistId)).catch(
       (err: NodeJS.ErrnoException) => {
         if (err.code !== 'ENOENT') throw err;
       },
@@ -131,8 +167,9 @@ export class ReviewDispatchOutbox {
     productSlug: string,
     externalId: string,
     kind: ReviewDispatchIntentKind = 'review_dispatch',
+    specialistId?: string,
   ): Promise<void> {
-    await unlink(this.intentPath(productSlug, externalId, kind)).catch(
+    await unlink(this.intentPath(productSlug, externalId, kind, specialistId)).catch(
       (err: NodeJS.ErrnoException) => {
         if (err.code !== 'ENOENT') throw err;
       },

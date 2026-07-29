@@ -16,6 +16,7 @@ import { EXTERNAL_ID_REGEX } from './types.js';
 import {
   getReviewDispatchOutbox,
   type PendingExternalReviewIntent,
+  type ReviewDispatchIntent,
 } from './review-dispatch-outbox.js';
 import {
   parseGitHubRepoUrl,
@@ -311,9 +312,30 @@ async function replayPendingReviewDispatch(input: {
 }): Promise<void> {
   if (!input.githubToken) return;
   const outbox = await getReviewDispatchOutbox(input.dataRoot);
-  const intent = await outbox.get(input.productSlug, input.externalId);
-  if (!intent) return;
+  const intents = await outbox.listReviewDispatch(input.productSlug, input.externalId);
+  for (const intent of intents) {
+    await replayOnePendingReviewDispatch({ ...input, outbox, intent });
+  }
+}
+
+async function replayOnePendingReviewDispatch(input: {
+  product: Product;
+  productSlug: string;
+  externalId: string;
+  dataRoot: string;
+  githubToken: string;
+  outbox: Awaited<ReturnType<typeof getReviewDispatchOutbox>>;
+  intent: ReviewDispatchIntent;
+}): Promise<void> {
+  const { intent, outbox } = input;
   if ((intent.kind ?? 'review_dispatch') !== 'review_dispatch') return;
+
+  const removeIntent = () =>
+    outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+      updatedAt: intent.updatedAt,
+      targetRevision: intent.targetRevision,
+      specialistId: intent.specialistId,
+    });
 
   let targetRevision = intent.targetRevision;
   const replaySpecialist =
@@ -340,6 +362,7 @@ async function replayPendingReviewDispatch(input: {
           console.info(
             `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
           );
+          await removeIntent();
           return;
         }
         targetRevision = pr.headSha;
@@ -358,10 +381,7 @@ async function replayPendingReviewDispatch(input: {
         outcome.reason === 'Duplicate target revision' ||
         outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
       ) {
-        await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
-          updatedAt: intent.updatedAt,
-          targetRevision: intent.targetRevision,
-        });
+        await removeIntent();
       }
       return;
     }
@@ -375,6 +395,7 @@ async function replayPendingReviewDispatch(input: {
       console.info(
         `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
       );
+      await removeIntent();
       return;
     }
     // Prefer the live PR head so replay tracks the newest SHA after headRef validation.
@@ -395,10 +416,7 @@ async function replayPendingReviewDispatch(input: {
     outcome.reason === 'Duplicate target revision' ||
     outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
   ) {
-    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
-      updatedAt: intent.updatedAt,
-      targetRevision: intent.targetRevision,
-    });
+    await removeIntent();
   }
 }
 

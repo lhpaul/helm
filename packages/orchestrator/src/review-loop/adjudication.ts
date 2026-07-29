@@ -308,16 +308,22 @@ function declaredConflictChoices(body: string): string[] {
   const choices: string[] = [];
   for (const line of body.split(/\r?\n/u)) {
     const match = line.match(
-      /^\s*(?:[-*]\s*)?(?:\[[ xX]\]\s*)?(?:\*\*)?(Option\s+[A-Za-z0-9][\w .-]*?)(?:\*\*)?\s*:\s*(.*)$/iu,
+      /^\s*(?:[-*]\s*)?(?:\[[ xX]\]\s*)?(?:\*\*)?(Option\s+[A-Za-z0-9][\w .-]*?|[A-Za-z])(?:\*\*)?\s*:\s*(.*)$/iu,
     );
     if (!match) continue;
-    const label = match[1]?.trim();
+    const rawLabel = match[1]?.trim();
     const value = match[2]?.trim();
+    // Normalize short labels ("A") to "Option A" so human decisions that use
+    // either form still match adjudication bullets like `- A: …`.
+    const label =
+      rawLabel && /^[A-Za-z]$/u.test(rawLabel) ? `Option ${rawLabel.toUpperCase()}` : rawLabel;
     // Accept either the option label ("Option A"), the declared value text
-    // ("keep the current behavior"), or the combined form.
+    // ("keep the current behavior"), the short letter ("A"), or combined forms.
     if (label) choices.push(label);
+    if (rawLabel && rawLabel !== label) choices.push(rawLabel);
     if (value) choices.push(value);
     if (label && value) choices.push(`${label}: ${value}`);
+    if (rawLabel && value && rawLabel !== label) choices.push(`${rawLabel}: ${value}`);
   }
   return choices;
 }

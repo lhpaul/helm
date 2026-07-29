@@ -142,19 +142,32 @@ function mergedPrPayload(
     headSha?: string;
     owner?: string;
     repo?: string;
+    headOwner?: string | null;
+    headRepo?: string | null;
   } = {},
 ): string {
+  const owner = opts.owner ?? 'test-org';
+  const repo = opts.repo ?? 'test-repo';
+  const headOwner = opts.headOwner === undefined ? owner : opts.headOwner;
+  const headRepo = opts.headRepo === undefined ? repo : opts.headRepo;
+  const head: Record<string, unknown> = {
+    ref: headRef,
+    sha: opts.headSha ?? 'sha-sync-1',
+  };
+  if (headOwner != null && headRepo != null) {
+    head.repo = { name: headRepo, owner: { login: headOwner } };
+  }
   const payload: Record<string, unknown> = {
     action: opts.action ?? 'closed',
     pull_request: {
       id: 1000 + (opts.prNumber ?? 42),
       number: opts.prNumber ?? 42,
       merged: opts.merged ?? true,
-      head: { ref: headRef, sha: opts.headSha ?? 'sha-sync-1' },
+      head,
     },
     repository: {
-      name: opts.repo ?? 'test-repo',
-      owner: { login: opts.owner ?? 'test-org' },
+      name: repo,
+      owner: { login: owner },
     },
   };
   if (opts.senderLogin) {
@@ -1280,6 +1293,41 @@ describe('POST /api/webhooks/github', () => {
         senderLogin: 'helm-bot',
         prNumber: 76,
         headSha: 'sha-spec-bot-192',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'LEA-192',
+        productSlug: 'test-app',
+        currentStage: 'spec-draft',
+        history: [],
+      });
+
+      const res = await post(body, 'pull_request');
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+      expect(mockPersistReviewDispatchIntent).not.toHaveBeenCalled();
+    });
+
+    it('ignores draft PR sync when the head repo is a fork of the knowledge repo', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ name: 'test-repo', url: 'https://github.com/test-org/test-repo' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: { early_loop: { enabled: true } },
+      } as never);
+      const body = mergedPrPayload('helm/spec/LEA-192', {
+        action: 'synchronize',
+        merged: false,
+        prNumber: 76,
+        headSha: 'sha-fork-192',
+        headOwner: 'attacker',
+        headRepo: 'test-repo',
       });
       mockGet.mockResolvedValue({
         externalId: 'LEA-192',

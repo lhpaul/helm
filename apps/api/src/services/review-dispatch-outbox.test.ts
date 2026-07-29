@@ -35,6 +35,34 @@ describe('ReviewDispatchOutbox', () => {
     expect(a.targetRevision).not.toBe(b.targetRevision);
   });
 
+  it('stores draft reviewer intents in separate files so they do not clobber each other', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    const spec = await outbox.put({
+      productSlug: 'helm',
+      externalId: 'issue_1',
+      specialistId: 'spec-draft-reviewer',
+      triggeredBy: 'test',
+      targetRevision: 'sha-spec',
+      prNumber: 1,
+    });
+    const plan = await outbox.put({
+      productSlug: 'helm',
+      externalId: 'issue_1',
+      specialistId: 'plan-draft-reviewer',
+      triggeredBy: 'test',
+      targetRevision: 'sha-plan',
+      prNumber: 2,
+    });
+
+    expect(await outbox.get('helm', 'issue_1', 'review_dispatch', 'spec-draft-reviewer')).toEqual(
+      spec,
+    );
+    expect(await outbox.get('helm', 'issue_1', 'review_dispatch', 'plan-draft-reviewer')).toEqual(
+      plan,
+    );
+    await expect(outbox.listReviewDispatch('helm', 'issue_1')).resolves.toEqual([spec, plan]);
+  });
+
   it('removeIfMatches keeps a newer concurrent intent', async () => {
     const outbox = await getReviewDispatchOutbox(dataRoot);
     const first = await outbox.put({

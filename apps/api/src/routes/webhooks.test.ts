@@ -2832,10 +2832,18 @@ describe('POST /api/webhooks/github', () => {
         targetRevision: 'sha-42',
         triggeredBy: 'webhook:external-review-ready:awaiting-draft-stage',
       });
-      expect(mockClearPendingExternalReview).toHaveBeenCalledWith({
+      expect(mockClearPendingExternalReview).toHaveBeenNthCalledWith(1, {
         productSlug: 'test-app',
         externalId: 'issue_42',
         specialistId: 'spec-draft-reviewer',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-42',
+      });
+      // Second clear drops any leftover legacy (unscoped) pending row.
+      expect(mockClearPendingExternalReview).toHaveBeenNthCalledWith(2, {
+        productSlug: 'test-app',
+        externalId: 'issue_42',
         provider: 'haystack',
         prNumber: 42,
         targetRevision: 'sha-42',

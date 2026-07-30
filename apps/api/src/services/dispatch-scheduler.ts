@@ -444,6 +444,12 @@ async function replayOnePendingReviewDispatch(input: {
     });
   const reparkDraftIntent = async (updatedTargetRevision: string) => {
     if (!isDraftReviewSpecialist(replaySpecialist)) return;
+    // Same specialist-scoped slot is overwritten by put. Removing afterward can
+    // delete the freshly written row when updatedAt collides within one ms.
+    // Only remove first when migrating legacy/unscoped → specialist-scoped.
+    if (intent.specialistId !== replaySpecialist) {
+      await removeIntent();
+    }
     await outbox.put({
       kind: 'review_dispatch',
       productSlug: intent.productSlug,
@@ -453,7 +459,6 @@ async function replayOnePendingReviewDispatch(input: {
       targetRevision: updatedTargetRevision,
       triggeredBy: `outbox:${intent.triggeredBy}:awaiting-draft-stage`,
     });
-    await removeIntent();
   };
   const handleReplayOutcome = async (
     outcome: ScheduleItemDispatchResult,

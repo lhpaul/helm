@@ -1882,6 +1882,66 @@ describe('pending external review readiness cleanup', () => {
     });
   });
 
+  it('keeps a same-slot re-parked draft intent when updatedAt collides within one ms', async () => {
+    const frozenNow = '2026-07-29T23:30:35.123Z';
+    vi.useFakeTimers({ now: new Date(frozenNow) });
+    try {
+      const outbox = await getReviewDispatchOutbox(dataRoot);
+      await outbox.put({
+        kind: 'review_dispatch',
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        specialistId: 'spec-draft-reviewer',
+        prNumber: 44,
+        targetRevision: 'sha-awaiting',
+        triggeredBy: 'webhook:spec-pr-sync:awaiting-spec-draft',
+      });
+      vi.mocked(getProductRegistry).mockResolvedValue([
+        { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+      ]);
+      vi.mocked(getItemStore).mockResolvedValue({
+        get: vi.fn().mockResolvedValue({
+          externalId: 'LEA-1',
+          productSlug: 'test-product',
+          currentStage: 'discovery',
+        }),
+      } as never);
+      vi.mocked(resolveSpecialistId).mockImplementation(
+        (_stage, specialistId) => specialistId as string | undefined,
+      );
+      mockResolveOpenPrMetadataForRepo.mockResolvedValue({
+        headRef: 'helm/spec/LEA-1',
+        headSha: 'sha-awaiting',
+      });
+
+      await runDispatchJob({ jobId: 'job-current' } as never, {
+        product: { ...baseProduct, review: { early_loop: { enabled: true } } } as never,
+        item: {
+          externalId: 'LEA-1',
+          productSlug: 'test-product',
+          currentStage: 'discovery',
+        } as never,
+        workdir: '/tmp/ws',
+        dataRoot,
+        specialistId: 'spec-writer',
+        feedback: undefined,
+        githubToken: 'token',
+      });
+
+      expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+      await expect(
+        outbox.get('test-product', 'LEA-1', 'review_dispatch', 'spec-draft-reviewer'),
+      ).resolves.toMatchObject({
+        specialistId: 'spec-draft-reviewer',
+        targetRevision: 'sha-awaiting',
+        triggeredBy: 'outbox:webhook:spec-pr-sync:awaiting-spec-draft:awaiting-draft-stage',
+        updatedAt: frozenNow,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('clears stage-inferred draft intents on knowledge headRef mismatch without code-repo lookup', async () => {
     const outbox = await getReviewDispatchOutbox(dataRoot);
     await outbox.put({

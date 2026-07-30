@@ -656,14 +656,26 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             targetRevision: event.targetRevision,
             triggeredBy: 'webhook:external-review-ready:awaiting-draft-stage',
           });
+          // Clear the matched slot (may be legacy/unscoped). When the match was
+          // specialist-scoped, also drop a leftover legacy pending row so the
+          // same readiness signal cannot duplicate-replay.
           await clearPendingExternalReview({
             productSlug: config.product.slug,
             externalId,
-            specialistId: specialistForReviewReadiness(artifactKind),
+            specialistId: matched?.specialistId,
             provider: event.provider,
             prNumber: prNumber ?? undefined,
             targetRevision: event.targetRevision,
           });
+          if (matched?.specialistId) {
+            await clearPendingExternalReview({
+              productSlug: config.product.slug,
+              externalId,
+              provider: event.provider,
+              prNumber: prNumber ?? undefined,
+              targetRevision: event.targetRevision,
+            });
+          }
           console.info(
             `[webhooks/github] external review readiness re-parked — item not yet in ${expectedStage}`,
           );

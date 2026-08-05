@@ -111,6 +111,19 @@ export const DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES = [
 ];
 export const DEFAULT_BUGBOT_BLOCKING_SEVERITIES = ['critical', 'high', 'medium'] as const;
 
+/** Classic GitHub commit-status contexts posted by CodeRabbit. */
+export const DEFAULT_CODERABBIT_STATUS_CONTEXTS = ['CodeRabbit'];
+/**
+ * GitHub logins trusted for CodeRabbit status webhooks and review comments.
+ * Status events lack app identity — these logins are the Option C trust anchor.
+ */
+export const DEFAULT_CODERABBIT_TRUSTED_IDENTITIES = [
+  'coderabbitai[bot]',
+  'coderabbitai',
+  'coderabbitai-pro[bot]',
+];
+export const DEFAULT_CODERABBIT_BLOCKING_SEVERITIES = ['critical', 'high', 'medium'] as const;
+
 // ── Root Product Schema ───────────────────────────────────────────────────────
 
 export const ProductSchema = z
@@ -191,7 +204,7 @@ export const ProductSchema = z
       .object({
         external: z
           .object({
-            provider: z.enum(['haystack', 'bugbot']).optional(),
+            provider: z.enum(['haystack', 'bugbot', 'coderabbit']).optional(),
             defer_when_pending: z.boolean().optional(),
             resume_on_check_run: z.boolean().optional(),
             max_defer_sec: z.number().int().positive().optional(),
@@ -217,6 +230,23 @@ export const ProductSchema = z
                   .array(ExternalReviewSeveritySchema)
                   .min(1)
                   .default([...DEFAULT_BUGBOT_BLOCKING_SEVERITIES]),
+              })
+              .strict()
+              .optional(),
+            coderabbit: z
+              .object({
+                status_contexts: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(DEFAULT_CODERABBIT_STATUS_CONTEXTS),
+                trusted_identities: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(DEFAULT_CODERABBIT_TRUSTED_IDENTITIES),
+                blocking_severities: z
+                  .array(ExternalReviewSeveritySchema)
+                  .min(1)
+                  .default([...DEFAULT_CODERABBIT_BLOCKING_SEVERITIES]),
               })
               .strict()
               .optional(),

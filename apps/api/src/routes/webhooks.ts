@@ -49,10 +49,15 @@ function externalReviewTrustConfig(
   config: Awaited<ReturnType<typeof getProductConfig>>,
 ): ExternalReviewWebhookTrustConfig {
   const bugbot = config.review?.external?.bugbot;
+  const coderabbit = config.review?.external?.coderabbit;
   return {
     bugbot: {
       checkNames: bugbot?.check_names,
       trustedAppIdentities: bugbot?.trusted_app_identities,
+    },
+    coderabbit: {
+      statusContexts: coderabbit?.status_contexts,
+      trustedIdentities: coderabbit?.trusted_identities,
     },
   };
 }

@@ -1,0 +1,18 @@
+{
+  "status": {
+    "context": "CodeRabbit",
+    "state": "success",
+    "description": "Review completed"
+  },
+  "reviewComments": [
+    {
+      "id": 101,
+      "node_id": "PRRC_coderabbit_101",
+      "path": "apps/api/src/routes/webhooks.ts",
+      "line": 42,
+      "body": "**High**\n\nPossible open redirect: validate the callback URL host against an allowlist before redirecting.",
+      "user": { "login": "coderabbitai[bot]" }
+    }
+  ],
+  "reviewThreads": []
+}

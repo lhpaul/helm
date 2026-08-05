@@ -148,6 +148,40 @@ describe('runExternalReviewIfConfigured', () => {
     });
   });
 
+  it('delegates to CodeRabbit adapter when provider is coderabbit', async () => {
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        external: {
+          provider: 'coderabbit',
+          coderabbit: {
+            status_contexts: ['CodeRabbit'],
+            trusted_identities: ['coderabbitai[bot]'],
+            blocking_severities: ['critical', 'high', 'medium'],
+          },
+        },
+      },
+    };
+    const loadCodeRabbitReview = vi.fn(() => ({
+      status: { context: 'CodeRabbit', state: 'success', description: 'Review completed' },
+    }));
+
+    await expect(
+      runExternalReviewIfConfigured(product, PR_URL, { loadCodeRabbitReview }),
+    ).resolves.toEqual({
+      status: 'clean',
+      blockers: [],
+      advisories: [],
+    });
+    expect(loadCodeRabbitReview).toHaveBeenCalledWith({
+      owner: 'o',
+      repo: 'r',
+      prNumber: 42,
+      prUrl: PR_URL,
+      defaultBranch: 'main',
+    });
+  });
+
   it('passes the locked target revision to the external review context', async () => {
     const product: Product = {
       ...baseProduct,

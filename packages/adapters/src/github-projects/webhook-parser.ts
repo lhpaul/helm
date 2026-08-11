@@ -115,12 +115,53 @@ const BUGBOT_APP_IDENTITIES = new Set([
   'cursor-agent',
 ]);
 
+const NonEmptyString = z.string().trim().min(1);
+
 export type ExternalReviewWebhookTrustConfig = {
   bugbot?: {
     checkNames?: string[];
     trustedAppIdentities?: string[];
   };
+  coderabbit?: {
+    statusContexts?: string[];
+    trustedIdentities?: string[];
+  };
 };
+
+const StatusWebhookSchema = z
+  .object({
+    id: z.number().int().optional(),
+    sha: NonEmptyString,
+    name: z.string().nullable().optional(),
+    context: NonEmptyString,
+    state: NonEmptyString,
+    description: z.string().nullable().optional(),
+    target_url: z.string().nullable().optional(),
+    url: z.string().optional(),
+    avatar_url: z.string().nullable().optional(),
+    created_at: z.string().optional(),
+    updated_at: z.string().optional(),
+    commit: z.unknown().optional(),
+    branches: z.unknown().optional(),
+    organization: z.unknown().optional(),
+    installation: z.unknown().optional(),
+    enterprise: z.unknown().optional(),
+    sender: z.object({ login: NonEmptyString }).optional(),
+    repository: z
+      .object({
+        name: NonEmptyString,
+        owner: z.object({ login: NonEmptyString }),
+      })
+      .optional(),
+  })
+  .strict();
+
+const DEFAULT_CODERABBIT_STATUS_CONTEXTS = new Set(['coderabbit']);
+const DEFAULT_CODERABBIT_TRUSTED_IDENTITIES = new Set([
+  'coderabbitai[bot]',
+  'coderabbitai',
+  'coderabbitai-pro[bot]',
+]);
 
 function normalizedSet(values: string[] | undefined, fallback: Set<string>): Set<string> {
   const normalized = (values ?? [])
@@ -292,9 +333,37 @@ export function parseGitHubWebhook(
     }
 
     if (eventType === 'status') {
-      // Option B: generic commit statuses lack provider-owned app identity —
-      // never treat them as external-review readiness signals.
-      return { type: 'unknown', raw: rawEvent };
+      // Option B still applies to generic statuses. Option C: allowlist exact
+      // CodeRabbit status context + sender login (statuses have no check app).
+      const parsed = StatusWebhookSchema.safeParse(payload);
+      if (!parsed.success) return { type: 'unknown', raw: rawEvent };
+      const { state, context, sha, sender } = parsed.data;
+      if (!['success', 'failure', 'error'].includes(state)) {
+        return { type: 'unknown', raw: rawEvent };
+      }
+      const statusContexts = normalizedSet(
+        trustConfig?.coderabbit?.statusContexts,
+        DEFAULT_CODERABBIT_STATUS_CONTEXTS,
+      );
+      if (!statusContexts.has(context.trim().toLowerCase())) {
+        return { type: 'unknown', raw: rawEvent };
+      }
+      const trustedLogins = normalizedSet(
+        trustConfig?.coderabbit?.trustedIdentities,
+        DEFAULT_CODERABBIT_TRUSTED_IDENTITIES,
+      );
+      const senderLogin = sender?.login?.trim().toLowerCase() ?? '';
+      if (!senderLogin || !trustedLogins.has(senderLogin)) {
+        return { type: 'unknown', raw: rawEvent };
+      }
+      return {
+        type: 'external_review_ready',
+        provider: 'coderabbit',
+        owner: parsed.data.repository?.owner.login ?? null,
+        repo: parsed.data.repository?.name ?? null,
+        targetRevision: sha,
+        timestamp,
+      };
     }
 
     return { type: 'unknown', raw: rawEvent };

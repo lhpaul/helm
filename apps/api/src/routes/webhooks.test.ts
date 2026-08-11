@@ -274,6 +274,28 @@ function haystackStatusPayload(
   });
 }
 
+function coderabbitStatusPayload(
+  opts: {
+    context?: string;
+    senderLogin?: string;
+    targetRevision?: string;
+    owner?: string;
+    repo?: string;
+  } = {},
+): string {
+  return JSON.stringify({
+    context: opts.context ?? 'CodeRabbit',
+    state: 'success',
+    sha: opts.targetRevision ?? 'sha-42',
+    description: 'Review completed',
+    sender: { login: opts.senderLogin ?? 'coderabbitai[bot]' },
+    repository: {
+      name: opts.repo ?? 'test-repo',
+      owner: { login: opts.owner ?? 'test-org' },
+    },
+  });
+}
+
 const MARKDOWN_DECISION = [
   '<!-- helm:product-decision -->',
   '- **product_decision** · Pick direction',
@@ -1353,6 +1375,66 @@ describe('POST /api/webhooks/github', () => {
       expect(mockResumePendingExternalReviewByRevision).not.toHaveBeenCalled();
       expect(mockClearPendingExternalReview).not.toHaveBeenCalled();
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('uses configured CodeRabbit status trust values for status readiness', async () => {
+      vi.mocked(getProductConfig).mockResolvedValue({
+        product: { slug: 'test-app', name: 'Test' },
+        issue_tracker: {
+          provider: 'github_projects',
+          org: 'test-org',
+          project_number: 1,
+          custom_field_name: 'Helm Stage',
+        },
+        code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+        knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+        workflow: { final_stage: 'released' },
+        review: {
+          external: {
+            provider: 'coderabbit',
+            resume_on_check_run: true,
+            coderabbit: {
+              status_contexts: ['Custom Rabbit'],
+              trusted_identities: ['custom-rabbit[bot]'],
+              blocking_severities: ['critical', 'high', 'medium'],
+            },
+          },
+        },
+      } as never);
+      mockPeekPendingExternalReviewByRevision.mockResolvedValue({
+        kind: 'pending_external_review',
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        provider: 'coderabbit',
+        targetRevision: 'sha-42',
+        createdAt: '2026-08-11T00:00:00.000Z',
+      });
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+      const defaultPayload = await post(coderabbitStatusPayload(), 'status');
+      expect(defaultPayload.status).toBe(200);
+      expect(mockResumePendingExternalReviewByRevision).not.toHaveBeenCalled();
+
+      const customPayload = await post(
+        coderabbitStatusPayload({
+          context: 'Custom Rabbit',
+          senderLogin: 'custom-rabbit[bot]',
+        }),
+        'status',
+      );
+
+      expect(customPayload.status).toBe(200);
+      expect(mockResumePendingExternalReviewByRevision).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        provider: 'coderabbit',
+        targetRevision: 'sha-42',
+        triggeredBy: 'webhook:external-review-ready',
+      });
     });
 
     it('resumes by revision first when check run includes PR metadata', async () => {

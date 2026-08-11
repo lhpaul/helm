@@ -19,6 +19,7 @@ import {
 } from './review-dispatch-outbox.js';
 import { resolveOpenPrMetadata } from './github-pr.js';
 import { createGitHubBugbotReviewLoader } from './bugbot-review-loader.js';
+import { createGitHubCodeRabbitReviewLoader } from './coderabbit-review-loader.js';
 
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
 
@@ -470,7 +471,14 @@ export async function runDispatchJob(
                   githubToken: ctx.githubToken,
                 }),
               }
-            : undefined,
+            : ctx.product.review?.external?.provider === 'coderabbit' && ctx.githubToken
+              ? {
+                  loadCodeRabbitReview: createGitHubCodeRabbitReviewLoader({
+                    product: ctx.product,
+                    githubToken: ctx.githubToken,
+                  }),
+                }
+              : undefined,
       },
     );
 

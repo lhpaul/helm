@@ -2,6 +2,9 @@ export {
   DEFAULT_BUGBOT_BLOCKING_SEVERITIES,
   DEFAULT_BUGBOT_CHECK_NAMES,
   DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES,
+  DEFAULT_CODERABBIT_BLOCKING_SEVERITIES,
+  DEFAULT_CODERABBIT_STATUS_CONTEXTS,
+  DEFAULT_CODERABBIT_TRUSTED_IDENTITIES,
   ProductSchema,
 } from './product-schema.js';
 export type { Product, IssueTracker, CodeRepo, Specialist } from './product-schema.js';

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Review adjudicator secure-default policy (#73):** the adjudicator prompt now directs generic trust/security conflicts toward the clearly safer default (allowlist, fail closed, least privilege, strict validation, no open redirect) as AUTO remediation with a visible PR recommendation, while preserving explicit human overrides and keeping product-specific origins/allowlists out of Helm core.
+
 - **Opt-in early artifact review loop (#71):** products can set `review.early_loop.enabled: true` to route `spec-draft` and `plan-draft` artifact PRs through the existing ADR-036 reviewer/remediation loop before operator-authored remediation is required. The flag defaults off, so existing products keep the current operator-triggered `spec-remediator` / `plan-remediator` flow and explicit-feedback requirement. The false-positive catalog now includes Helm sequential-artifact patterns such as `pair-spec-and-plan-files` for draft review disposition.
 
 - **Review adjudicator (ADR-037):** optional `review-adjudicator` specialist runs between reviewer fan-out and `code-remediator`, synthesizing conflicting verdicts into a unified remediation plan. Escalates with `adjudication_conflict` when product or documentation decisions remain (`HUMAN_REQUIRED`). Configured via `specialists.review-adjudicator` and `review.loop.adjudication.enabled` (defaults on when the specialist is present). Backward compatible — products without the specialist keep the legacy direct-to-remediator path.

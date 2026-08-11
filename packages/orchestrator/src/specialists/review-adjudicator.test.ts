@@ -69,6 +69,35 @@ describe('buildReviewAdjudicatorParams', () => {
     expect(params.permissionMode).toBe('acceptEdits');
   });
 
+  it('instructs the adjudicator to auto-remediate generic secure defaults without hardcoding product doctrine', () => {
+    const findings = new Map([
+      [
+        'security',
+        [
+          '# Security Review',
+          '',
+          '## Findings',
+          '- **HIGH** · Open redirect risk: prefer allowlisted payment redirects.',
+        ].join('\n'),
+      ] as const,
+    ]);
+
+    const params = buildReviewAdjudicatorParams(
+      'LEA-194',
+      product,
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      findings,
+    );
+
+    expect(params.prompt).toContain('Prefer secure defaults');
+    expect(params.prompt).toContain('allowlist, fail closed, least privilege');
+    expect(params.prompt).toContain('unified plan as **AUTO**');
+    expect(params.prompt).toContain('Preserve human override');
+    expect(params.prompt).toContain('do not invent or hardcode product-specific origins');
+    expect(params.prompt).toContain('missing doctrine as **product_decision**');
+  });
+
   it('does not duplicate external blockers when they are embedded in code findings', () => {
     const externalBody = '- **HIGH**: Missing guard';
     const findings = new Map([

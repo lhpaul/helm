@@ -143,6 +143,9 @@ const StatusWebhookSchema = z
     updated_at: z.string().optional(),
     commit: z.unknown().optional(),
     branches: z.unknown().optional(),
+    organization: z.unknown().optional(),
+    installation: z.unknown().optional(),
+    enterprise: z.unknown().optional(),
     sender: z.object({ login: NonEmptyString }).optional(),
     repository: z
       .object({

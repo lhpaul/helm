@@ -470,6 +470,30 @@ describe('parseGitHubWebhook', () => {
       });
     });
 
+    it('accepts common GitHub status metadata while keeping the top-level schema strict', () => {
+      const result = parseGitHubWebhook(
+        ctx('status', {
+          context: 'CodeRabbit',
+          state: 'success',
+          description: 'Review completed',
+          sha: 'abc123def',
+          sender: { login: 'coderabbitai[bot]' },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+          organization: { login: 'owner' },
+          installation: { id: 123 },
+          enterprise: { slug: 'enterprise' },
+        }),
+      );
+
+      expect(result).toMatchObject({
+        type: 'external_review_ready',
+        provider: 'coderabbit',
+        owner: 'owner',
+        repo: 'repo',
+        targetRevision: 'abc123def',
+      });
+    });
+
     it('rejects CodeRabbit status without a trusted sender login', () => {
       const result = parseGitHubWebhook(
         ctx('status', {

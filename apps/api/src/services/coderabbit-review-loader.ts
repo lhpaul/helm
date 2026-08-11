@@ -1,6 +1,6 @@
 import {
-  DEFAULT_BUGBOT_CHECK_NAMES,
-  DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES,
+  DEFAULT_CODERABBIT_STATUS_CONTEXTS,
+  DEFAULT_CODERABBIT_TRUSTED_IDENTITIES,
   type Product,
 } from '@helm/shared';
 import type { RunExternalReviewDeps } from '@helm/orchestrator';
@@ -9,33 +9,16 @@ type GitHubPullRequestResponse = {
   head?: { sha?: string };
 };
 
-type GitHubCheckRunResponse = {
-  id: number;
-  name?: string;
-  status?: string;
-  conclusion?: string | null;
-  app?: { slug?: string | null; name?: string | null } | null;
-  started_at?: string | null;
-  completed_at?: string | null;
-  output?: {
-    title?: string | null;
-    summary?: string | null;
-    text?: string | null;
-  } | null;
-};
-
-type GitHubCheckRunsResponse = {
-  check_runs?: GitHubCheckRunResponse[];
-};
-
-type GitHubAnnotationResponse = {
-  path?: string | null;
-  start_line?: number | null;
-  end_line?: number | null;
-  annotation_level?: string | null;
-  title?: string | null;
-  message?: string | null;
-  raw_details?: string | null;
+type GitHubCombinedStatusResponse = {
+  statuses?: {
+    context?: string;
+    state?: string;
+    description?: string | null;
+    target_url?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+    creator?: { login?: string | null } | null;
+  }[];
 };
 
 type GitHubReviewCommentResponse = {
@@ -52,8 +35,6 @@ type LoadedReviewThread = {
   id?: string | number;
   isResolved?: boolean;
   is_resolved?: boolean;
-  isOutdated?: boolean;
-  is_outdated?: boolean;
   path?: string | null;
   line?: number | null;
   comments?: GitHubReviewCommentResponse[];
@@ -71,7 +52,6 @@ type GitHubReviewThreadsGraphQL = {
         nodes?: {
           id?: string;
           isResolved?: boolean;
-          isOutdated?: boolean;
           path?: string | null;
           line?: number | null;
           comments?: {
@@ -107,28 +87,22 @@ function configuredSet(values: string[] | undefined, fallback: string[]): Set<st
   return new Set(normalized.length > 0 ? normalized : fallback.map(normalize));
 }
 
-function isTrustedBugbotCheckRun(checkRun: GitHubCheckRunResponse, product: Product): boolean {
-  const bugbot = product.review?.external?.bugbot;
-  const checkNames = configuredSet(bugbot?.check_names, DEFAULT_BUGBOT_CHECK_NAMES);
-  const appIdentities = configuredSet(
-    bugbot?.trusted_app_identities,
-    DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES,
+function isTrustedCodeRabbitIdentity(login: string | undefined | null, product: Product): boolean {
+  if (!login) return false;
+  const identities = configuredSet(
+    product.review?.external?.coderabbit?.trusted_identities,
+    DEFAULT_CODERABBIT_TRUSTED_IDENTITIES,
   );
-  const name = checkRun.name ? normalize(checkRun.name) : '';
-  if (!checkNames.has(name)) return false;
-  const identities = [checkRun.app?.slug, checkRun.app?.name]
-    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    .map(normalize);
-  return identities.some((identity) => appIdentities.has(identity));
+  return identities.has(normalize(login));
 }
 
-function isTrustedBugbotComment(comment: GitHubReviewCommentResponse, product: Product): boolean {
-  const appIdentities = configuredSet(
-    product.review?.external?.bugbot?.trusted_app_identities,
-    DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES,
+function isTrustedCodeRabbitStatusContext(context: string | undefined, product: Product): boolean {
+  if (!context) return false;
+  const contexts = configuredSet(
+    product.review?.external?.coderabbit?.status_contexts,
+    DEFAULT_CODERABBIT_STATUS_CONTEXTS,
   );
-  const login = comment.user?.login;
-  return typeof login === 'string' && appIdentities.has(normalize(login));
+  return contexts.has(normalize(context));
 }
 
 async function fetchGitHubJson<T>(url: string, token: string): Promise<T> {
@@ -168,6 +142,25 @@ async function fetchPaginatedGitHubJson<T>(url: string, token: string): Promise<
   return items;
 }
 
+async function fetchPaginatedCombinedStatuses(
+  url: string,
+  token: string,
+): Promise<GitHubCombinedStatusResponse> {
+  const statuses: NonNullable<GitHubCombinedStatusResponse['statuses']> = [];
+  let page = 1;
+  while (true) {
+    const pageUrl = new URL(url);
+    pageUrl.searchParams.set('per_page', '100');
+    if (page > 1) pageUrl.searchParams.set('page', `${page}`);
+    const payload = await fetchGitHubJson<GitHubCombinedStatusResponse>(pageUrl.toString(), token);
+    const pageStatuses = payload.statuses ?? [];
+    statuses.push(...pageStatuses);
+    if (pageStatuses.length < 100) break;
+    page += 1;
+  }
+  return { statuses };
+}
+
 async function fetchGitHubGraphQL<T>(
   query: string,
   variables: Record<string, unknown>,
@@ -202,14 +195,8 @@ async function fetchGitHubGraphQL<T>(
   }
 }
 
-function latestFirst(a: GitHubCheckRunResponse, b: GitHubCheckRunResponse): number {
-  const aTime = Date.parse(a.completed_at ?? a.started_at ?? '');
-  const bTime = Date.parse(b.completed_at ?? b.started_at ?? '');
-  return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
-}
-
 const REVIEW_THREADS_QUERY = `
-  query HelmBugbotReviewThreads($owner: String!, $repo: String!, $number: Int!, $after: String) {
+  query HelmCodeRabbitReviewThreads($owner: String!, $repo: String!, $number: Int!, $after: String) {
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $number) {
         reviewThreads(first: 100, after: $after) {
@@ -220,7 +207,6 @@ const REVIEW_THREADS_QUERY = `
           nodes {
             id
             isResolved
-            isOutdated
             path
             line
             comments(first: 100) {
@@ -243,7 +229,7 @@ const REVIEW_THREADS_QUERY = `
   }
 `;
 
-async function fetchBugbotReviewThreads(input: {
+async function fetchCodeRabbitReviewThreads(input: {
   owner: string;
   repo: string;
   prNumber: number;
@@ -265,8 +251,6 @@ async function fetchBugbotReviewThreads(input: {
     );
     const page = data.repository?.pullRequest?.reviewThreads;
     for (const thread of page?.nodes ?? []) {
-      if (thread.isResolved === true) continue;
-      if (thread.isOutdated === true) continue;
       const comments = (thread.comments?.nodes ?? [])
         .map(
           (comment): GitHubReviewCommentResponse => ({
@@ -279,12 +263,11 @@ async function fetchBugbotReviewThreads(input: {
             user: { login: comment.author?.login ?? null },
           }),
         )
-        .filter((comment) => isTrustedBugbotComment(comment, input.product));
+        .filter((comment) => isTrustedCodeRabbitIdentity(comment.user?.login, input.product));
       if (comments.length === 0) continue;
       threads.push({
         id: thread.id,
         isResolved: thread.isResolved,
-        isOutdated: thread.isOutdated,
         path: thread.path,
         line: thread.line,
         comments,
@@ -296,62 +279,74 @@ async function fetchBugbotReviewThreads(input: {
   return threads;
 }
 
-export function createGitHubBugbotReviewLoader(input: {
+export function createGitHubCodeRabbitReviewLoader(input: {
   product: Product;
   githubToken: string;
-}): NonNullable<RunExternalReviewDeps['loadBugbotReview']> {
+}): NonNullable<RunExternalReviewDeps['loadCodeRabbitReview']> {
   return async (ctx) => {
     const repoBase = `https://api.github.com/repos/${ctx.owner}/${ctx.repo}`;
-    const pr = await fetchGitHubJson<GitHubPullRequestResponse>(
-      `${repoBase}/pulls/${ctx.prNumber}`,
-      input.githubToken,
-    );
-    const targetSha = ctx.targetRevision ?? pr.head?.sha;
-    if (!targetSha || !GIT_SHA_RE.test(targetSha)) return { unavailable: true };
-
-    const checkRuns = await fetchGitHubJson<GitHubCheckRunsResponse>(
-      `${repoBase}/commits/${targetSha}/check-runs?per_page=100`,
-      input.githubToken,
-    );
-    const checkRun = (checkRuns.check_runs ?? [])
-      .filter((candidate) => isTrustedBugbotCheckRun(candidate, input.product))
-      .sort(latestFirst)[0];
-    if (!checkRun) return { unavailable: true };
-
-    const [annotations, reviewComments, reviewThreads] = await Promise.all([
-      fetchPaginatedGitHubJson<GitHubAnnotationResponse>(
-        `${repoBase}/check-runs/${checkRun.id}/annotations`,
+    try {
+      const pr = await fetchGitHubJson<GitHubPullRequestResponse>(
+        `${repoBase}/pulls/${ctx.prNumber}`,
         input.githubToken,
-      ),
-      fetchPaginatedGitHubJson<GitHubReviewCommentResponse>(
-        `${repoBase}/pulls/${ctx.prNumber}/comments`,
-        input.githubToken,
-      ),
-      fetchBugbotReviewThreads({
-        owner: ctx.owner,
-        repo: ctx.repo,
-        prNumber: ctx.prNumber,
-        product: input.product,
-        githubToken: input.githubToken,
-      }),
-    ]);
+      );
+      const targetSha = ctx.targetRevision ?? pr.head?.sha;
+      if (!targetSha || !GIT_SHA_RE.test(targetSha)) return { unavailable: true };
 
-    return {
-      checkRun: {
-        name: checkRun.name,
-        status: checkRun.status,
-        conclusion: checkRun.conclusion,
-        output: {
-          title: checkRun.output?.title,
-          summary: checkRun.output?.summary,
-          text: checkRun.output?.text,
-          annotations,
+      const combined = await fetchPaginatedCombinedStatuses(
+        `${repoBase}/commits/${targetSha}/status`,
+        input.githubToken,
+      );
+      const status = (combined.statuses ?? []).find(
+        (candidate) =>
+          isTrustedCodeRabbitStatusContext(candidate.context, input.product) &&
+          isTrustedCodeRabbitIdentity(candidate.creator?.login, input.product),
+      );
+      if (!status) return { unavailable: true };
+
+      const [reviewComments, reviewThreads] = await Promise.all([
+        fetchPaginatedGitHubJson<GitHubReviewCommentResponse>(
+          `${repoBase}/pulls/${ctx.prNumber}/comments`,
+          input.githubToken,
+        ),
+        fetchCodeRabbitReviewThreads({
+          owner: ctx.owner,
+          repo: ctx.repo,
+          prNumber: ctx.prNumber,
+          product: input.product,
+          githubToken: input.githubToken,
+        }),
+      ]);
+      const trustedResolvedThreadCommentIds = new Set(
+        reviewThreads
+          .filter((thread) => thread.isResolved === true || thread.is_resolved === true)
+          .flatMap((thread) => thread.comments ?? [])
+          .flatMap((comment) => [comment.id, comment.node_id])
+          .filter((id): id is string | number => id !== undefined),
+      );
+
+      return {
+        status: {
+          context: status.context,
+          state: status.state,
+          description: status.description,
+          target_url: status.target_url,
+          created_at: status.created_at,
+          updated_at: status.updated_at,
         },
-      },
-      reviewComments: reviewComments.filter((comment) =>
-        isTrustedBugbotComment(comment, input.product),
-      ),
-      reviewThreads,
-    };
+        reviewComments: reviewComments.filter(
+          (comment) =>
+            isTrustedCodeRabbitIdentity(comment.user?.login, input.product) &&
+            !trustedResolvedThreadCommentIds.has(comment.id ?? '') &&
+            !trustedResolvedThreadCommentIds.has(comment.node_id ?? ''),
+        ),
+        reviewThreads: reviewThreads.filter(
+          (thread) => thread.isResolved !== true && thread.is_resolved !== true,
+        ),
+      };
+    } catch (err) {
+      console.error('[coderabbit-review-loader] Failed to load GitHub review payload:', err);
+      return { error: 'github_review_fetch_failed' };
+    }
   };
 }

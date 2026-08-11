@@ -25,6 +25,7 @@ import {
   resolveOpenPrMetadataForRepo,
 } from './github-pr.js';
 import { createGitHubBugbotReviewLoader } from './bugbot-review-loader.js';
+import { createGitHubCodeRabbitReviewLoader } from './coderabbit-review-loader.js';
 
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
 const DRAFT_REVIEWER_NO_LONGER_APPLICABLE = 'Draft reviewer no longer applicable';
@@ -760,7 +761,14 @@ export async function runDispatchJob(
                   githubToken: ctx.githubToken,
                 }),
               }
-            : undefined,
+            : ctx.product.review?.external?.provider === 'coderabbit' && ctx.githubToken
+              ? {
+                  loadCodeRabbitReview: createGitHubCodeRabbitReviewLoader({
+                    product: ctx.product,
+                    githubToken: ctx.githubToken,
+                  }),
+                }
+              : undefined,
       },
     );
 

@@ -448,7 +448,7 @@ describe('ProductSchema — review loop (ADR-036)', () => {
   });
 
   it('rejects unknown external providers', () => {
-    const result = ProductSchema.safeParse(withReview({ external: { provider: 'coderabbit' } }));
+    const result = ProductSchema.safeParse(withReview({ external: { provider: 'unknown-bot' } }));
     expect(result.success).toBe(false);
   });
 
@@ -480,6 +480,39 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     const result = ProductSchema.safeParse(
       withReview({
         external: { provider: 'bugbot', bugbot: { unknown_flag: true } },
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('parses external coderabbit provider and strict provider config', () => {
+    const result = ProductSchema.safeParse(
+      withReview({
+        external: {
+          provider: 'coderabbit',
+          coderabbit: {
+            status_contexts: ['CodeRabbit'],
+            trusted_identities: ['coderabbitai[bot]'],
+            blocking_severities: ['critical', 'high'],
+          },
+        },
+      }),
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.review?.external?.provider).toBe('coderabbit');
+      expect(result.data.review?.external?.coderabbit).toEqual({
+        status_contexts: ['CodeRabbit'],
+        trusted_identities: ['coderabbitai[bot]'],
+        blocking_severities: ['critical', 'high'],
+      });
+    }
+  });
+
+  it('rejects unknown keys in review.external.coderabbit', () => {
+    const result = ProductSchema.safeParse(
+      withReview({
+        external: { provider: 'coderabbit', coderabbit: { unknown_flag: true } },
       }),
     );
     expect(result.success).toBe(false);

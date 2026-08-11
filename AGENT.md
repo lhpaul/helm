@@ -137,6 +137,8 @@ Para reducir round-trips humanos en cada bloque de sesión, Claude Code tiene au
 
 - Ejecutar `pnpm turbo run test`, `build`, `lint` y reportar resultado en el PR description.
 - Aplicar fixes de CodeRabbit que caen en categorías ya catched antes (path traversal en inputs externos, info leak de paths/tokens en error responses, race conditions en singletons o init, validación estricta con Zod `.strict()`, sanitización de inputs). Si el fix es claramente uno de estos patrones, aplicalo y commitea con `fix(...)` + "Addresses CodeRabbit review comment on PR #N".
+- Cuando LH aprueba un hito de limpieza de PR/reviewer-loop, esa aprobación autoriza el ciclo completo sobre ese PR: inspeccionar threads accionables, aplicar fixes puntuales, commitear, pushear a la misma branch, pedir re-review, esperar checks, volver a leer threads y repetir hasta estado terminal.
+- Resolver manualmente threads de CodeRabbit/Haystack/PR-Agent si el fix está presente en el `headRefOid` actual y existe evidencia local o CI. Si el finding es stale o false positive, dejar un comentario breve con la evidencia antes de resolverlo.
 - Esperar a CodeRabbit después de cada push usando polling (ver sección "Reviewer loop básico" abajo).
 - Mergear el PR con `gh pr merge N --merge --delete-branch` después de:
   1. Confirmar que tests, build y lint están verdes localmente.
@@ -151,6 +153,8 @@ Para reducir round-trips humanos en cada bloque de sesión, Claude Code tiene au
 - Hay conflict de merge con develop.
 - El plan de un Bloque excede 90 minutos de tiempo estimado.
 - Surge una limitación técnica que requiere agregar/cambiar dependencias significativas no previstas.
+- La acción requerida es destructiva o cambia la autoridad externa del repo: force-push, cambio de branch base, modificación de branch protection, rotación de secrets, permisos, credenciales o ownership.
+- El siguiente paso es mergear y LH no autorizó explícitamente mergear en este hito.
 
 ### Reviewer loop básico para CodeRabbit
 
@@ -182,6 +186,8 @@ Reglas del loop:
 - Timeout máximo: 10 minutos. Si CodeRabbit no responde en 10 min, parar y pedir input humano (probablemente hit rate limit).
 - Si el último comentario es "No actionable comments were generated" o equivalente, considerar el PR clean.
 - Si hay actionable comments, evaluá cada uno: si cae en categoría auto-fixable (ver lista arriba), aplicar; si no, parar y pedir input humano.
+- El estado terminal de limpieza es evidencia del head actual: checks de reviewer en estado success/neutral aceptable, `UNRESOLVED_THREAD_COUNT=0` para threads accionables no outdated, validación local relevante ejecutada, branch pusheada y workspace limpio.
+- No dejar un PR como "limpio" sólo porque el check del reviewer está verde: siempre re-leer `reviewThreads` por GraphQL y distinguir threads abiertos actuales de threads outdated/resueltos.
 
 ### Categorías auto-fixables (lista viva)
 

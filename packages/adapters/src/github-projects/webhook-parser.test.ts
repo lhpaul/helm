@@ -538,7 +538,7 @@ describe('parseGitHubWebhook', () => {
       expect(result.type).toBe('unknown');
     });
 
-    it('status.success is not treated as external-review readiness (Option B)', () => {
+    it('status.success for non-CodeRabbit contexts stays unknown (Option B)', () => {
       const result = parseGitHubWebhook(
         ctx('status', {
           context: 'Bugbot / Review',
@@ -550,6 +550,92 @@ describe('parseGitHubWebhook', () => {
         }),
       );
 
+      expect(result.type).toBe('unknown');
+    });
+
+    it('status.success for allowlisted CodeRabbit context emits external_review_ready', () => {
+      const result = parseGitHubWebhook(
+        ctx('status', {
+          context: 'CodeRabbit',
+          state: 'success',
+          description: 'Review completed',
+          sha: 'abc123def',
+          sender: { login: 'coderabbitai[bot]' },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result).toEqual({
+        type: 'external_review_ready',
+        provider: 'coderabbit',
+        owner: 'owner',
+        repo: 'repo',
+        targetRevision: 'abc123def',
+        timestamp: expect.any(String),
+      });
+    });
+
+    it('accepts common GitHub status metadata while keeping the top-level schema strict', () => {
+      const result = parseGitHubWebhook(
+        ctx('status', {
+          context: 'CodeRabbit',
+          state: 'success',
+          description: 'Review completed',
+          sha: 'abc123def',
+          sender: { login: 'coderabbitai[bot]' },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+          organization: { login: 'owner' },
+          installation: { id: 123 },
+          enterprise: { slug: 'enterprise' },
+        }),
+      );
+
+      expect(result).toMatchObject({
+        type: 'external_review_ready',
+        provider: 'coderabbit',
+        owner: 'owner',
+        repo: 'repo',
+        targetRevision: 'abc123def',
+      });
+    });
+
+    it('rejects CodeRabbit status without a trusted sender login', () => {
+      const result = parseGitHubWebhook(
+        ctx('status', {
+          context: 'CodeRabbit',
+          state: 'success',
+          sha: 'abc123def',
+          sender: { login: 'malicious-bot' },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('rejects CodeRabbit status with empty trust inputs', () => {
+      const result = parseGitHubWebhook(
+        ctx('status', {
+          context: ' ',
+          state: 'success',
+          sha: ' ',
+          sender: { login: 'coderabbitai[bot]' },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('rejects CodeRabbit status payloads with unexpected fields', () => {
+      const result = parseGitHubWebhook(
+        ctx('status', {
+          context: 'CodeRabbit',
+          state: 'success',
+          sha: 'abc123def',
+          sender: { login: 'coderabbitai[bot]' },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+          unexpected: 'spoofed',
+        }),
+      );
       expect(result.type).toBe('unknown');
     });
   });

@@ -193,6 +193,7 @@ describe('createGitHubBugbotReviewLoader', () => {
                     {
                       id: 'thread-1',
                       isResolved: false,
+                      isOutdated: false,
                       path: 'src/app.ts',
                       line: 12,
                       comments: {
@@ -231,6 +232,7 @@ describe('createGitHubBugbotReviewLoader', () => {
       {
         id: 'thread-1',
         isResolved: false,
+        isOutdated: false,
         path: 'src/app.ts',
         line: 12,
         comments: [
@@ -243,6 +245,67 @@ describe('createGitHubBugbotReviewLoader', () => {
         ],
       },
     ]);
+  });
+
+  it('skips unresolved outdated review threads', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = typeof url === 'string' ? url : url.toString();
+      if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.endsWith('/commits/abc1234/check-runs?per_page=100')) {
+        return jsonResponse({
+          check_runs: [
+            {
+              id: 2,
+              name: 'Bugbot / Review',
+              status: 'completed',
+              conclusion: 'success',
+              app: { slug: 'bugbot' },
+            },
+          ],
+        });
+      }
+      if (requestUrl.endsWith('/check-runs/2/annotations?per_page=100')) return jsonResponse([]);
+      if (requestUrl.endsWith('/pulls/42/comments?per_page=100')) return jsonResponse([]);
+      if (requestUrl === 'https://api.github.com/graphql') {
+        return jsonResponse({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: 'outdated-thread',
+                      isResolved: false,
+                      isOutdated: true,
+                      path: 'src/old.ts',
+                      line: 3,
+                      comments: {
+                        nodes: [
+                          {
+                            databaseId: 201,
+                            id: 'comment-201',
+                            body: '**HIGH** stale finding',
+                            author: { login: 'bugbot' },
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`unexpected URL ${requestUrl}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const loader = createGitHubBugbotReviewLoader({ product, githubToken: 'token' });
+    const result = await loader(ctx);
+
+    expect(result?.reviewThreads).toEqual([]);
   });
 
   it('skips resolved threads and loads paginated comments and thread pages', async () => {
@@ -288,6 +351,7 @@ describe('createGitHubBugbotReviewLoader', () => {
                       {
                         id: 'resolved-thread',
                         isResolved: true,
+                        isOutdated: false,
                         path: 'src/old.ts',
                         line: 3,
                         comments: {
@@ -318,6 +382,7 @@ describe('createGitHubBugbotReviewLoader', () => {
                     {
                       id: 'open-thread',
                       isResolved: false,
+                      isOutdated: false,
                       path: 'src/new.ts',
                       line: 8,
                       comments: {

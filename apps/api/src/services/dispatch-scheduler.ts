@@ -19,6 +19,7 @@ import {
   type ReviewDispatchIntent,
 } from './review-dispatch-outbox.js';
 import {
+  GitHubPrError,
   parseGitHubRepoUrl,
   resolveOpenPrMetadata,
   resolveOpenPrMetadataForRepo,
@@ -126,7 +127,7 @@ function isDraftReviewSpecialist(
 }
 
 function isTerminalPullRequestLookupError(err: unknown): boolean {
-  return err instanceof Error && err.message === 'Pull request is not open';
+  return err instanceof GitHubPrError && err.code === 'pr_not_open';
 }
 
 async function inferPendingReviewSpecialist(input: {

@@ -1382,6 +1382,65 @@ describe('runCodeReviewLoop', () => {
     );
   });
 
+  it('does not rewrite early-artifact status when no catalog entry matches', async () => {
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInFalsePositiveEntries());
+    let transformedBody = '';
+    vi.mocked(fanoutReviewers).mockImplementationOnce(async (...args) => {
+      const transformReviewComment = args[10] as ReviewCommentTransform | undefined;
+      expect(transformReviewComment).toBeTypeOf('function');
+      const transformed = await transformReviewComment!({
+        kind: 'code',
+        reviewContent: [
+          '# Code Review',
+          '',
+          '## Findings',
+          '- **HIGH** · totally novel domain finding',
+          '',
+          '## Status',
+          'CHANGES_REQUESTED',
+        ].join('\n'),
+        // Counts already zero (e.g. only info-level findings were tallied upstream)
+        // yet Status still says CHANGES_REQUESTED — must not flip to APPROVED.
+        findings: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+      });
+      transformedBody = transformed.reviewContent;
+      return makeFanout(
+        {
+          prUrl: 'https://github.com/o/k/pull/7',
+          reviewerResults: [
+            {
+              kind: 'code',
+              status: 'done',
+              costUsd: 0.01,
+              durationMs: 50,
+              commentPosted: true,
+              findings: transformed.findings,
+              commentBody: transformed.reviewContent,
+            },
+          ],
+        },
+        undefined,
+      );
+    });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product: baseProduct,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(transformedBody).toContain('- **HIGH** · totally novel domain finding');
+    expect(transformedBody).toContain('## Status\nCHANGES_REQUESTED');
+    expect(transformedBody).not.toContain('## Status\nAPPROVED');
+    expect(transformedBody).not.toContain('Catalogued false positive');
+  });
+
   it('still remediates a sequential-artifact-looking reviewer finding in code-review mode', async () => {
     const builtInCatalog = builtInFalsePositiveEntries();
     vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInCatalog);

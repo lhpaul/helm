@@ -23,7 +23,11 @@ import {
   handleReviewAdjudicatorResult,
 } from '../specialists/review-adjudicator.js';
 import { fetchSpecForPlan, type FetchFn } from '../specialists/fetch-product-context.js';
-import { provisionReviewerWorkspace, artifactsDirFor } from '../specialists/code-workspace.js';
+import {
+  provisionReviewerWorkspace,
+  artifactsDirFor,
+  EXTERNAL_ID_SAFE,
+} from '../specialists/code-workspace.js';
 import type { RunGit, RunGh } from '../specialists/git-helpers.js';
 import { runExternalReviewIfConfigured, parsePullRequestRef } from '../external-review/run.js';
 import type { RunExternalReviewDeps } from '../external-review/run.js';
@@ -262,6 +266,7 @@ function suppressFalsePositiveReviewerComment(
   stage: WorkflowStage,
 ): ReviewCommentTransformResult {
   const findings = { ...input.findings };
+  let suppressedCount = 0;
   const reviewContentWithSuppressedFindings = input.reviewContent.replace(
     /\*\*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\*\*\s*·\s*([^\n]+)/g,
     (line, rawSeverity: string, summary: string) => {
@@ -276,11 +281,18 @@ function suppressFalsePositiveReviewerComment(
       };
 
       if (!findFalsePositiveMatch(finding, catalog, stage)) return line;
+      suppressedCount += 1;
       if (findings[severity] > 0) findings[severity] -= 1;
       findings.info += 1;
       return `**INFO** · Catalogued false positive: ${summary}`;
     },
   );
+
+  // No catalog match: preserve the reviewer-authored status (do not flip
+  // CHANGES_REQUESTED → APPROVED just because medium+ counts are already zero).
+  if (suppressedCount === 0) {
+    return { reviewContent: input.reviewContent, findings: input.findings };
+  }
 
   const status =
     findings.critical + findings.high + findings.medium > 0 ? 'CHANGES_REQUESTED' : 'APPROVED';
@@ -934,6 +946,9 @@ async function runAdjudicationPass(input: {
         }
       | undefined;
     if (input.mode === 'early-artifact' && input.kind) {
+      if (!EXTERNAL_ID_SAFE.test(input.externalId)) {
+        throw new Error('Invalid externalId for draft artifact path');
+      }
       const artifactRelPath =
         input.kind === 'spec' ? `specs/${input.externalId}.md` : `plans/${input.externalId}.md`;
       try {

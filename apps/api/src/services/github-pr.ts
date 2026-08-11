@@ -20,9 +20,12 @@ export type GitHubIssueComment = {
 const GITHUB_API_TIMEOUT_MS = 10_000;
 
 export class GitHubPrError extends Error {
-  constructor(message: string) {
+  readonly code?: string;
+
+  constructor(message: string, code?: string) {
     super(message);
     this.name = 'GitHubPrError';
+    this.code = code;
   }
 }
 
@@ -121,7 +124,7 @@ export async function resolveOpenPrMetadataForRepo(input: {
     input.githubToken,
   );
 
-  if (pr.state !== 'open') throw new GitHubPrError('Pull request is not open');
+  if (pr.state !== 'open') throw new GitHubPrError('Pull request is not open', 'pr_not_open');
   const headRef = pr.head?.ref;
   const headSha = pr.head?.sha;
   if (!headRef || !headSha) throw new GitHubPrError('Pull request head metadata is incomplete');

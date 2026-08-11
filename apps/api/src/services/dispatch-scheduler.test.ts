@@ -44,15 +44,14 @@ vi.mock('@helm/orchestrator', () => ({
   resolveSpecialistId: vi.fn(),
 }));
 
-vi.mock('./github-pr.js', () => ({
-  parseGitHubRepoUrl: (url: string) => {
-    const parsed = new URL(url);
-    const [owner, repo] = parsed.pathname.replace(/^\/+/, '').split('/');
-    return { owner, repo: repo?.replace(/\.git$/, '') };
-  },
-  resolveOpenPrMetadata: (...args: unknown[]) => mockResolveOpenPrMetadata(...args),
-  resolveOpenPrMetadataForRepo: (...args: unknown[]) => mockResolveOpenPrMetadataForRepo(...args),
-}));
+vi.mock('./github-pr.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./github-pr.js')>();
+  return {
+    ...actual,
+    resolveOpenPrMetadata: (...args: unknown[]) => mockResolveOpenPrMetadata(...args),
+    resolveOpenPrMetadataForRepo: (...args: unknown[]) => mockResolveOpenPrMetadataForRepo(...args),
+  };
+});
 
 import {
   clearPendingExternalReview,
@@ -66,6 +65,7 @@ import {
 import { dispatchStageHandler, resolveSpecialistId } from '@helm/orchestrator';
 import { getItemStore, getProductRegistry } from './index.js';
 import { getReviewDispatchOutbox } from './review-dispatch-outbox.js';
+import { GitHubPrError } from './github-pr.js';
 
 const baseProduct = {
   product: { slug: 'test-product', name: 'Test Product' },
@@ -1573,7 +1573,9 @@ describe('pending external review readiness cleanup', () => {
         currentStage: 'plan-draft',
       }),
     } as never);
-    mockResolveOpenPrMetadataForRepo.mockRejectedValue(new Error('Pull request is not open'));
+    mockResolveOpenPrMetadataForRepo.mockRejectedValue(
+      new GitHubPrError('Pull request is not open', 'pr_not_open'),
+    );
 
     await replayPendingReviewDispatchForItem({
       product: { ...baseProduct, review: { early_loop: { enabled: true } } } as never,

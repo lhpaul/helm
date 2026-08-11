@@ -102,6 +102,7 @@ export type PushReviewerPatchesResult = {
 // ── EXTERNAL_ID guard ─────────────────────────────────────────────────────────
 
 const EXTERNAL_ID_SAFE = /^(?!\.)[A-Za-z0-9._-]+$/;
+export { EXTERNAL_ID_SAFE };
 
 // ── Scratch-artifact helpers (ADR-025) ─────────────────────────────────────────
 

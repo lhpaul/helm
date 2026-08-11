@@ -7,6 +7,7 @@ export type ReviewLoopConfig = {
   noProgressCycles: number;
   adjudicationEnabled: boolean;
   remediateSeverity: RemediateSeverity;
+  earlyLoopEnabled: boolean;
 };
 
 const DEFAULT_MAX_CYCLES = 5;
@@ -23,5 +24,6 @@ export function resolveReviewLoopConfig(product: Product): ReviewLoopConfig {
     noProgressCycles: loop?.stop_rule?.no_progress_cycles ?? DEFAULT_NO_PROGRESS_CYCLES,
     adjudicationEnabled: specialistConfigured && !explicitlyDisabled,
     remediateSeverity: loop?.remediate_severity ?? 'critical_high',
+    earlyLoopEnabled: product.review?.early_loop?.enabled ?? false,
   };
 }

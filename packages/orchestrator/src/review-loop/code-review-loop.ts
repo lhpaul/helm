@@ -1,4 +1,5 @@
-import { rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { CodeRepo, Product } from '@helm/shared';
 import type { IAgentRuntime } from '../runtime.js';
 import type { ItemTransitionFn } from '../specialists/spec-writer.js';
@@ -7,6 +8,10 @@ import {
   shouldRemediate,
   type ReviewerFanoutResult,
   type ReviewerKind,
+  type ReviewerResult,
+  type ReviewCommentTransform,
+  type ReviewCommentTransformInput,
+  type ReviewCommentTransformResult,
 } from '../specialists/reviewer-fanout.js';
 import {
   buildRemediationParams,
@@ -18,7 +23,11 @@ import {
   handleReviewAdjudicatorResult,
 } from '../specialists/review-adjudicator.js';
 import { fetchSpecForPlan, type FetchFn } from '../specialists/fetch-product-context.js';
-import { provisionReviewerWorkspace, artifactsDirFor } from '../specialists/code-workspace.js';
+import {
+  provisionReviewerWorkspace,
+  artifactsDirFor,
+  EXTERNAL_ID_SAFE,
+} from '../specialists/code-workspace.js';
 import type { RunGit, RunGh } from '../specialists/git-helpers.js';
 import { runExternalReviewIfConfigured, parsePullRequestRef } from '../external-review/run.js';
 import type { RunExternalReviewDeps } from '../external-review/run.js';
@@ -36,7 +45,11 @@ import { postPRComment } from '../specialists/pr-helpers.js';
 import { resolveReviewLoopConfig, type ReviewLoopConfig } from './config.js';
 import { formatReviewLoopEscalationComment } from './escalation-comment.js';
 import { evaluateExternalReviewStopRule } from './external-stop-rule.js';
-import { fetchFalsePositivesCatalog } from './false-positives.js';
+import {
+  fetchFalsePositivesCatalog,
+  matchesFalsePositiveFinding,
+  type FalsePositiveEntry,
+} from './false-positives.js';
 import { upsertReviewLoopSummaryComment } from './summary.js';
 import {
   countBlockingFindings,
@@ -52,6 +65,7 @@ import {
 } from './finding-fingerprint.js';
 import { isEnoentError } from '../lib/fs-errors.js';
 import { type StoredResolvedProductDecision } from './adjudication.js';
+import type { WorkflowStage } from '@helm/workflow';
 
 export type CodeReviewLoopResult = {
   status: 'done' | 'error' | 'deferred';
@@ -69,6 +83,7 @@ export type CodeReviewLoopResult = {
 export type DeferredExternalReviewIntent = {
   productSlug: string;
   externalId: string;
+  specialistId: 'reviewer-fanout' | 'spec-draft-reviewer' | 'plan-draft-reviewer';
   provider: string;
   reason: 'analysis_pending';
   providerReason?: string;
@@ -82,6 +97,8 @@ export type RunCodeReviewLoopParams = {
   product: Product;
   prUrl: string;
   codeRepo: CodeRepo;
+  branchName?: string;
+  kind?: 'spec' | 'plan';
   githubToken: string;
   runtime: IAgentRuntime;
   transition: ItemTransitionFn;
@@ -99,6 +116,7 @@ export type RunCodeReviewLoopParams = {
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
   targetRevision?: string;
   onExternalReviewDeferred?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
+  mode?: 'code' | 'early-artifact';
 };
 
 function escalationMessage(
@@ -172,29 +190,156 @@ async function postReviewLoopSummaryBestEffort(
   input: {
     cyclesCompleted: number;
     advisories: NormalizedFinding[];
+    stage: WorkflowStage;
+    catalog: FalsePositiveEntry[];
     externalProvider?: string;
   },
 ): Promise<void> {
   if (input.advisories.length === 0) return;
 
   try {
-    const catalog = await fetchFalsePositivesCatalog(
-      params.product,
-      params.githubToken,
-      params.fetchFn,
-    );
     await upsertReviewLoopSummaryComment({
       prUrl: params.prUrl,
       githubToken: params.githubToken,
       cyclesCompleted: input.cyclesCompleted,
       externalProvider: input.externalProvider,
       advisories: input.advisories,
-      catalog,
+      catalog: input.catalog,
+      stage: input.stage,
       runGh: params.runGh,
     });
   } catch {
     // Best-effort — clean loop exit is still valid without the summary comment.
   }
+}
+
+function stageForLoopParams(params: RunCodeReviewLoopParams): WorkflowStage {
+  if (params.mode !== 'early-artifact') return 'code-review';
+  return params.kind === 'spec' ? 'spec-draft' : 'plan-draft';
+}
+
+function findFalsePositiveMatch(
+  finding: NormalizedFinding,
+  catalog: FalsePositiveEntry[],
+  stage: WorkflowStage,
+): FalsePositiveEntry | undefined {
+  return catalog.find(
+    (entry) =>
+      (entry.appliesTo === undefined || entry.appliesTo.includes(stage)) &&
+      matchesFalsePositiveFinding(entry, finding),
+  );
+}
+
+async function suppressFalsePositiveExternalFindings(
+  params: RunCodeReviewLoopParams,
+  findings: NormalizedFinding[],
+  catalog: FalsePositiveEntry[],
+): Promise<{ blockers: NormalizedFinding[]; suppressed: NormalizedFinding[] }> {
+  if (findings.length === 0) return { blockers: [], suppressed: [] };
+
+  const stage = stageForLoopParams(params);
+  const blockers: NormalizedFinding[] = [];
+  const suppressed: NormalizedFinding[] = [];
+
+  for (const finding of findings) {
+    if (findFalsePositiveMatch(finding, catalog, stage)) {
+      suppressed.push({ ...finding, blocking: false });
+    } else {
+      blockers.push(finding);
+    }
+  }
+
+  return { blockers, suppressed };
+}
+
+function suppressFalsePositiveReviewerComment(
+  input: ReviewCommentTransformInput,
+  catalog: FalsePositiveEntry[],
+  stage: WorkflowStage,
+): ReviewCommentTransformResult {
+  const findings = { ...input.findings };
+  let suppressedCount = 0;
+  const reviewContentWithSuppressedFindings = input.reviewContent.replace(
+    /\*\*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\*\*\s*·\s*([^\n]+)/g,
+    (line, rawSeverity: string, summary: string) => {
+      if (summary.startsWith('Catalogued false positive:')) return line;
+
+      const severity = rawSeverity.toLowerCase() as NormalizedFinding['severity'];
+      const finding: NormalizedFinding = {
+        id: `${input.kind}:${summary}`,
+        severity,
+        blocking: true,
+        summary,
+      };
+
+      if (!findFalsePositiveMatch(finding, catalog, stage)) return line;
+      suppressedCount += 1;
+      if (findings[severity] > 0) findings[severity] -= 1;
+      findings.info += 1;
+      return `**INFO** · Catalogued false positive: ${summary}`;
+    },
+  );
+
+  // No catalog match: preserve the reviewer-authored status (do not flip
+  // CHANGES_REQUESTED → APPROVED just because medium+ counts are already zero).
+  if (suppressedCount === 0) {
+    return { reviewContent: input.reviewContent, findings: input.findings };
+  }
+
+  const status =
+    findings.critical + findings.high + findings.medium > 0 ? 'CHANGES_REQUESTED' : 'APPROVED';
+  const reviewContent = rewriteReviewStatus(reviewContentWithSuppressedFindings, status);
+
+  return { reviewContent, findings };
+}
+
+function rewriteReviewStatus(reviewContent: string, status: 'APPROVED' | 'CHANGES_REQUESTED') {
+  const statusSection = /(^##\s+Status\s*\n)\s*(?:APPROVED|CHANGES_REQUESTED)\b/im;
+  if (statusSection.test(reviewContent)) {
+    return reviewContent.replace(statusSection, `$1${status}`);
+  }
+  return `${reviewContent.trimEnd()}\n\n## Status\n${status}`;
+}
+
+async function buildFalsePositiveReviewerCommentTransform(
+  params: RunCodeReviewLoopParams,
+  catalog: FalsePositiveEntry[],
+): Promise<ReviewCommentTransform | undefined> {
+  if (params.mode !== 'early-artifact') return undefined;
+
+  const stage = stageForLoopParams(params);
+  if (catalog.length === 0) return undefined;
+
+  return (input) => suppressFalsePositiveReviewerComment(input, catalog, stage);
+}
+
+async function suppressFalsePositiveReviewerResults(
+  params: RunCodeReviewLoopParams,
+  results: ReviewerResult[],
+  catalog: FalsePositiveEntry[],
+): Promise<ReviewerResult[]> {
+  if (params.mode !== 'early-artifact' || results.length === 0) return results;
+
+  const stage = stageForLoopParams(params);
+  if (catalog.length === 0) return results;
+
+  return results.map((result) => {
+    if (!result.findings || !result.commentBody) return result;
+    const transformed = suppressFalsePositiveReviewerComment(
+      {
+        kind: result.kind,
+        reviewContent: result.commentBody,
+        findings: result.findings,
+      },
+      catalog,
+      stage,
+    );
+    return {
+      ...result,
+      findings: transformed.findings,
+      commentBody: transformed.reviewContent,
+    };
+  });
 }
 
 type ExternalReviewLoopOutcome =
@@ -307,9 +452,18 @@ export async function runCodeReviewLoop(
   const externalSticky = createStickyLane();
   let lastFanout: ReviewerFanoutResult | null = null;
   let ranRemediation = false;
+  const falsePositiveCatalog = await fetchFalsePositivesCatalog(
+    params.product,
+    params.githubToken,
+    params.fetchFn,
+  );
 
   while (true) {
     while (true) {
+      const transformReviewComment = await buildFalsePositiveReviewerCommentTransform(
+        params,
+        falsePositiveCatalog,
+      );
       const fanoutResult = await fanoutReviewers(
         params.externalId,
         params.product,
@@ -318,6 +472,12 @@ export async function runCodeReviewLoop(
         params.runtime,
         params.runGit,
         params.runGh,
+        {
+          fetchFn: params.fetchFn,
+          selectedCodeRepo: params.codeRepo,
+          selectedBranchName: params.branchName,
+          transformReviewComment,
+        },
       );
       lastFanout = fanoutResult;
       totalCost += fanoutResult.costUsd;
@@ -334,16 +494,26 @@ export async function runCodeReviewLoop(
         };
       }
 
-      if (!shouldRemediate(fanoutResult.reviewerResults, loopConfig.remediateSeverity)) {
+      const reviewerResults = await suppressFalsePositiveReviewerResults(
+        params,
+        fanoutResult.reviewerResults,
+        falsePositiveCatalog,
+      );
+      const gateFanoutResult =
+        reviewerResults === fanoutResult.reviewerResults
+          ? fanoutResult
+          : { ...fanoutResult, reviewerResults };
+
+      if (!shouldRemediate(gateFanoutResult.reviewerResults, loopConfig.remediateSeverity)) {
         break;
       }
 
       const blockerCount = countBlockingFindings(
-        fanoutResult.reviewerResults,
+        gateFanoutResult.reviewerResults,
         loopConfig.remediateSeverity,
       );
       const currentFingerprints = collectGateFindingFingerprints(
-        fanoutResult.reviewerResults,
+        gateFanoutResult.reviewerResults,
         loopConfig.remediateSeverity,
       );
       const stickyRemaining = observeStickyLane(internalSticky, currentFingerprints);
@@ -380,13 +550,14 @@ export async function runCodeReviewLoop(
 
       const remediationOutcome = await runRemediationPass({
         ...params,
-        fanoutResult,
+        fanoutResult: gateFanoutResult,
         totalCost,
         maxDuration,
         loopConfig,
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,
         loadResolvedProductDecisions: params.loadResolvedProductDecisions,
+        stageTransitions: params.mode === 'early-artifact' ? 'none' : 'code-review',
       });
       ranRemediation = true;
       totalCost = remediationOutcome.totalCost;
@@ -451,6 +622,10 @@ export async function runCodeReviewLoop(
       const deferredExternalReview: DeferredExternalReviewIntent = {
         productSlug: params.product.product.slug,
         externalId: params.externalId,
+        specialistId:
+          params.mode === 'early-artifact' && params.kind
+            ? `${params.kind}-draft-reviewer`
+            : 'reviewer-fanout',
         provider,
         reason: externalOutcome.reason,
         providerReason: externalOutcome.providerReason,
@@ -505,8 +680,45 @@ export async function runCodeReviewLoop(
     const external = externalOutcome.external;
 
     if (external.status === 'needs_fixes') {
-      const blockerCount = external.blockers.length;
-      const currentFingerprints = new Set(external.blockers.map((finding) => finding.id));
+      const { blockers, suppressed } = await suppressFalsePositiveExternalFindings(
+        params,
+        external.blockers,
+        falsePositiveCatalog,
+      );
+      if (blockers.length === 0) {
+        if (suppressed.length > 0 || external.advisories.length > 0) {
+          await postReviewLoopSummaryBestEffort(params, {
+            cyclesCompleted: cycle,
+            advisories: [...suppressed, ...external.advisories],
+            stage: stageForLoopParams(params),
+            catalog: falsePositiveCatalog,
+            externalProvider: params.product.review?.external?.provider,
+          });
+        }
+        if (fanout.status === 'error') {
+          return {
+            status: 'error',
+            prUrl: fanout.prUrl,
+            costUsd: totalCost,
+            durationMs: maxDuration,
+            cyclesCompleted: cycle,
+            newStage:
+              ranRemediation && params.mode !== 'early-artifact' ? 'code-review' : undefined,
+            error: `Reviewer fan-out reported an error (reviewer coverage may be incomplete): ${fanout.error}`,
+          };
+        }
+        return {
+          status: 'done',
+          prUrl: fanout.prUrl,
+          costUsd: totalCost,
+          durationMs: maxDuration,
+          cyclesCompleted: cycle,
+          newStage: ranRemediation && params.mode !== 'early-artifact' ? 'code-review' : undefined,
+        };
+      }
+
+      const blockerCount = blockers.length;
+      const currentFingerprints = new Set(blockers.map((finding) => finding.id));
       const stickyRemaining = observeStickyLane(externalSticky, currentFingerprints);
       noProgressStreak = nextNoProgressStreak(
         bestBlockerCount,
@@ -544,11 +756,12 @@ export async function runCodeReviewLoop(
         fanoutResult: fanout,
         totalCost,
         maxDuration,
-        externalFindingsBody: formatExternalBlockersForRemediation(external.blockers),
+        externalFindingsBody: formatExternalBlockersForRemediation(blockers),
         loopConfig,
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,
         loadResolvedProductDecisions: params.loadResolvedProductDecisions,
+        stageTransitions: params.mode === 'early-artifact' ? 'none' : 'code-review',
       });
       ranRemediation = true;
       totalCost = remediationOutcome.totalCost;
@@ -592,6 +805,8 @@ export async function runCodeReviewLoop(
       await postReviewLoopSummaryBestEffort(params, {
         cyclesCompleted: cycle,
         advisories: external.advisories,
+        stage: stageForLoopParams(params),
+        catalog: falsePositiveCatalog,
         externalProvider: params.product.review?.external?.provider,
       });
     }
@@ -602,9 +817,30 @@ export async function runCodeReviewLoop(
       costUsd: totalCost,
       durationMs: maxDuration,
       cyclesCompleted: cycle,
-      newStage: ranRemediation ? 'code-review' : undefined,
+      newStage: ranRemediation && params.mode !== 'early-artifact' ? 'code-review' : undefined,
     };
   }
+}
+
+export async function runEarlyArtifactReviewLoop(
+  params: Omit<RunCodeReviewLoopParams, 'codeRepo' | 'mode'> & { kind: 'spec' | 'plan' },
+): Promise<CodeReviewLoopResult> {
+  const knowledgeRepoAsCodeRepo: CodeRepo = {
+    url: params.product.knowledge_repo.url,
+    default_branch: params.product.knowledge_repo.default_branch,
+    role: 'docs',
+  };
+  const branchName =
+    params.kind === 'spec' ? `helm/spec/${params.externalId}` : `helm/plan/${params.externalId}`;
+
+  const result = await runCodeReviewLoop({
+    ...params,
+    codeRepo: knowledgeRepoAsCodeRepo,
+    branchName,
+    mode: 'early-artifact',
+  });
+
+  return { ...result, prUrl: params.prUrl, newStage: undefined };
 }
 
 type RemediationPassOutcome =
@@ -667,6 +903,9 @@ async function runAdjudicationPass(input: {
   product: Product;
   prUrl: string;
   codeRepo: CodeRepo;
+  branchName?: string;
+  mode?: 'code' | 'early-artifact';
+  kind?: 'spec' | 'plan';
   githubToken: string;
   runtime: IAgentRuntime;
   runGit?: RunGit;
@@ -684,6 +923,7 @@ async function runAdjudicationPass(input: {
       {
         externalId: input.externalId,
         codeRepo: input.codeRepo,
+        branchName: input.branchName,
         githubToken: input.githubToken,
       },
       input.runGit,
@@ -692,19 +932,42 @@ async function runAdjudicationPass(input: {
 
     const findingsByKind = buildFindingsByKind(input.fanoutResult, input.externalFindingsBody);
     let spec: string | undefined;
-    try {
-      spec =
-        (await fetchSpecForPlan(
-          input.product,
-          input.externalId,
-          input.githubToken,
-          input.fetchFn ?? fetch,
-        )) ?? undefined;
-    } catch (err) {
-      if (!isEnoentError(err)) {
-        throw err;
+    let draftArtifact:
+      | {
+          kind: 'spec' | 'plan';
+          content: string;
+        }
+      | undefined;
+    if (input.mode === 'early-artifact' && input.kind) {
+      if (!EXTERNAL_ID_SAFE.test(input.externalId)) {
+        throw new Error('Invalid externalId for draft artifact path');
       }
-      spec = undefined;
+      const artifactRelPath =
+        input.kind === 'spec' ? `specs/${input.externalId}.md` : `plans/${input.externalId}.md`;
+      try {
+        draftArtifact = {
+          kind: input.kind,
+          content: await readFile(join(workspacePath, artifactRelPath), 'utf-8'),
+        };
+      } catch (err) {
+        if (!isEnoentError(err)) throw err;
+        throw new Error(`Draft ${input.kind} artifact not found at ${artifactRelPath}`);
+      }
+    } else {
+      try {
+        spec =
+          (await fetchSpecForPlan(
+            input.product,
+            input.externalId,
+            input.githubToken,
+            input.fetchFn ?? fetch,
+          )) ?? undefined;
+      } catch (err) {
+        if (!isEnoentError(err)) {
+          throw err;
+        }
+        spec = undefined;
+      }
     }
 
     const params = buildReviewAdjudicatorParams(
@@ -713,7 +976,13 @@ async function runAdjudicationPass(input: {
       workspacePath,
       input.prUrl,
       findingsByKind,
-      { spec, resolvedProductDecisions: input.resolvedProductDecisions },
+      {
+        spec,
+        draftArtifact,
+        resolvedProductDecisions: input.resolvedProductDecisions,
+        codeRepo: input.codeRepo,
+        branchName: input.branchName,
+      },
     );
     const session = await input.runtime.spawn(params);
     const agentResult = await session.wait();
@@ -828,6 +1097,9 @@ async function runAdjudicationIfEnabled(input: {
   product: Product;
   prUrl: string;
   codeRepo: CodeRepo;
+  branchName?: string;
+  mode?: 'code' | 'early-artifact';
+  kind?: 'spec' | 'plan';
   githubToken: string;
   runtime: IAgentRuntime;
   runGit?: RunGit;
@@ -889,6 +1161,9 @@ async function runRemediationPass(input: {
   product: Product;
   prUrl: string;
   codeRepo: CodeRepo;
+  branchName?: string;
+  mode?: 'code' | 'early-artifact';
+  kind?: 'spec' | 'plan';
   githubToken: string;
   runtime: IAgentRuntime;
   transition: ItemTransitionFn;
@@ -902,6 +1177,7 @@ async function runRemediationPass(input: {
   fetchFn?: FetchFn;
   resolvedProductDecisions?: StoredResolvedProductDecision[];
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
+  stageTransitions?: 'code-review' | 'none';
 }): Promise<RemediationPassOutcome> {
   let totalCost = input.totalCost;
   let maxDuration = input.maxDuration;
@@ -911,6 +1187,9 @@ async function runRemediationPass(input: {
     product: input.product,
     prUrl: input.prUrl,
     codeRepo: input.codeRepo,
+    branchName: input.branchName,
+    mode: input.mode,
+    kind: input.kind,
     githubToken: input.githubToken,
     runtime: input.runtime,
     runGit: input.runGit,
@@ -959,6 +1238,7 @@ async function runRemediationPass(input: {
       {
         externalId: input.externalId,
         codeRepo: input.codeRepo,
+        branchName: input.branchName,
         githubToken: input.githubToken,
       },
       input.runGit,
@@ -969,18 +1249,20 @@ async function runRemediationPass(input: {
       status: 'error',
       totalCost: input.totalCost,
       maxDuration: input.maxDuration,
-      newStage: 'code-review',
+      newStage: input.stageTransitions === 'none' ? undefined : 'code-review',
       error: `Failed to provision remediation workspace: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 
   try {
     try {
-      await input.transition({
-        externalId: input.externalId,
-        toStage: 'remediation',
-        triggeredBy: 'specialist:remediation',
-      });
+      if (input.stageTransitions !== 'none') {
+        await input.transition({
+          externalId: input.externalId,
+          toStage: 'remediation',
+          triggeredBy: 'specialist:remediation',
+        });
+      }
     } catch (err) {
       return {
         status: 'error',
@@ -1000,6 +1282,8 @@ async function runRemediationPass(input: {
       input.prUrl,
       findingsByKind,
       adjudicationPlan,
+      input.codeRepo,
+      input.branchName,
     );
 
     let remediationResult: RemediationResult | undefined;
@@ -1017,6 +1301,7 @@ async function runRemediationPass(input: {
         input.codeRepo,
         input.runGit,
         input.runGh,
+        input.branchName,
       );
 
       totalCost += remediationResult.costUsd;
@@ -1026,7 +1311,7 @@ async function runRemediationPass(input: {
         break;
       }
 
-      if (attempt === 0) {
+      if (attempt === 0 && input.stageTransitions !== 'none') {
         const recoveredStage = await recoverToCodeReviewAfterRemediationFailure(
           input.externalId,
           input.transition,
@@ -1037,6 +1322,14 @@ async function runRemediationPass(input: {
     }
 
     if (!remediationResult || remediationResult.status !== 'done') {
+      if (input.stageTransitions === 'none') {
+        return {
+          status: 'error',
+          totalCost,
+          maxDuration,
+          error: remediationResult?.error ?? 'Remediation failed',
+        };
+      }
       const newStage = await recoverToCodeReviewAfterRemediationFailure(
         input.externalId,
         input.transition,
@@ -1054,7 +1347,7 @@ async function runRemediationPass(input: {
       };
     }
 
-    if (!returnedToCodeReviewDuringRetry) {
+    if (!returnedToCodeReviewDuringRetry && input.stageTransitions !== 'none') {
       try {
         await input.transition({
           externalId: input.externalId,
@@ -1085,7 +1378,7 @@ async function runRemediationPass(input: {
         status: 'error',
         totalCost,
         maxDuration,
-        newStage: 'code-review',
+        newStage: input.stageTransitions === 'none' ? undefined : 'code-review',
         error: `Remediation succeeded, but the reviewer fan-out reported an error (reviewer coverage may be incomplete): ${input.fanoutResult.error}`,
       };
     }

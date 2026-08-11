@@ -73,6 +73,73 @@ specialists:
   code-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
 `.trim();
 
+const EARLY_LOOP_ENABLED = `
+helm_version: "0"
+product:
+  slug: test-early-loop
+  name: Test Early Loop
+issue_tracker:
+  provider: github_projects
+  org: test-org
+  project_number: 1
+code_repos:
+  - url: https://github.com/test-org/test-app
+    default_branch: main
+    role: app
+knowledge_repo:
+  url: https://github.com/test-org/test-knowledge
+  default_branch: main
+workflow:
+  stages_enabled: [spec-draft, plan-draft, code-review, released]
+review:
+  early_loop:
+    enabled: true
+specialists:
+  spec-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  plan-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  implementer: { runtime: claude_code, model: claude-opus-4-7 }
+  code-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  security-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  test-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  spec-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+  plan-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+  code-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+`.trim();
+
+const REVIEW_WITH_EXTERNAL_ONLY = `
+helm_version: "0"
+product:
+  slug: test-review-defaults
+  name: Test Review Defaults
+issue_tracker:
+  provider: github_projects
+  org: test-org
+  project_number: 1
+code_repos:
+  - url: https://github.com/test-org/test-app
+    default_branch: main
+    role: app
+knowledge_repo:
+  url: https://github.com/test-org/test-knowledge
+  default_branch: main
+workflow:
+  stages_enabled: [spec-draft, plan-draft, code-review, released]
+review:
+  external:
+    provider: haystack
+    defer_when_pending: true
+specialists:
+  spec-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  plan-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  implementer: { runtime: claude_code, model: claude-opus-4-7 }
+  code-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  security-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  test-reviewer: { runtime: claude_code, model: claude-sonnet-4-6 }
+  spec-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+  plan-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+  code-remediator: { runtime: claude_code, model: claude-sonnet-4-6 }
+`.trim();
+
 // Builds a config with per-specialist runtimes so we can exercise the
 // "all specialists share one runtime" superRefine (H1 constraint, see ADR-021).
 const specialistsBlock = (runtimes: {
@@ -187,6 +254,27 @@ describe('parseProductConfig', () => {
         expect(config.issue_tracker.api_key_env).toBe('LINEAR_API_KEY');
         expect(config.issue_tracker.webhook_secret_env).toBe('LINEAR_WEBHOOK_SECRET');
       }
+    });
+
+    it('parses review.early_loop.enabled from product.yaml and defaults it off when absent', () => {
+      const enabled = parseProductConfig(EARLY_LOOP_ENABLED);
+      const defaulted = parseProductConfig(GITHUB_WITHOUT_CUSTOM_FIELD);
+
+      expect(enabled.review?.early_loop?.enabled).toBe(true);
+      expect(defaulted.review?.early_loop?.enabled).toBe(false);
+    });
+
+    it('materializes review.early_loop.enabled=false when the whole review section is omitted', () => {
+      const config = parseProductConfig(GITHUB_WITHOUT_CUSTOM_FIELD);
+
+      expect(config.review).toEqual({ early_loop: { enabled: false } });
+    });
+
+    it('materializes review.early_loop.enabled=false when populated review omits early_loop', () => {
+      const config = parseProductConfig(REVIEW_WITH_EXTERNAL_ONLY);
+
+      expect(config.review?.external?.provider).toBe('haystack');
+      expect(config.review?.early_loop?.enabled).toBe(false);
     });
   });
 

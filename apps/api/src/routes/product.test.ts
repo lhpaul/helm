@@ -97,9 +97,39 @@ describe('GET /api/product', () => {
     const body = (await res.json()) as {
       product: { slug: string };
       issue_tracker: { provider: string };
+      review?: { early_loop?: { enabled?: boolean } };
     };
     expect(body.product.slug).toBe('example-app');
     expect(body.issue_tracker.provider).toBe('github_projects');
+    expect(body.review?.early_loop?.enabled).toBe(false);
+  });
+
+  it('returns review.early_loop.enabled=true when configured in product.yaml', async () => {
+    const enabledYaml = `${VALID_PRODUCT_YAML}\nreview:\n  early_loop:\n    enabled: true\n`;
+    await writeFile(join(testDir, '.helm', 'product.yaml'), enabledYaml, 'utf-8');
+    process.env.HELM_KNOWLEDGE_REPO_PATH = testDir;
+
+    const res = await app.request('/api/product');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      review?: { early_loop?: { enabled?: boolean } };
+    };
+    expect(body.review?.early_loop?.enabled).toBe(true);
+  });
+
+  it('redacts secret notification configuration from the response', async () => {
+    const yaml = `${VALID_PRODUCT_YAML}\nnotifications:\n  slack_webhook: https://hooks.slack.com/services/T000/B000/secret\n`;
+    await writeFile(join(testDir, '.helm', 'product.yaml'), yaml, 'utf-8');
+    process.env.HELM_KNOWLEDGE_REPO_PATH = testDir;
+
+    const res = await app.request('/api/product');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      notifications?: { slack_webhook?: string };
+    };
+    expect(body.notifications).toEqual({});
   });
 
   it('returns 404 when product.yaml does not exist at expected location', async () => {
@@ -114,7 +144,7 @@ describe('GET /api/product', () => {
     expect(body.error).toContain('.helm/product.yaml');
   });
 
-  it('returns 500 with field path when schema is invalid', async () => {
+  it('returns a generic 500 when schema is invalid', async () => {
     await writeFile(join(testDir, '.helm', 'product.yaml'), INVALID_SCHEMA_YAML, 'utf-8');
     process.env.HELM_KNOWLEDGE_REPO_PATH = testDir;
 
@@ -122,7 +152,20 @@ describe('GET /api/product', () => {
 
     expect(res.status).toBe(500);
     const body = (await res.json()) as { error: string };
-    expect(body.error).toContain('product.slug');
+    expect(body.error).toBe('Failed to load product config');
+    expect(body.error).not.toContain(testDir);
+  });
+
+  it('returns a generic 500 for non-ENOENT config read errors', async () => {
+    await mkdir(join(testDir, '.helm', 'product.yaml'));
+    process.env.HELM_KNOWLEDGE_REPO_PATH = testDir;
+
+    const res = await app.request('/api/product');
+
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('Failed to load product config');
+    expect(body.error).not.toContain(testDir);
   });
 
   it('returns 500 when HELM_KNOWLEDGE_REPO_PATH is not set', async () => {

@@ -40,6 +40,8 @@ import {
 export type ProvisionWorkspaceOpts = {
   externalId: string;
   codeRepo: CodeRepo;
+  /** Branch to clone/push. Defaults to `helm/impl/{externalId}`. */
+  branchName?: string;
   /** GitHub personal access token (repo scope). */
   githubToken: string;
 };
@@ -82,6 +84,8 @@ export type PushReviewerPatchesOpts = {
   codeRepo: CodeRepo;
   workspacePath: string;
   githubToken: string;
+  /** Branch to push. Defaults to `helm/impl/{externalId}`. */
+  branchName?: string;
   /**
    * Commit message for the patch commit. Defaults to the code-reviewer message
    * (`chore(review): apply code-reviewer patches for {externalId}`). The
@@ -98,6 +102,7 @@ export type PushReviewerPatchesResult = {
 // ── EXTERNAL_ID guard ─────────────────────────────────────────────────────────
 
 const EXTERNAL_ID_SAFE = /^(?!\.)[A-Za-z0-9._-]+$/;
+export { EXTERNAL_ID_SAFE };
 
 // ── Scratch-artifact helpers (ADR-025) ─────────────────────────────────────────
 
@@ -287,7 +292,7 @@ export async function provisionCodeWorkspace(
 // ── provisionReviewerWorkspace ────────────────────────────────────────────────
 
 /**
- * Shallow-clones the **existing** `helm/impl/{externalId}` branch of the
+ * Shallow-clones the **existing** review branch of the
  * product's primary code repo into an isolated temporary directory for
  * reviewer use.
  *
@@ -303,8 +308,8 @@ export async function provisionCodeWorkspace(
  * branch — a destructive outcome.  Two helpers, zero ambiguity.
  *
  * Design notes:
- * - `--depth 1 --branch helm/impl/{externalId}` positions the clone on the
- *   pushed impl branch; no `checkout -B` needed or performed.
+ * - `--depth 1 --branch {branch}` positions the clone on the pushed review
+ *   branch; no `checkout -B` needed or performed.
  * - The clone path is `os.tmpdir()/helm-review-{externalId}-{uuid}` — the
  *   `helm-review-` prefix distinguishes reviewer workspaces from the
  *   `helm-impl-` implementer workspaces at a glance.
@@ -340,12 +345,12 @@ export async function provisionReviewerWorkspace(
   const { owner, repo } = parsed;
 
   const authenticatedUrl = buildAuthenticatedUrl(owner, repo, githubToken);
-  const branch = implBranchName(externalId);
+  const branch = opts.branchName ?? implBranchName(externalId);
   const workspacePath = join(tmpdir(), `helm-review-${externalId}-${randomUUID()}`);
   await mkdir(workspacePath, { recursive: true });
 
   // ── Step 1: Shallow clone of the impl branch ─────────────────────────────
-  // Clones directly onto helm/impl/{externalId} — no checkout -B needed.
+  // Clones directly onto the existing review branch — no checkout -B needed.
   // If the branch does not exist on the remote, git will fail with a clear
   // "Remote branch X not found in upstream origin" message.
   try {
@@ -356,7 +361,7 @@ export async function provisionReviewerWorkspace(
     const raw = err instanceof Error ? err.message : String(err);
     await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
     throw new Error(
-      `[code-workspace] Failed to clone impl branch '${branch}' (${codeRepo.url}): ${sanitizeToken(raw, githubToken)}`,
+      `[code-workspace] Failed to clone review branch '${branch}' (${codeRepo.url}): ${sanitizeToken(raw, githubToken)}`,
     );
   }
 
@@ -667,7 +672,7 @@ export async function pushReviewerPatches(
   const { owner, repo } = parsed;
 
   // ── Step 6: Push (fast-forward, NO --force) ───────────────────────────────
-  const branchName = implBranchName(externalId);
+  const branchName = opts.branchName ?? implBranchName(externalId);
   const pushUrl = buildAuthenticatedUrl(owner, repo, githubToken);
   try {
     await runGit(['push', pushUrl, `${branchName}:${branchName}`], { cwd: workspacePath });

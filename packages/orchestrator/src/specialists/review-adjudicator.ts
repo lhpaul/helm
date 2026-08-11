@@ -3,7 +3,7 @@
  * unified remediation plan before code-remediator runs. Comment-only; no push.
  */
 import { readFile } from 'node:fs/promises';
-import type { Product } from '@helm/shared';
+import type { CodeRepo, Product } from '@helm/shared';
 import type { AgentResult, SpawnParams } from '../runtime.js';
 import type { ReviewerKind } from './reviewer-fanout.js';
 import { artifactFileFor } from './code-workspace.js';
@@ -37,14 +37,25 @@ export function buildReviewAdjudicatorParams(
   workspacePath: string,
   prUrl: string,
   findingsByKind: Map<ReviewerKind, string>,
-  options: { spec?: string; resolvedProductDecisions?: StoredResolvedProductDecision[] } = {},
+  options: {
+    spec?: string;
+    draftArtifact?: {
+      kind: 'spec' | 'plan';
+      content: string;
+    };
+    resolvedProductDecisions?: StoredResolvedProductDecision[];
+    codeRepo?: CodeRepo;
+    branchName?: string;
+  } = {},
 ): SpawnParams {
   const specialistCfg = product.specialists['review-adjudicator'];
   if (!specialistCfg) {
     throw new Error('review-adjudicator specialist is not configured for this product');
   }
 
-  const defaultBranch = product.code_repos[0]?.default_branch ?? 'main';
+  const codeRepo = options.codeRepo ?? product.code_repos[0];
+  const defaultBranch = codeRepo?.default_branch ?? 'main';
+  const branchName = options.branchName ?? `helm/impl/${externalId}`;
   const reviewSections: string[] = [];
 
   for (const kind of ['code', 'security', 'test'] as const) {
@@ -55,19 +66,30 @@ export function buildReviewAdjudicatorParams(
     }
   }
 
-  const specSection = options.spec ? ['', '## Spec', '', options.spec, ''].join('\n') : '';
+  const specSection = options.draftArtifact
+    ? [
+        '',
+        `## Draft ${options.draftArtifact.kind === 'spec' ? 'Spec' : 'Plan'}`,
+        '',
+        options.draftArtifact.content,
+        '',
+      ].join('\n')
+    : options.spec
+      ? ['', '## Spec', '', options.spec, ''].join('\n')
+      : '';
   const settledDecisionSection = formatSettledDecisionSection(
     options.resolvedProductDecisions ?? [],
   );
   const hintsSection = buildExtraHintsSection(specialistCfg.extra_hints);
   const artifactPath = artifactFileFor(workspacePath, 'review-adjudicator');
+  const prLabel = options.draftArtifact ? 'draft artifact PR' : 'implementation PR';
 
   const prompt = [
     `You are Helm's review adjudicator specialist. Your task is to synthesize conflicting reviewer verdicts for item \`${externalId}\` before remediation runs.`,
     '',
-    `The implementation PR is available at: ${prUrl} (for context only — do not merge or close it).`,
+    `The ${prLabel} is available at: ${prUrl} (for context only — do not merge or close it).`,
     '',
-    `The working directory is a shallow clone of the \`helm/impl/${externalId}\` implementation branch.`,
+    `The working directory is a shallow clone of the \`${branchName}\` review branch.`,
     '',
     `To inspect the diff: \`git fetch --depth 1 origin ${defaultBranch}\` then \`git diff origin/${defaultBranch}...HEAD\``,
     specSection,

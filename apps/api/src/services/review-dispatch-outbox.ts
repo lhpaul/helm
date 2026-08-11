@@ -9,6 +9,7 @@ export type ReviewDispatchIntent = {
   kind?: ReviewDispatchIntentKind;
   productSlug: string;
   externalId: string;
+  specialistId?: string;
   prNumber?: number;
   targetRevision?: string;
   provider?: string;
@@ -21,6 +22,7 @@ export type ReviewDispatchIntent = {
 
 export type PendingExternalReviewIntent = ReviewDispatchIntent & {
   kind: 'pending_external_review';
+  specialistId?: string;
   provider: string;
   reason: 'analysis_pending';
   prNumber: number;
@@ -43,6 +45,67 @@ function normalizeKind(kind: ReviewDispatchIntentKind | undefined): ReviewDispat
   return kind ?? 'review_dispatch';
 }
 
+const REVIEW_DISPATCH_SPECIALIST_SLOTS = [
+  undefined,
+  'spec-draft-reviewer',
+  'plan-draft-reviewer',
+] as const;
+
+type ReviewDispatchSpecialistSlot = (typeof REVIEW_DISPATCH_SPECIALIST_SLOTS)[number];
+
+const REVIEW_DISPATCH_FILE_SUFFIX_BY_SPECIALIST: Record<
+  Exclude<ReviewDispatchSpecialistSlot, undefined>,
+  string
+> = {
+  'spec-draft-reviewer': '.spec-draft-review',
+  'plan-draft-reviewer': '.plan-draft-review',
+};
+
+const PENDING_EXTERNAL_REVIEW_FILE_SUFFIX_BY_SPECIALIST: Record<
+  Exclude<ReviewDispatchSpecialistSlot, undefined>,
+  string
+> = {
+  'spec-draft-reviewer': '.spec-draft-pending-external-review',
+  'plan-draft-reviewer': '.plan-draft-pending-external-review',
+};
+
+function isReviewDispatchSpecialistSlot(
+  specialistId: string | undefined,
+): specialistId is ReviewDispatchSpecialistSlot {
+  return REVIEW_DISPATCH_SPECIALIST_SLOTS.includes(specialistId as ReviewDispatchSpecialistSlot);
+}
+
+/** Prefer a specialist-scoped slot when sharding leaves duplicate pending rows. */
+function pickPendingExternalReviewMatch(
+  matches: PendingExternalReviewIntent[],
+): PendingExternalReviewIntent | null {
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0]!;
+  const withSpecialist = matches.filter((intent) => typeof intent.specialistId === 'string');
+  const pool = withSpecialist.length > 0 ? withSpecialist : matches;
+  return [...pool].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]!;
+}
+
+function reviewDispatchFileName(externalId: string, specialistId?: string): string {
+  // Draft reviewers share an item but not an outbox slot — keep separate files so a
+  // later plan sync cannot clobber a parked spec intent (or vice versa).
+  const suffix =
+    isReviewDispatchSpecialistSlot(specialistId) && specialistId
+      ? REVIEW_DISPATCH_FILE_SUFFIX_BY_SPECIALIST[specialistId]
+      : '';
+  return `${externalId}${suffix}.json`;
+}
+
+function pendingExternalReviewFileName(externalId: string, specialistId?: string): string {
+  // External analysis deferrals are per artifact. A spec-draft and plan-draft
+  // review can be pending for the same item at the same time.
+  const suffix =
+    isReviewDispatchSpecialistSlot(specialistId) && specialistId
+      ? PENDING_EXTERNAL_REVIEW_FILE_SUFFIX_BY_SPECIALIST[specialistId]
+      : '.pending-external-review';
+  return `${externalId}${suffix}.json`;
+}
+
 export class ReviewDispatchOutbox {
   constructor(private readonly outboxDir: string) {}
 
@@ -50,14 +113,15 @@ export class ReviewDispatchOutbox {
     productSlug: string,
     externalId: string,
     kind: ReviewDispatchIntentKind = 'review_dispatch',
+    specialistId?: string,
   ): string {
     assertSafeIntentKey(productSlug, externalId);
-    // Separate files per kind so review_dispatch and pending_external_review
-    // cannot clobber each other under concurrent sync + defer.
+    // Separate files per kind and draft reviewer so concurrent sync + defer,
+    // spec-draft, and plan-draft review intents cannot clobber each other.
     const fileName =
       kind === 'pending_external_review'
-        ? `${externalId}.pending-external-review.json`
-        : `${externalId}.json`;
+        ? pendingExternalReviewFileName(externalId, specialistId)
+        : reviewDispatchFileName(externalId, specialistId);
     return join(this.outboxDir, productSlug, fileName);
   }
 
@@ -67,7 +131,12 @@ export class ReviewDispatchOutbox {
     assertSafeIntentKey(intent.productSlug, intent.externalId);
     await mkdir(dir, { recursive: true });
     const now = new Date().toISOString();
-    const current = await this.get(intent.productSlug, intent.externalId, kind);
+    const current = await this.get(
+      intent.productSlug,
+      intent.externalId,
+      kind,
+      intent.specialistId,
+    );
     const sameDeferredRevision =
       kind === 'pending_external_review' &&
       current?.kind === 'pending_external_review' &&
@@ -77,10 +146,16 @@ export class ReviewDispatchOutbox {
     const stored: ReviewDispatchIntent = {
       ...intent,
       kind,
+      // Re-parking without a SHA must not wipe a previously stored revision —
+      // otherwise replay exits early with neither schedule nor cleanup.
+      targetRevision: intent.targetRevision ?? current?.targetRevision,
       createdAt: sameDeferredRevision ? (current.createdAt ?? now) : (intent.createdAt ?? now),
       updatedAt: now,
     };
-    await writeJsonAtomic(this.intentPath(intent.productSlug, intent.externalId, kind), stored);
+    await writeJsonAtomic(
+      this.intentPath(intent.productSlug, intent.externalId, kind, intent.specialistId),
+      stored,
+    );
     return { ...stored };
   }
 
@@ -88,11 +163,57 @@ export class ReviewDispatchOutbox {
     productSlug: string,
     externalId: string,
     kind: ReviewDispatchIntentKind = 'review_dispatch',
+    specialistId?: string,
   ): Promise<ReviewDispatchIntent | null> {
     const intent = await readJson<ReviewDispatchIntent>(
-      this.intentPath(productSlug, externalId, kind),
+      this.intentPath(productSlug, externalId, kind, specialistId),
     );
     return intent ? { ...intent } : null;
+  }
+
+  /** All parked review_dispatch intents for an item (impl + draft specialist slots). */
+  async listReviewDispatch(
+    productSlug: string,
+    externalId: string,
+  ): Promise<ReviewDispatchIntent[]> {
+    assertSafeIntentKey(productSlug, externalId);
+    const intents: ReviewDispatchIntent[] = [];
+    for (const specialistId of REVIEW_DISPATCH_SPECIALIST_SLOTS) {
+      const intent = await this.get(productSlug, externalId, 'review_dispatch', specialistId);
+      if (intent && (intent.kind ?? 'review_dispatch') === 'review_dispatch') {
+        intents.push(intent);
+      }
+    }
+    return intents;
+  }
+
+  /** All pending external-review intents for an item (impl + draft specialist slots). */
+  async listPendingExternalReviews(
+    productSlug: string,
+    externalId: string,
+  ): Promise<PendingExternalReviewIntent[]> {
+    assertSafeIntentKey(productSlug, externalId);
+    const intents: PendingExternalReviewIntent[] = [];
+    for (const specialistId of REVIEW_DISPATCH_SPECIALIST_SLOTS) {
+      const intent = await this.get(
+        productSlug,
+        externalId,
+        'pending_external_review',
+        specialistId,
+      );
+      if (
+        intent?.kind === 'pending_external_review' &&
+        typeof intent.provider === 'string' &&
+        intent.reason === 'analysis_pending' &&
+        typeof intent.prNumber === 'number' &&
+        typeof intent.targetRevision === 'string' &&
+        typeof intent.createdAt === 'string' &&
+        typeof intent.expiresAt === 'string'
+      ) {
+        intents.push(intent as PendingExternalReviewIntent);
+      }
+    }
+    return intents;
   }
 
   /**
@@ -104,20 +225,24 @@ export class ReviewDispatchOutbox {
     externalId: string,
     expected: Pick<ReviewDispatchIntent, 'updatedAt' | 'targetRevision'> & {
       kind?: ReviewDispatchIntentKind;
+      specialistId?: string;
       provider?: string;
       reason?: 'analysis_pending';
       prNumber?: number;
     },
   ): Promise<boolean> {
     const kind = normalizeKind(expected.kind);
-    const current = await this.get(productSlug, externalId, kind);
+    const current = await this.get(productSlug, externalId, kind, expected.specialistId);
     if (!current) return false;
     if (current.updatedAt !== expected.updatedAt) return false;
     if ((current.targetRevision ?? null) !== (expected.targetRevision ?? null)) return false;
+    if (expected.specialistId !== undefined && current.specialistId !== expected.specialistId) {
+      return false;
+    }
     if (expected.provider !== undefined && current.provider !== expected.provider) return false;
     if (expected.reason !== undefined && current.reason !== expected.reason) return false;
     if (expected.prNumber !== undefined && current.prNumber !== expected.prNumber) return false;
-    await unlink(this.intentPath(productSlug, externalId, kind)).catch(
+    await unlink(this.intentPath(productSlug, externalId, kind, expected.specialistId)).catch(
       (err: NodeJS.ErrnoException) => {
         if (err.code !== 'ENOENT') throw err;
       },
@@ -129,8 +254,9 @@ export class ReviewDispatchOutbox {
     productSlug: string,
     externalId: string,
     kind: ReviewDispatchIntentKind = 'review_dispatch',
+    specialistId?: string,
   ): Promise<void> {
-    await unlink(this.intentPath(productSlug, externalId, kind)).catch(
+    await unlink(this.intentPath(productSlug, externalId, kind, specialistId)).catch(
       (err: NodeJS.ErrnoException) => {
         if (err.code !== 'ENOENT') throw err;
       },
@@ -142,12 +268,12 @@ export class ReviewDispatchOutbox {
     const intents = await this.list();
     let removed = 0;
     for (const intent of intents) {
-      if (intent.kind !== 'pending_external_review') continue;
       if (!intent.expiresAt || Date.parse(intent.expiresAt) > nowMs) continue;
       const didRemove = await this.removeIfMatches(intent.productSlug, intent.externalId, {
-        kind: 'pending_external_review',
+        kind: normalizeKind(intent.kind),
         updatedAt: intent.updatedAt,
         targetRevision: intent.targetRevision,
+        specialistId: intent.specialistId,
         provider: intent.provider,
         reason: intent.reason,
         prNumber: intent.prNumber,
@@ -163,16 +289,48 @@ export class ReviewDispatchOutbox {
     provider: string;
     prNumber: number;
     targetRevision: string;
+    specialistId?: string;
   }): Promise<PendingExternalReviewIntent | null> {
-    const intent = await this.get(input.productSlug, input.externalId, 'pending_external_review');
-    if (!intent) return null;
-    if (intent.kind !== 'pending_external_review') return null;
-    if (intent.provider !== input.provider) return null;
-    if (intent.reason !== 'analysis_pending') return null;
-    if (intent.prNumber !== input.prNumber) return null;
-    if (intent.targetRevision !== input.targetRevision) return null;
-    if (!intent.createdAt || !intent.expiresAt) return null;
-    return intent as PendingExternalReviewIntent;
+    const candidates =
+      input.specialistId === undefined
+        ? await this.listPendingExternalReviews(input.productSlug, input.externalId)
+        : await this.findPendingExternalReviewCandidates(
+            input.productSlug,
+            input.externalId,
+            input.specialistId,
+          );
+    const matches = candidates.filter(
+      (intent) =>
+        intent.provider === input.provider &&
+        intent.reason === 'analysis_pending' &&
+        intent.prNumber === input.prNumber &&
+        intent.targetRevision === input.targetRevision,
+    );
+    return pickPendingExternalReviewMatch(matches);
+  }
+
+  private async findPendingExternalReviewCandidates(
+    productSlug: string,
+    externalId: string,
+    specialistId: string,
+  ): Promise<PendingExternalReviewIntent[]> {
+    const specialistIntent = await this.get(
+      productSlug,
+      externalId,
+      'pending_external_review',
+      specialistId,
+    );
+    const shouldCheckLegacy =
+      specialistId === 'spec-draft-reviewer' || specialistId === 'plan-draft-reviewer';
+    const legacyIntent = shouldCheckLegacy
+      ? await this.get(productSlug, externalId, 'pending_external_review')
+      : null;
+    return [specialistIntent, legacyIntent].filter(
+      (intent): intent is PendingExternalReviewIntent =>
+        intent?.kind === 'pending_external_review' &&
+        typeof intent.createdAt === 'string' &&
+        typeof intent.expiresAt === 'string',
+    );
   }
 
   /**
@@ -196,7 +354,7 @@ export class ReviewDispatchOutbox {
         typeof intent.createdAt === 'string' &&
         typeof intent.expiresAt === 'string',
     );
-    return matches.length === 1 ? matches[0]! : null;
+    return pickPendingExternalReviewMatch(matches);
   }
 
   async list(): Promise<ReviewDispatchIntent[]> {

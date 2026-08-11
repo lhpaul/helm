@@ -14,8 +14,10 @@ import {
 } from './specialists/implementer.js';
 import {
   runCodeReviewLoop,
+  runEarlyArtifactReviewLoop,
   type DeferredExternalReviewIntent,
 } from './review-loop/code-review-loop.js';
+import { resolveReviewLoopConfig } from './review-loop/config.js';
 import type { RunExternalReviewDeps } from './external-review/run.js';
 import type { StopRuleEscalationReason } from './review-loop/stop-rule.js';
 import type { StoredResolvedProductDecision } from './review-loop/adjudication.js';
@@ -193,7 +195,16 @@ export async function dispatchStageHandler(
     };
   }
 
-  const specialistId = resolveSpecialistId(item.currentStage, options?.specialistId);
+  let specialistId = resolveSpecialistId(item.currentStage, options?.specialistId);
+  const earlyArtifactKind =
+    item.currentStage === 'spec-draft'
+      ? 'spec'
+      : item.currentStage === 'plan-draft'
+        ? 'plan'
+        : undefined;
+  if (!specialistId && earlyArtifactKind && resolveReviewLoopConfig(product).earlyLoopEnabled) {
+    specialistId = `${earlyArtifactKind}-draft-reviewer`;
+  }
 
   if (!specialistId) {
     return {
@@ -202,6 +213,25 @@ export async function dispatchStageHandler(
       costUsd: 0,
       durationMs: 0,
       error: `No specialist mapped for stage '${item.currentStage}'`,
+    };
+  }
+  const draftReviewerStage =
+    specialistId === 'spec-draft-reviewer'
+      ? 'spec-draft'
+      : specialistId === 'plan-draft-reviewer'
+        ? 'plan-draft'
+        : undefined;
+  if (
+    draftReviewerStage &&
+    (resolveReviewLoopConfig(product).earlyLoopEnabled !== true ||
+      item.currentStage !== draftReviewerStage)
+  ) {
+    return {
+      specialistId,
+      status: 'error',
+      costUsd: 0,
+      durationMs: 0,
+      error: `${specialistId} requires review.early_loop.enabled=true and stage '${draftReviewerStage}'`,
     };
   }
 
@@ -598,6 +628,89 @@ export async function dispatchStageHandler(
       product,
       prUrl,
       codeRepo,
+      githubToken: options.githubToken,
+      runtime,
+      transition,
+      runGit: options.runGit,
+      runGh: options.runGh,
+      fetchFn: options.fetchFn,
+      resolvedProductDecisions: options.resolvedProductDecisions,
+      loadResolvedProductDecisions: options.loadResolvedProductDecisions,
+      targetRevision: options.targetRevision,
+      onExternalReviewDeferred: options.onExternalReviewDeferred,
+      externalReviewDeps: options.externalReviewDeps,
+    });
+
+    return {
+      specialistId,
+      status: loopResult.status,
+      newStage: loopResult.newStage,
+      costUsd: loopResult.costUsd,
+      durationMs: loopResult.durationMs,
+      prUrl: loopResult.prUrl,
+      error: loopResult.error,
+      escalated: loopResult.escalated,
+      escalationReason: loopResult.escalationReason,
+      cyclesCompleted: loopResult.cyclesCompleted,
+      deferredExternalReview: loopResult.deferredExternalReview,
+    };
+  }
+
+  if (specialistId === 'spec-draft-reviewer' || specialistId === 'plan-draft-reviewer') {
+    const kind = specialistId === 'spec-draft-reviewer' ? 'spec' : 'plan';
+
+    if (!options?.githubToken) {
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: `${specialistId} requires GITHUB_TOKEN`,
+      };
+    }
+
+    let prUrl: string;
+    try {
+      const found = await findArtifactPRUrl(
+        {
+          knowledgeRepo: product.knowledge_repo,
+          externalId: item.externalId,
+          kind,
+          githubToken: options.githubToken,
+        },
+        options?.runGh,
+      );
+      if (found === null) {
+        const branch =
+          kind === 'spec' ? `helm/spec/${item.externalId}` : `helm/plan/${item.externalId}`;
+        return {
+          specialistId,
+          status: 'error',
+          costUsd: 0,
+          durationMs: 0,
+          error: `no open ${kind} PR found for ${item.externalId} on ${branch}`,
+        };
+      }
+      prUrl = found;
+    } catch (err) {
+      console.error(
+        `[dispatcher] Failed to find ${kind} PR for ${item.externalId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return {
+        specialistId,
+        status: 'error',
+        costUsd: 0,
+        durationMs: 0,
+        error: `Failed to find ${kind} PR`,
+      };
+    }
+
+    const loopResult = await runEarlyArtifactReviewLoop({
+      kind,
+      externalId: item.externalId,
+      product,
+      prUrl,
       githubToken: options.githubToken,
       runtime,
       transition,

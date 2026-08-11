@@ -20,7 +20,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { rm } from 'node:fs/promises';
-import type { CodeRepo, Product } from '@helm/shared';
+import { implBranchName, type CodeRepo, type Product } from '@helm/shared';
 import type { AgentResult, IAgentRuntime, SpawnParams } from '../runtime.js';
 import {
   provisionReviewerWorkspace,
@@ -81,6 +81,28 @@ export type ReviewerFanoutResult = {
   durationMs: number;
   error?: string;
 };
+
+export type ReviewCommentTransformInput = {
+  kind: ReviewerKind;
+  reviewContent: string;
+  findings: Findings;
+};
+
+export type ReviewCommentTransformResult = {
+  reviewContent: string;
+  findings: Findings;
+};
+
+export type ReviewCommentTransform = (
+  input: ReviewCommentTransformInput,
+) => ReviewCommentTransformResult | Promise<ReviewCommentTransformResult>;
+
+export interface FanoutReviewersOptions {
+  fetchFn?: FetchFn;
+  selectedCodeRepo?: CodeRepo;
+  selectedBranchName?: string;
+  transformReviewComment?: ReviewCommentTransform;
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -185,19 +207,22 @@ export function buildReviewerParams(
   workspacePath: string,
   prUrl: string,
   spec?: string,
+  options: { codeRepo?: CodeRepo; branchName?: string } = {},
 ): SpawnParams {
   const specialistCfg = product.specialists[SPECIALIST_CONFIG_KEY[kind]];
   const specialistId = `${kind}-reviewer`;
 
   const kindLabel = kind.charAt(0).toUpperCase() + kind.slice(1);
-  const defaultBranch = product.code_repos[0]?.default_branch ?? 'main';
+  const codeRepo = options.codeRepo ?? product.code_repos[0];
+  const defaultBranch = codeRepo?.default_branch ?? 'main';
+  const branchName = options.branchName ?? implBranchName(externalId);
 
   const commonHeader = [
     `You are Helm's ${kindLabel} reviewer specialist. Your task is to review item \`${externalId}\`.`,
     '',
     `The implementation PR is available at: ${prUrl} (for context only — do not merge or close it).`,
     '',
-    `The working directory is a shallow clone of the \`helm/impl/${externalId}\` implementation branch.`,
+    `The working directory is a shallow clone of the \`${branchName}\` review branch.`,
     '',
     `To inspect the diff: \`git fetch --depth 1 origin ${defaultBranch}\` then \`git diff origin/${defaultBranch}...HEAD\``,
   ].join('\n');
@@ -335,6 +360,8 @@ export async function handleReviewerResult(
   codeRepo: CodeRepo,
   runGh?: RunGh,
   runGit?: RunGit,
+  branchName?: string,
+  transformReviewComment?: ReviewCommentTransform,
 ): Promise<ReviewerResult> {
   const baseResult = {
     kind,
@@ -373,7 +400,7 @@ export async function handleReviewerResult(
   if (kind === 'code') {
     try {
       const pushResult = await pushReviewerPatches(
-        { externalId, codeRepo, workspacePath, githubToken },
+        { externalId, codeRepo, workspacePath, githubToken, branchName },
         runGit,
       );
       if (pushResult.pushed && pushResult.commitSha) {
@@ -388,6 +415,25 @@ export async function handleReviewerResult(
     }
   }
 
+  // Parse and optionally transform findings before posting. Early artifact
+  // review loops use this to auto-dismiss catalogued draft sequencing findings
+  // before the comment becomes visible on the PR.
+  let findings = parseFindings(reviewContent);
+  if (transformReviewComment) {
+    try {
+      const transformed = await transformReviewComment({ kind, reviewContent, findings });
+      reviewContent = transformed.reviewContent;
+      findings = transformed.findings;
+    } catch (err) {
+      return {
+        ...baseResult,
+        status: 'error',
+        commentPosted: false,
+        error: `Failed to transform review comment: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
   // Post the review content as a PR comment.
   try {
     await postPRComment({ prUrl, body: reviewContent, githubToken }, runGh);
@@ -399,9 +445,6 @@ export async function handleReviewerResult(
       error: `Failed to post PR comment: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
-
-  // Parse findings from the posted body so the remediation gate can inspect them.
-  const findings = parseFindings(reviewContent);
 
   // If the push failed (code reviewer), report error — comment was still posted.
   if (pushError !== undefined) {
@@ -449,9 +492,10 @@ export async function fanoutReviewers(
   runtime: IAgentRuntime,
   runGit?: RunGit,
   runGh?: RunGh,
-  fetchFn?: FetchFn,
+  options: FanoutReviewersOptions = {},
 ): Promise<ReviewerFanoutResult> {
-  const codeRepo = product.code_repos[0];
+  const { fetchFn, selectedCodeRepo, selectedBranchName, transformReviewComment } = options;
+  const codeRepo = selectedCodeRepo ?? product.code_repos[0];
   if (!codeRepo) {
     return {
       reviewerResults: [],
@@ -476,14 +520,18 @@ export async function fanoutReviewers(
   }
 
   // Provision all 3 workspaces in parallel.
-  // provisionReviewerWorkspace clones helm/impl/{externalId} directly from the
-  // remote, so each reviewer workspace contains the real implementation code.
+  const branchName = selectedBranchName ?? implBranchName(externalId);
+
+  // provisionReviewerWorkspace clones the selected review branch directly from
+  // the remote, so each reviewer workspace contains the real PR contents.
   const provisionResults = await Promise.allSettled(
     REVIEWER_KINDS.map((kind) =>
-      provisionReviewerWorkspace({ externalId, codeRepo, githubToken }, runGit).then((result) => ({
-        kind,
-        workspacePath: result.workspacePath,
-      })),
+      provisionReviewerWorkspace({ externalId, codeRepo, githubToken, branchName }, runGit).then(
+        (result) => ({
+          kind,
+          workspacePath: result.workspacePath,
+        }),
+      ),
     ),
   );
 
@@ -528,7 +576,10 @@ export async function fanoutReviewers(
     const spawnResults = await Promise.allSettled(
       REVIEWER_KINDS.map(async (kind) => {
         const workspacePath = workspacePaths.get(kind)!;
-        const params = buildReviewerParams(kind, externalId, product, workspacePath, prUrl, spec);
+        const params = buildReviewerParams(kind, externalId, product, workspacePath, prUrl, spec, {
+          codeRepo,
+          branchName,
+        });
         const session = await runtime.spawn(params);
         const agentResult = await session.wait();
         const reviewerResult = await handleReviewerResult(
@@ -541,6 +592,8 @@ export async function fanoutReviewers(
           codeRepo,
           runGh,
           runGit,
+          branchName,
+          transformReviewComment,
         );
         return reviewerResult;
       }),

@@ -1,4 +1,5 @@
 import type { NormalizedFinding } from '../external-review/types.js';
+import type { WorkflowStage } from '@helm/workflow';
 import { upsertPRCommentByMarker } from '../specialists/pr-helpers.js';
 import type { RunGh } from '../specialists/git-helpers.js';
 import type { AdvisoryWithDisposition } from './advisory-disposition.js';
@@ -49,8 +50,9 @@ function escapeTableCell(value: string): string {
 export function buildAdvisorySummaryRows(
   advisories: NormalizedFinding[],
   catalog: FalsePositiveEntry[],
+  stage: WorkflowStage,
 ): AdvisoryWithDisposition[] {
-  return resolveAdvisoryDispositions(advisories, catalog);
+  return resolveAdvisoryDispositions(advisories, catalog, stage);
 }
 
 export async function upsertReviewLoopSummaryComment(input: {
@@ -60,11 +62,12 @@ export async function upsertReviewLoopSummaryComment(input: {
   externalProvider?: string;
   advisories: NormalizedFinding[];
   catalog: FalsePositiveEntry[];
+  stage: WorkflowStage;
   runGh?: RunGh;
 }): Promise<void> {
   if (input.advisories.length === 0) return;
 
-  const rows = buildAdvisorySummaryRows(input.advisories, input.catalog);
+  const rows = buildAdvisorySummaryRows(input.advisories, input.catalog, input.stage);
   const body = formatReviewLoopSummaryComment({
     cyclesCompleted: input.cyclesCompleted,
     externalProvider: input.externalProvider,

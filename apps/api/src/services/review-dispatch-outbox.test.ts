@@ -35,6 +35,60 @@ describe('ReviewDispatchOutbox', () => {
     expect(a.targetRevision).not.toBe(b.targetRevision);
   });
 
+  it('stores draft reviewer intents in separate files so they do not clobber each other', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    const spec = await outbox.put({
+      productSlug: 'helm',
+      externalId: 'issue_1',
+      specialistId: 'spec-draft-reviewer',
+      triggeredBy: 'test',
+      targetRevision: 'sha-spec',
+      prNumber: 1,
+    });
+    const plan = await outbox.put({
+      productSlug: 'helm',
+      externalId: 'issue_1',
+      specialistId: 'plan-draft-reviewer',
+      triggeredBy: 'test',
+      targetRevision: 'sha-plan',
+      prNumber: 2,
+    });
+
+    expect(await outbox.get('helm', 'issue_1', 'review_dispatch', 'spec-draft-reviewer')).toEqual(
+      spec,
+    );
+    expect(await outbox.get('helm', 'issue_1', 'review_dispatch', 'plan-draft-reviewer')).toEqual(
+      plan,
+    );
+    await expect(outbox.listReviewDispatch('helm', 'issue_1')).resolves.toEqual([spec, plan]);
+  });
+
+  it('preserves an existing targetRevision when re-parking without a new SHA', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      productSlug: 'helm',
+      externalId: 'issue_1',
+      specialistId: 'spec-draft-reviewer',
+      triggeredBy: 'test:initial',
+      targetRevision: 'sha-keep',
+      prNumber: 7,
+    });
+
+    const reparked = await outbox.put({
+      productSlug: 'helm',
+      externalId: 'issue_1',
+      specialistId: 'spec-draft-reviewer',
+      triggeredBy: 'test:repark',
+      prNumber: 7,
+    });
+
+    expect(reparked.targetRevision).toBe('sha-keep');
+    expect(reparked.triggeredBy).toBe('test:repark');
+    await expect(
+      outbox.get('helm', 'issue_1', 'review_dispatch', 'spec-draft-reviewer'),
+    ).resolves.toMatchObject({ targetRevision: 'sha-keep', triggeredBy: 'test:repark' });
+  });
+
   it('removeIfMatches keeps a newer concurrent intent', async () => {
     const outbox = await getReviewDispatchOutbox(dataRoot);
     const first = await outbox.put({
@@ -102,6 +156,157 @@ describe('ReviewDispatchOutbox', () => {
         targetRevision: 'abc123',
       }),
     ).resolves.toEqual(second);
+  });
+
+  it('stores spec and plan pending external reviews separately and sweeps independently', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    const spec = await outbox.put({
+      kind: 'pending_external_review',
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      specialistId: 'spec-draft-reviewer',
+      provider: 'haystack',
+      reason: 'analysis_pending',
+      prNumber: 41,
+      targetRevision: 'sha-spec',
+      expiresAt: '2026-07-22T10:15:00.000Z',
+      triggeredBy: 'test:spec',
+    });
+    const plan = await outbox.put({
+      kind: 'pending_external_review',
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      specialistId: 'plan-draft-reviewer',
+      provider: 'haystack',
+      reason: 'analysis_pending',
+      prNumber: 42,
+      targetRevision: 'sha-plan',
+      expiresAt: '2026-07-22T10:45:00.000Z',
+      triggeredBy: 'test:plan',
+    });
+
+    await expect(
+      outbox.get('helm', 'issue_78', 'pending_external_review', 'spec-draft-reviewer'),
+    ).resolves.toEqual(spec);
+    await expect(
+      outbox.get('helm', 'issue_78', 'pending_external_review', 'plan-draft-reviewer'),
+    ).resolves.toEqual(plan);
+    await expect(outbox.listPendingExternalReviews('helm', 'issue_78')).resolves.toEqual([
+      spec,
+      plan,
+    ]);
+    await expect(
+      outbox.findPendingExternalReview({
+        productSlug: 'helm',
+        externalId: 'issue_78',
+        specialistId: 'spec-draft-reviewer',
+        provider: 'haystack',
+        prNumber: 41,
+        targetRevision: 'sha-spec',
+      }),
+    ).resolves.toEqual(spec);
+    await expect(
+      outbox.findPendingExternalReview({
+        productSlug: 'helm',
+        externalId: 'issue_78',
+        specialistId: 'plan-draft-reviewer',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-plan',
+      }),
+    ).resolves.toEqual(plan);
+
+    await expect(
+      outbox.removeExpiredPendingExternalReviews(new Date('2026-07-22T10:30:00.000Z')),
+    ).resolves.toBe(1);
+    await expect(
+      outbox.get('helm', 'issue_78', 'pending_external_review', 'spec-draft-reviewer'),
+    ).resolves.toBeNull();
+    await expect(
+      outbox.get('helm', 'issue_78', 'pending_external_review', 'plan-draft-reviewer'),
+    ).resolves.toEqual(plan);
+  });
+
+  it('removes expired review dispatch intents', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      specialistId: 'spec-draft-reviewer',
+      prNumber: 41,
+      targetRevision: 'sha-spec',
+      expiresAt: '2026-07-22T10:15:00.000Z',
+      triggeredBy: 'test:expired-review-dispatch',
+    });
+    const fresh = await outbox.put({
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      specialistId: 'plan-draft-reviewer',
+      prNumber: 42,
+      targetRevision: 'sha-plan',
+      expiresAt: '2026-07-22T10:45:00.000Z',
+      triggeredBy: 'test:fresh-review-dispatch',
+    });
+
+    await expect(
+      outbox.removeExpiredPendingExternalReviews(new Date('2026-07-22T10:30:00.000Z')),
+    ).resolves.toBe(1);
+    await expect(
+      outbox.get('helm', 'issue_78', 'review_dispatch', 'spec-draft-reviewer'),
+    ).resolves.toBeNull();
+    await expect(
+      outbox.get('helm', 'issue_78', 'review_dispatch', 'plan-draft-reviewer'),
+    ).resolves.toEqual(fresh);
+  });
+
+  it('prefers specialist-scoped pending external review when legacy and specialist slots match', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    const legacy = await outbox.put({
+      kind: 'pending_external_review',
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      provider: 'haystack',
+      reason: 'analysis_pending',
+      prNumber: 42,
+      targetRevision: 'sha-dup',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      triggeredBy: 'test:legacy',
+    });
+    const specialist = await outbox.put({
+      kind: 'pending_external_review',
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      specialistId: 'spec-draft-reviewer',
+      provider: 'haystack',
+      reason: 'analysis_pending',
+      prNumber: 42,
+      targetRevision: 'sha-dup',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      triggeredBy: 'test:specialist',
+    });
+
+    await expect(
+      outbox.findPendingExternalReview({
+        productSlug: 'helm',
+        externalId: 'issue_78',
+        specialistId: 'spec-draft-reviewer',
+        provider: 'haystack',
+        prNumber: 42,
+        targetRevision: 'sha-dup',
+      }),
+    ).resolves.toEqual(specialist);
+    await expect(
+      outbox.findPendingExternalReviewByRevision({
+        productSlug: 'helm',
+        provider: 'haystack',
+        targetRevision: 'sha-dup',
+      }),
+    ).resolves.toEqual(specialist);
+    await expect(outbox.get('helm', 'issue_78', 'pending_external_review')).resolves.toMatchObject({
+      kind: 'pending_external_review',
+      triggeredBy: legacy.triggeredBy,
+      targetRevision: legacy.targetRevision,
+    });
   });
 
   it('does not match pending external review readiness for the wrong revision', async () => {

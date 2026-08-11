@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { parseFalsePositivesCatalog } from './false-positives.js';
+import { describe, expect, it, vi } from 'vitest';
+import type { Product } from '@helm/shared';
+import {
+  builtInFalsePositiveEntries,
+  fetchFalsePositivesCatalog,
+  matchesFalsePositiveFinding,
+  parseFalsePositivesCatalog,
+} from './false-positives.js';
 
 const SAMPLE = `# Code-review false positives
 
@@ -8,6 +14,8 @@ const SAMPLE = `# Code-review false positives
 ## Health endpoint returns degraded
 
 **Pattern:** A reviewer flags the \`/health\` endpoint for returning extra data
+
+**Applies to:** code-review
 
 **Why it's a false positive:** This behavior is spec-intended for fail-open visibility.
 
@@ -66,5 +74,129 @@ describe('parseFalsePositivesCatalog', () => {
     const healthEntry = entries.find((e) => e.title.includes('Health token'))!;
     expect(healthEntry.matchesSummary('unhealthy retry logic in parser')).toBe(false);
     expect(healthEntry.matchesSummary('reviewer flags health endpoint contract')).toBe(true);
+  });
+
+  it('parses optional applies-to metadata for sequential artifact entries', () => {
+    const entries = parseFalsePositivesCatalog(`# Code-review false positives
+
+---
+
+## Pair spec and plan files
+
+**Pattern:** pair-spec-and-plan-files
+
+**Applies to:** spec-draft, plan-draft
+
+**Why it's a false positive:** Draft artifacts are reviewed sequentially.
+`);
+
+    expect(entries[0]).toMatchObject({
+      title: 'Pair spec and plan files',
+      pattern: 'pair-spec-and-plan-files',
+      appliesTo: ['spec-draft', 'plan-draft'],
+    });
+    expect(entries[0]!.matchesSummary('Reviewer flags pair spec and plan files')).toBe(true);
+  });
+
+  it('ships built-in Helm sequential-artifact false positives', () => {
+    const entries = builtInFalsePositiveEntries();
+    const pairEntry = entries.find((entry) => entry.pattern === 'pair-spec-and-plan-files');
+    const specPlanEntry = entries.find(
+      (entry) => entry.pattern === 'plan file is missing while spec remains in spec-draft',
+    );
+
+    expect(pairEntry).toBeDefined();
+    expect(pairEntry?.appliesTo).toEqual(['spec-draft', 'plan-draft']);
+    expect(pairEntry?.matchesSummary('pair-spec-and-plan-files')).toBe(true);
+    expect(pairEntry?.matchesSummary('pair-spec-and-plan-files sequencing')).toBe(true);
+    expect(pairEntry?.matchesSummary('Plan files are missing validation guards')).toBe(false);
+    expect(pairEntry?.matchesSummary('pair spec files')).toBe(false);
+    expect(specPlanEntry).toBeDefined();
+    expect(specPlanEntry?.appliesTo).toEqual(['spec-draft', 'plan-draft']);
+    expect(
+      specPlanEntry?.matchesSummary('plan file is missing while spec remains in spec-draft'),
+    ).toBe(true);
+    expect(specPlanEntry?.matchesSummary('plan file is missing a webhook persistence guard')).toBe(
+      false,
+    );
+  });
+
+  it('matches catalog entries against structured finding fields', () => {
+    const entry = builtInFalsePositiveEntries().find(
+      (candidate) => candidate.pattern === 'pair-spec-and-plan-files',
+    )!;
+
+    expect(
+      matchesFalsePositiveFinding(entry, {
+        id: 'pair-spec-and-plan-files',
+        severity: 'high',
+        blocking: true,
+        summary: 'Reviewer rendered this as a sequencing concern',
+      }),
+    ).toBe(true);
+    expect(
+      matchesFalsePositiveFinding(entry, {
+        id: 'adv-1',
+        severity: 'high',
+        blocking: true,
+        summary: 'Reviewer rendered this as a sequencing concern',
+        detail: 'The structured detail names pair-spec-and-plan-files.',
+      }),
+    ).toBe(true);
+    expect(
+      matchesFalsePositiveFinding(entry, {
+        id: 'adv-2',
+        severity: 'high',
+        blocking: true,
+        summary: 'Plan files are missing validation guards',
+        detail: 'Unrelated product concern.',
+      }),
+    ).toBe(false);
+  });
+
+  it('falls back to built-in entries when the knowledge-repo catalog fetch fails', async () => {
+    const product = {
+      knowledge_repo: { url: 'https://github.com/o/k', default_branch: 'main' },
+    } as Product;
+    const fetchFn = async () => {
+      throw new Error('transient network failure');
+    };
+
+    const entries = await fetchFalsePositivesCatalog(product, 'token', fetchFn);
+
+    expect(entries.some((entry) => entry.pattern === 'pair-spec-and-plan-files')).toBe(true);
+    expect(
+      entries
+        .find((entry) => entry.pattern === 'pair-spec-and-plan-files')
+        ?.matchesSummary('pair-spec-and-plan-files sequencing'),
+    ).toBe(true);
+  });
+
+  it('merges built-in sequential-artifact entries with a fetched knowledge-repo catalog', async () => {
+    const product = {
+      knowledge_repo: { url: 'https://github.com/o/k', default_branch: 'main' },
+    } as Product;
+    const fetchFn = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => SAMPLE,
+    });
+
+    const entries = await fetchFalsePositivesCatalog(product, 'token', fetchFn);
+
+    expect(entries.map((entry) => entry.pattern)).toEqual(
+      expect.arrayContaining([
+        'pair-spec-and-plan-files',
+        'A reviewer flags the `/health` endpoint for returning extra data',
+      ]),
+    );
+    expect(
+      entries.find((entry) => entry.pattern === 'pair-spec-and-plan-files')?.appliesTo,
+    ).toEqual(['spec-draft', 'plan-draft']);
+    expect(
+      entries.find(
+        (entry) =>
+          entry.pattern === 'A reviewer flags the `/health` endpoint for returning extra data',
+      )?.appliesTo,
+    ).toEqual(['code-review']);
   });
 });

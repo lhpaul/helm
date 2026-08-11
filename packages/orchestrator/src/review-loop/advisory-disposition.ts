@@ -1,5 +1,6 @@
 import type { NormalizedFinding } from '../external-review/types.js';
-import type { FalsePositiveEntry } from './false-positives.js';
+import type { WorkflowStage } from '@helm/workflow';
+import { matchesFalsePositiveFinding, type FalsePositiveEntry } from './false-positives.js';
 
 /** ADR-036 §5 advisory disposition values. */
 export type AdvisoryDisposition = 'Addressed' | 'Accepted' | 'Deferred' | 'Rejected';
@@ -20,9 +21,14 @@ const DEFAULT_DEFERRED_RATIONALE =
 export function resolveAdvisoryDispositions(
   advisories: NormalizedFinding[],
   catalog: FalsePositiveEntry[],
+  stage: WorkflowStage,
 ): AdvisoryWithDisposition[] {
   return advisories.map((finding) => {
-    const match = catalog.find((entry) => entry.matchesSummary(finding.summary));
+    const match = catalog.find(
+      (entry) =>
+        (entry.appliesTo === undefined || entry.appliesTo.includes(stage)) &&
+        matchesFalsePositiveFinding(entry, finding),
+    );
     if (match) {
       return {
         finding,

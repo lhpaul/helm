@@ -202,6 +202,12 @@ export const ProductSchema = z
      */
     review: z
       .object({
+        early_loop: z
+          .object({
+            enabled: z.boolean().default(false),
+          })
+          .strict()
+          .optional(),
         external: z
           .object({
             provider: z.enum(['haystack', 'bugbot', 'coderabbit']).optional(),

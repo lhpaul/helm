@@ -93,6 +93,84 @@ describe('product decision parsing and fingerprints', () => {
 ## Status
 HUMAN_REQUIRED`;
 
+  it('matches short A:/B: adjudication options to Option A/B decisions', () => {
+    const body = `# Review Adjudication: LEA-1
+
+## Summary
+x
+
+## Conflicts
+- **product_decision** · Fork PRs and early-loop triggering
+  - A: require canonical head repo
+  - B: keep branch-name-only triggering
+
+## Status
+HUMAN_REQUIRED
+`;
+    const decision = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Fork PRs and early-loop triggering
+Chosen option: Option A`);
+    expect(decision).not.toBeNull();
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'LEA-1',
+        decision: decision!,
+        adjudicationBodies: [body],
+      }),
+    ).toBe(true);
+  });
+
+  it('does not treat prose one-letter prefixes as declared options', () => {
+    const body = `# Review Adjudication: LEA-1
+
+## Conflicts
+- **product_decision** · Fork PRs and early-loop triggering
+  x: see the note above before deciding.
+  - A: require canonical head repo
+
+## Status
+HUMAN_REQUIRED`;
+    const decision = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Fork PRs and early-loop triggering
+Chosen option: Option X`);
+
+    expect(decision).not.toBeNull();
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'LEA-1',
+        decision: decision!,
+        adjudicationBodies: [body],
+      }),
+    ).toBe(false);
+  });
+
+  it('matches bulleted Option labels to Option decisions', () => {
+    const body = `# Review Adjudication: LEA-1
+
+## Conflicts
+- **product_decision** · Fork PRs and early-loop triggering
+  - Option A: require canonical head repo
+  - Option B: keep branch-name-only triggering
+
+## Status
+HUMAN_REQUIRED`;
+    const decision = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Fork PRs and early-loop triggering
+Chosen option: Option A`);
+
+    expect(decision).not.toBeNull();
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'LEA-1',
+        decision: decision!,
+        adjudicationBodies: [body],
+      }),
+    ).toBe(true);
+  });
+
   it('normalizes structured and checklist inputs to the same fingerprint', () => {
     const structured = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
 Conflict kind: product_decision

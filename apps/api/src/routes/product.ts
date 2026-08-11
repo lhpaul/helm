@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { join } from 'node:path';
 import { ProductConfigError, parseProductConfigFromFile } from '@helm/shared';
+import { publicProductResponse } from './product-response.js';
 
 export const productRouter = new Hono();
 
@@ -15,7 +16,7 @@ productRouter.get('/product', async (c) => {
 
   try {
     const product = await parseProductConfigFromFile(configPath);
-    return c.json(product);
+    return c.json(publicProductResponse(product));
   } catch (err) {
     // File not found — check err.code directly (preserved by parseProductConfigFromFile)
     if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
@@ -30,9 +31,11 @@ productRouter.get('/product', async (c) => {
         404,
       );
     }
-    // Validation or YAML parse error — message already contains the field path
+    // Validation, YAML parse, or non-ENOENT read errors may include local paths.
+    // Keep those details server-side and return a stable client-facing error.
     if (err instanceof ProductConfigError) {
-      return c.json({ error: err.message }, 500);
+      console.error('[product] Failed to load product config:', err);
+      return c.json({ error: 'Failed to load product config' }, 500);
     }
     // Unexpected error — let Hono handle it as 500
     throw err;

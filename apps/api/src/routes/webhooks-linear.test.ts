@@ -5,14 +5,31 @@ import { _resetForTests } from '../services/index.js';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-const { mockParseWebhook, mockCreate, mockTransition, mockSetSubStage, mockEnsureSubStages } =
-  vi.hoisted(() => ({
-    mockParseWebhook: vi.fn(),
-    mockCreate: vi.fn(),
-    mockTransition: vi.fn(),
-    mockSetSubStage: vi.fn(),
-    mockEnsureSubStages: vi.fn(),
-  }));
+const {
+  mockParseWebhook,
+  mockCreate,
+  mockTransition,
+  mockSetSubStage,
+  mockEnsureSubStages,
+  mockReplayPendingReviewDispatchForItem,
+} = vi.hoisted(() => ({
+  mockParseWebhook: vi.fn(),
+  mockCreate: vi.fn(),
+  mockTransition: vi.fn(),
+  mockSetSubStage: vi.fn(),
+  mockEnsureSubStages: vi.fn(),
+  mockReplayPendingReviewDispatchForItem: vi.fn(),
+}));
+
+vi.mock('../services/dispatch-scheduler.js', () => ({
+  scheduleItemDispatch: vi.fn(),
+  persistReviewDispatchIntent: vi.fn(),
+  replayPendingReviewDispatchForItem: mockReplayPendingReviewDispatchForItem,
+  peekPendingExternalReviewByRevision: vi.fn(),
+  clearPendingExternalReview: vi.fn(),
+  resumePendingExternalReview: vi.fn(),
+  resumePendingExternalReviewByRevision: vi.fn(),
+}));
 
 vi.mock('../services/index.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../services/index.js')>();
@@ -60,6 +77,7 @@ describe('POST /api/webhooks/linear', () => {
     _resetForTests();
     vi.clearAllMocks();
     process.env.LINEAR_WEBHOOK_SECRET = TEST_SECRET;
+    mockReplayPendingReviewDispatchForItem.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -131,6 +149,28 @@ describe('POST /api/webhooks/linear', () => {
       );
     });
 
+    it('replays pending draft review dispatch after item creation', async () => {
+      const body = JSON.stringify({
+        type: 'Issue',
+        action: 'create',
+        data: { identifier: 'MOM-42' },
+      });
+      mockParseWebhook.mockReturnValue({
+        type: 'item_created',
+        externalId: 'MOM-42',
+        timestamp: 't',
+      });
+      mockCreate.mockResolvedValue({ history: [] });
+
+      const res = await post(body);
+      expect(res.status).toBe(200);
+      expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalledWith({
+        product: expect.objectContaining({ product: { slug: 'mome', name: 'MOME' } }),
+        productSlug: 'mome',
+        externalId: 'MOM-42',
+      });
+    });
+
     it('returns 200 when item already exists (idempotent)', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({
@@ -167,6 +207,25 @@ describe('POST /api/webhooks/linear', () => {
       expect(mockSetSubStage).not.toHaveBeenCalled();
     });
 
+    it('replays pending draft review dispatch after a Linear stage transition', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'item_updated',
+        externalId: 'MOM-5',
+        subStage: 'plan-draft',
+        timestamp: 't',
+      });
+      mockTransition.mockResolvedValue({ history: [], currentStage: 'plan-draft' });
+
+      const res = await post(body);
+      expect(res.status).toBe(200);
+      expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalledWith({
+        product: expect.objectContaining({ product: { slug: 'mome', name: 'MOME' } }),
+        productSlug: 'mome',
+        externalId: 'MOM-5',
+      });
+    });
+
     it('returns 200 on WorkflowTransitionError (not a delivery problem)', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({
@@ -197,6 +256,23 @@ describe('POST /api/webhooks/linear', () => {
 
       const res = await post(body);
       expect(res.status).toBe(200);
+    });
+
+    it('returns 200 when replay fails after a successful Linear stage transition', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'item_updated',
+        externalId: 'MOM-5',
+        subStage: 'spec-draft',
+        timestamp: 't',
+      });
+      mockTransition.mockResolvedValue({ history: [], currentStage: 'spec-draft' });
+      mockReplayPendingReviewDispatchForItem.mockRejectedValue(new Error('github lookup failed'));
+
+      const res = await post(body);
+      expect(res.status).toBe(200);
+      expect(mockTransition).toHaveBeenCalled();
+      expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalled();
     });
 
     it('returns 500 on unexpected transition error', async () => {

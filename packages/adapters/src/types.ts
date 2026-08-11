@@ -67,12 +67,18 @@ export type NormalizedEvent =
       timestamp: string;
     }
   /**
-   * New commits were pushed to an open pull request (action: synchronize).
+   * A pull request head became available or changed (actions: opened/reopened/synchronize).
    * headRef is the PR source branch (e.g. `helm/impl/LEA-192`).
    */
   | {
       type: 'pull_request_synchronized';
       headRef: string;
+      owner: string | null;
+      repo: string | null;
+      /** Head repository owner when present — used to reject fork-originated early-loop PRs. */
+      headOwner: string | null;
+      /** Head repository name when present — used to reject fork-originated early-loop PRs. */
+      headRepo: string | null;
       prNumber?: number;
       headSha?: string;
       /** GitHub `sender.login` when present — used to ignore orchestrator bot pushes. */

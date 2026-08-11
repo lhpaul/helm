@@ -533,6 +533,23 @@ describe('pushReviewerPatches', () => {
     expect(pushArgs).not.toContain('--force');
   });
 
+  it('pushes to the explicit branchName when provided', async () => {
+    const capturedArgs: string[][] = [];
+    const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
+      capturedArgs.push([...args]);
+      if (args[0] === 'status') return { stdout: 'M  src/fix.ts\n' };
+      if (args[0] === 'rev-parse') return { stdout: 'abc123\n' };
+      return { stdout: '' };
+    });
+
+    await pushReviewerPatches({ ...makeBaseOpts(), branchName: 'helm/spec/HLM-42' }, runGit);
+
+    const pushArgs = capturedArgs.find((a) => a[0] === 'push');
+    expect(pushArgs).toBeDefined();
+    expect(pushArgs!.join(' ')).toContain('helm/spec/HLM-42:helm/spec/HLM-42');
+    expect(pushArgs!.join(' ')).not.toContain('helm/impl/HLM-42:helm/impl/HLM-42');
+  });
+
   it('uses a custom commitMessage when provided', async () => {
     const capturedArgs: string[][] = [];
     const runGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {

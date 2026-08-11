@@ -160,14 +160,82 @@ describe('parseGitHubWebhook', () => {
       expect(result.type).toBe('unknown');
     });
 
-    it('pull_request action:opened → unknown', () => {
+    it('pull_request action:opened on early artifact branch → pull_request_synchronized with headRef', () => {
       const result = parseGitHubWebhook(
         ctx('pull_request', {
           action: 'opened',
-          pull_request: { merged: false, head: { ref: 'helm/spec/issue_42' } },
+          pull_request: {
+            number: 42,
+            merged: false,
+            head: { ref: 'helm/spec/issue_42', sha: 'abc123' },
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
         }),
       );
-      expect(result.type).toBe('unknown');
+      expect(result).toEqual({
+        type: 'pull_request_synchronized',
+        headRef: 'helm/spec/issue_42',
+        owner: 'owner',
+        repo: 'repo',
+        headOwner: null,
+        headRepo: null,
+        prNumber: 42,
+        headSha: 'abc123',
+        senderLogin: null,
+        timestamp: expect.any(String),
+      });
+    });
+
+    it('pull_request action:opened on helm/plan artifact branch → pull_request_synchronized', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'opened',
+          pull_request: {
+            number: 43,
+            merged: false,
+            head: { ref: 'helm/plan/issue_42', sha: 'def456' },
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result).toEqual({
+        type: 'pull_request_synchronized',
+        headRef: 'helm/plan/issue_42',
+        owner: 'owner',
+        repo: 'repo',
+        headOwner: null,
+        headRepo: null,
+        prNumber: 43,
+        headSha: 'def456',
+        senderLogin: null,
+        timestamp: expect.any(String),
+      });
+    });
+
+    it('pull_request action:reopened on early artifact branch → pull_request_synchronized', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'reopened',
+          pull_request: {
+            number: 44,
+            merged: false,
+            head: { ref: 'helm/spec/issue_42', sha: 'ghi789' },
+          },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result).toEqual({
+        type: 'pull_request_synchronized',
+        headRef: 'helm/spec/issue_42',
+        owner: 'owner',
+        repo: 'repo',
+        headOwner: null,
+        headRepo: null,
+        prNumber: 44,
+        headSha: 'ghi789',
+        senderLogin: null,
+        timestamp: expect.any(String),
+      });
     });
 
     it('pull_request action:synchronize → pull_request_synchronized with headRef', () => {
@@ -179,11 +247,16 @@ describe('parseGitHubWebhook', () => {
             merged: false,
             head: { ref: 'helm/impl/LEA-192', sha: 'abc123' },
           },
+          repository: { name: 'repo', owner: { login: 'owner' } },
         }),
       );
       expect(result).toEqual({
         type: 'pull_request_synchronized',
         headRef: 'helm/impl/LEA-192',
+        owner: 'owner',
+        repo: 'repo',
+        headOwner: null,
+        headRepo: null,
         prNumber: 12,
         headSha: 'abc123',
         senderLogin: null,
@@ -202,6 +275,8 @@ describe('parseGitHubWebhook', () => {
       expect(result).toMatchObject({
         type: 'pull_request_synchronized',
         headRef: 'helm/impl/LEA-192',
+        owner: null,
+        repo: null,
         senderLogin: 'human-dev',
       });
     });
@@ -216,8 +291,38 @@ describe('parseGitHubWebhook', () => {
       expect(result).toMatchObject({
         type: 'pull_request_synchronized',
         headRef: 'feature/foo',
+        owner: null,
+        repo: null,
         senderLogin: null,
       });
+    });
+
+    it('pull_request action:opened on non-artifact branch → unknown', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'opened',
+          pull_request: {
+            number: 12,
+            merged: false,
+            head: { ref: 'feature/foo', sha: 'abc123' },
+          },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('pull_request action:reopened on non-artifact branch → unknown', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request', {
+          action: 'reopened',
+          pull_request: {
+            number: 12,
+            merged: false,
+            head: { ref: 'feature/foo', sha: 'abc123' },
+          },
+        }),
+      );
+      expect(result.type).toBe('unknown');
     });
 
     it('pull_request with missing pull_request field → unknown (no throw)', () => {

@@ -7,6 +7,9 @@ import { _resetForTests } from '../services/index.js';
 const HELM_PRODUCT = {
   helm_version: '0',
   product: { slug: 'helm', name: 'Helm' },
+  notifications: {
+    slack_webhook: 'https://hooks.slack.com/services/T000/B000/secret',
+  },
   workflow: {
     stages_enabled: ['discovery', 'released'],
     designer_gate: 'skip',
@@ -95,6 +98,7 @@ describe('GET /api/products', () => {
       const body = (await res.json()) as (typeof HELM_PRODUCT)[];
       expect(body).toHaveLength(2);
       expect(body.map((p) => p.product.slug).sort()).toEqual(['helm', 'helm-playground']);
+      expect(body.find((p) => p.product.slug === 'helm')?.notifications).toEqual({});
     });
 
     it('returns 500 when registry loading fails', async () => {
@@ -116,6 +120,15 @@ describe('GET /api/products', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as typeof PLAYGROUND_PRODUCT;
       expect(body.product.slug).toBe('helm-playground');
+    });
+
+    it('redacts secret notification configuration from the matching product', async () => {
+      mockGetProductRegistry.mockResolvedValue([HELM_PRODUCT, PLAYGROUND_PRODUCT]);
+      const res = await app.request('/api/products/helm');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as typeof HELM_PRODUCT;
+      expect(body.product.slug).toBe('helm');
+      expect(body.notifications).toEqual({});
     });
 
     it('returns 404 for unknown slug', async () => {

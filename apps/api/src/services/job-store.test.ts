@@ -2,7 +2,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JobStore } from './job-store.js';
 
 let jobsDir: string;
@@ -282,31 +282,46 @@ describe('createJobIfNoRunning', () => {
     expect(second).toMatchObject({ job: { targetRevision: 'sha-b' } });
   });
 
-  it('concurrent duplicate deliveries produce only one same-target job', async () => {
-    const [first, second] = await Promise.all([
-      store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' }),
-      store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' }),
-    ]);
+  it('dedupes an existing running job with the same targetRevision', async () => {
+    const first = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+    if (!('job' in first)) throw new Error('expected job');
 
-    const created = [first, second].filter((outcome) => 'job' in outcome);
-    const blocked = [first, second].filter(
-      (outcome) => 'duplicate' in outcome || 'conflict' in outcome,
-    );
-    expect(created).toHaveLength(1);
-    expect(blocked).toHaveLength(1);
-    const createdJob = created[0]!;
-    if (!('job' in createdJob)) throw new Error('expected job');
-    const blockedOutcome = blocked[0]!;
-    if ('duplicate' in blockedOutcome) {
-      expect(blockedOutcome.existingJobId).toBe(createdJob.job.jobId);
-    } else if ('conflict' in blockedOutcome) {
-      // Inflight race may return '' before the winner's job is visible on disk.
-      if (blockedOutcome.runningJobId !== '') {
-        expect(blockedOutcome.runningJobId).toBe(createdJob.job.jobId);
-      }
-    }
+    const second = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+
+    expect(second).toEqual({ duplicate: true, existingJobId: first.job.jobId });
     const jobs = await store.listJobsForItem(BASE_INPUT.productSlug, BASE_INPUT.externalId);
     expect(jobs.filter((job) => job.targetRevision === 'sha-a')).toHaveLength(1);
+  });
+
+  it('returns a conflict for duplicate concurrent create attempts before the job is visible', async () => {
+    const originalListJobsForItem = store.listJobsForItem.bind(store);
+    let releaseFirstList!: () => void;
+    const firstListStarted = new Promise<void>((resolve) => {
+      vi.spyOn(store, 'listJobsForItem').mockImplementationOnce(async (...args) => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseFirstList = release;
+        });
+        return originalListJobsForItem(...args);
+      });
+    });
+
+    const first = store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-a' });
+    await firstListStarted;
+
+    const second = await store.createJobIfNoRunning({ ...BASE_INPUT, targetRevision: 'sha-b' });
+
+    expect(second).toEqual({
+      conflict: true,
+      runningJobId: '',
+      runningTargetRevision: undefined,
+    });
+
+    releaseFirstList();
+    const firstOutcome = await first;
+    expect(firstOutcome).toMatchObject({ job: { targetRevision: 'sha-a' } });
+    const jobs = await originalListJobsForItem(BASE_INPUT.productSlug, BASE_INPUT.externalId);
+    expect(jobs).toHaveLength(1);
   });
 });
 

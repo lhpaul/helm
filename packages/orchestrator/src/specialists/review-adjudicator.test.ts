@@ -20,13 +20,20 @@ import { postPRComment } from './pr-helpers.js';
 const product = {
   helm_version: '0' as const,
   product: { slug: 'test', name: 'Test' },
-  issue_tracker: { provider: 'github_projects' as const, org: 'o', project_number: 1 },
+  issue_tracker: {
+    provider: 'github_projects' as const,
+    org: 'o',
+    project_number: 1,
+    custom_field_name: 'Helm Stage',
+  },
   code_repos: [{ url: 'https://github.com/o/r', default_branch: 'main', role: 'app' as const }],
   knowledge_repo: { url: 'https://github.com/o/k', default_branch: 'main' },
   workflow: {
     stages_enabled: ['code-review' as const],
     designer_gate: 'skip' as const,
     qa_gate: 'skip' as const,
+    readiness_gate: 'skip' as const,
+    final_stage: 'merged' as const,
   },
   specialists: {
     'spec-writer': { runtime: 'claude_code' as const, model: 'm' },
@@ -150,9 +157,9 @@ describe('handleReviewAdjudicatorResult', () => {
       'LEA-192',
       {
         status: 'done',
+        finalOutput: '',
         totalCostUsd: 0,
         durationMs: 1,
-        messages: [],
       },
       '/tmp/ws',
       'https://github.com/o/r/pull/1',
@@ -176,9 +183,9 @@ describe('handleReviewAdjudicatorResult', () => {
         'LEA-192',
         {
           status: 'done',
+          finalOutput: '',
           totalCostUsd: 0,
           durationMs: 1,
-          messages: [],
         },
         '/tmp/ws',
         'https://github.com/o/r/pull/1',
@@ -208,9 +215,9 @@ describe('handleReviewAdjudicatorResult', () => {
       'LEA-192',
       {
         status: 'done',
+        finalOutput: '',
         totalCostUsd: 0,
         durationMs: 1,
-        messages: [],
       },
       '/tmp/ws',
       'https://github.com/o/r/pull/1',
@@ -251,9 +258,9 @@ describe('handleReviewAdjudicatorResult', () => {
       'LEA-192',
       {
         status: 'done',
+        finalOutput: '',
         totalCostUsd: 0,
         durationMs: 1,
-        messages: [],
       },
       '/tmp/ws',
       'https://github.com/o/r/pull/1',

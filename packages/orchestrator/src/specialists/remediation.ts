@@ -18,7 +18,7 @@
  * orchestrator owns git/gh, mirroring the reviewer fan-out design.
  */
 import { readFile } from 'node:fs/promises';
-import type { CodeRepo, Product } from '@helm/shared';
+import { implBranchName, type CodeRepo, type Product } from '@helm/shared';
 import type { AgentResult, SpawnParams } from '../runtime.js';
 import type { ReviewerKind } from './reviewer-fanout.js';
 import { pushReviewerPatches, artifactFileFor } from './code-workspace.js';
@@ -74,9 +74,11 @@ export function buildRemediationParams(
   prUrl: string,
   findingsByKind: Map<ReviewerKind, string>,
   adjudicationPlan?: string,
+  codeRepo?: CodeRepo,
+  branchName = implBranchName(externalId),
 ): SpawnParams {
   const specialistCfg = product.specialists['code-remediator'];
-  const defaultBranch = product.code_repos[0]?.default_branch ?? 'main';
+  const defaultBranch = codeRepo?.default_branch ?? product.code_repos[0]?.default_branch ?? 'main';
 
   const reviewSections: string[] = [];
   if (adjudicationPlan?.trim()) {
@@ -110,7 +112,7 @@ export function buildRemediationParams(
     '',
     `The implementation PR is available at: ${prUrl} (for context only — do not merge or close it).`,
     '',
-    `The working directory is a shallow clone of the \`helm/impl/${externalId}\` implementation branch, including any mechanical fixes the code-reviewer already pushed.`,
+    `The working directory is a shallow clone of the \`${branchName}\` review branch, including any mechanical fixes the code-reviewer already pushed.`,
     '',
     `To inspect the diff: \`git fetch --depth 1 origin ${defaultBranch}\` then \`git diff origin/${defaultBranch}...HEAD\``,
     '',
@@ -182,6 +184,7 @@ export async function handleRemediationResult(
   codeRepo: CodeRepo,
   runGit?: RunGit,
   runGh?: RunGh,
+  branchName?: string,
 ): Promise<RemediationResult> {
   const baseResult = {
     costUsd: agentResult.totalCostUsd,
@@ -222,6 +225,7 @@ export async function handleRemediationResult(
         codeRepo,
         workspacePath,
         githubToken,
+        branchName,
         commitMessage: `chore(remediation): apply fixes for ${externalId}`,
       },
       runGit,

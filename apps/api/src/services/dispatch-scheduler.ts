@@ -6,6 +6,7 @@ import {
   type DeferredExternalReviewIntent,
 } from '@helm/orchestrator';
 import type { Product } from '@helm/shared';
+import { WORKFLOW_STAGES, type WorkflowStage } from '@helm/workflow';
 import { createRuntimeForProduct } from './runtime-factory.js';
 import { transitionItem } from './item-service.js';
 import { getIssueTrackerAdapter, getJobStore, getProductRegistry, getItemStore } from './index.js';
@@ -16,12 +17,37 @@ import { EXTERNAL_ID_REGEX } from './types.js';
 import {
   getReviewDispatchOutbox,
   type PendingExternalReviewIntent,
+  type ReviewDispatchIntent,
 } from './review-dispatch-outbox.js';
-import { resolveOpenPrMetadata } from './github-pr.js';
+import {
+  GitHubPrError,
+  parseGitHubRepoUrl,
+  resolveOpenPrMetadata,
+  resolveOpenPrMetadataForRepo,
+} from './github-pr.js';
 import { createGitHubBugbotReviewLoader } from './bugbot-review-loader.js';
 import { createGitHubCodeRabbitReviewLoader } from './coderabbit-review-loader.js';
 
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
+export const DUPLICATE_TARGET_REVISION = 'Duplicate target revision';
+export const DRAFT_REVIEWER_NO_LONGER_APPLICABLE = 'Draft reviewer no longer applicable';
+/** Parked early-loop intents may be replayed before the item reaches draft stage. */
+const DRAFT_REVIEWER_NOT_YET_APPLICABLE = 'Draft reviewer not yet applicable';
+
+function draftReviewerSkipReason(input: {
+  earlyLoopEnabled: boolean;
+  itemStage: string;
+  draftStage: 'spec-draft' | 'plan-draft';
+}): typeof DRAFT_REVIEWER_NO_LONGER_APPLICABLE | typeof DRAFT_REVIEWER_NOT_YET_APPLICABLE | null {
+  if (!input.earlyLoopEnabled) return DRAFT_REVIEWER_NO_LONGER_APPLICABLE;
+  if (input.itemStage === input.draftStage) return null;
+  const itemRank = WORKFLOW_STAGES.indexOf(input.itemStage as WorkflowStage);
+  const draftRank = WORKFLOW_STAGES.indexOf(input.draftStage);
+  // Unknown stages are treated as past-draft so we clear rather than strand forever.
+  if (itemRank < 0 || draftRank < 0) return DRAFT_REVIEWER_NO_LONGER_APPLICABLE;
+  if (itemRank < draftRank) return DRAFT_REVIEWER_NOT_YET_APPLICABLE;
+  return DRAFT_REVIEWER_NO_LONGER_APPLICABLE;
+}
 
 function isSafeWorkdirSegment(value: string): boolean {
   return EXTERNAL_ID_REGEX.test(value) && value !== '.' && value !== '..';
@@ -51,12 +77,92 @@ function parseGitHubPrNumber(prUrl: string | undefined): number | null {
   return Number.parseInt(match[1]!, 10);
 }
 
+function inferEarlyLoopDraftReviewer(
+  product: Product,
+  item: ItemState,
+): 'spec-draft-reviewer' | 'plan-draft-reviewer' | undefined {
+  if (product.review?.early_loop?.enabled !== true) return undefined;
+  if (item.currentStage === 'spec-draft') return 'spec-draft-reviewer';
+  if (item.currentStage === 'plan-draft') return 'plan-draft-reviewer';
+  return undefined;
+}
+
+function draftReviewerFromTriggeredBy(
+  triggeredBy: string | undefined,
+): 'spec-draft-reviewer' | 'plan-draft-reviewer' | undefined {
+  if (!triggeredBy) return undefined;
+  if (triggeredBy.includes('spec-pr-sync') || triggeredBy.includes('awaiting-spec-draft')) {
+    return 'spec-draft-reviewer';
+  }
+  if (triggeredBy.includes('plan-pr-sync') || triggeredBy.includes('awaiting-plan-draft')) {
+    return 'plan-draft-reviewer';
+  }
+  return undefined;
+}
+
+function looksLikeImplReviewTrigger(triggeredBy: string | undefined): boolean {
+  if (!triggeredBy) return false;
+  return (
+    triggeredBy.includes('impl-pr-sync') ||
+    triggeredBy.includes('pr-decision-comment') ||
+    triggeredBy.includes('implementer') ||
+    triggeredBy.includes('reviewer-fanout')
+  );
+}
+
+function isDraftReviewSpecialist(
+  specialistId: string | undefined,
+): specialistId is 'spec-draft-reviewer' | 'plan-draft-reviewer' {
+  return specialistId === 'spec-draft-reviewer' || specialistId === 'plan-draft-reviewer';
+}
+
+function isTerminalPullRequestLookupError(err: unknown): boolean {
+  return err instanceof GitHubPrError && err.code === 'pr_not_open';
+}
+
+async function inferPendingReviewSpecialist(input: {
+  productSlug: string;
+  externalId: string;
+  specialistId?: string;
+}): Promise<string | undefined> {
+  if (input.specialistId) return input.specialistId;
+
+  const [products, store] = await Promise.all([getProductRegistry(), getItemStore()]);
+  const product = products.find((p) => p.product.slug === input.productSlug);
+  if (!product) return undefined;
+  const item = await store.get(input.externalId);
+  if (!item || item.productSlug !== input.productSlug) return undefined;
+  return inferEarlyLoopDraftReviewer(product, item);
+}
+
+async function resolveReviewDispatchReplaySpecialist(intent: {
+  productSlug: string;
+  externalId: string;
+  specialistId?: string;
+  triggeredBy?: string;
+}): Promise<string> {
+  if (intent.specialistId) return intent.specialistId;
+
+  const fromTrigger = draftReviewerFromTriggeredBy(intent.triggeredBy);
+  if (fromTrigger) return fromTrigger;
+  if (looksLikeImplReviewTrigger(intent.triggeredBy)) return 'reviewer-fanout';
+
+  return (
+    (await inferPendingReviewSpecialist(intent).catch((err) => {
+      logErrorMetadata('dispatch pending replay specialist inference', err);
+      return undefined;
+    })) ?? 'reviewer-fanout'
+  );
+}
+
 async function persistPendingReviewDispatch(input: {
   dataRoot: string;
   productSlug: string;
   externalId: string;
+  specialistId?: string;
   prNumber?: number;
   targetRevision?: string;
+  expiresAt?: string;
   triggeredBy: string;
 }): Promise<void> {
   const outbox = await getReviewDispatchOutbox(input.dataRoot);
@@ -64,8 +170,10 @@ async function persistPendingReviewDispatch(input: {
     kind: 'review_dispatch',
     productSlug: input.productSlug,
     externalId: input.externalId,
+    specialistId: input.specialistId,
     prNumber: input.prNumber,
     targetRevision: input.targetRevision,
+    expiresAt: input.expiresAt,
     triggeredBy: input.triggeredBy,
   });
 }
@@ -84,6 +192,7 @@ async function persistPendingExternalReview(input: {
     kind: 'pending_external_review',
     productSlug: input.intent.productSlug,
     externalId: input.intent.externalId,
+    specialistId: input.intent.specialistId,
     prNumber: input.intent.prNumber,
     targetRevision: input.intent.targetRevision,
     provider: input.intent.provider,
@@ -98,8 +207,10 @@ async function persistPendingExternalReview(input: {
 export async function persistReviewDispatchIntent(input: {
   productSlug: string;
   externalId: string;
+  specialistId?: string;
   prNumber?: number;
   targetRevision?: string;
+  expiresAt?: string;
   triggeredBy: string;
 }): Promise<void> {
   await persistPendingReviewDispatch({
@@ -111,6 +222,7 @@ export async function persistReviewDispatchIntent(input: {
 export async function resumePendingExternalReview(input: {
   productSlug: string;
   externalId: string;
+  specialistId?: string;
   provider: string;
   prNumber: number;
   targetRevision: string;
@@ -153,6 +265,7 @@ export async function resumePendingExternalReviewByRevision(input: {
 export async function clearPendingExternalReview(input: {
   productSlug: string;
   externalId?: string;
+  specialistId?: string;
   provider: string;
   prNumber?: number;
   targetRevision: string;
@@ -163,6 +276,7 @@ export async function clearPendingExternalReview(input: {
       ? await outbox.findPendingExternalReview({
           productSlug: input.productSlug,
           externalId: input.externalId,
+          specialistId: input.specialistId,
           provider: input.provider,
           prNumber: input.prNumber,
           targetRevision: input.targetRevision,
@@ -179,6 +293,7 @@ export async function clearPendingExternalReview(input: {
     kind: 'pending_external_review',
     updatedAt: intent.updatedAt,
     targetRevision: intent.targetRevision,
+    specialistId: intent.specialistId,
     provider: intent.provider,
     reason: intent.reason,
     prNumber: intent.prNumber,
@@ -206,36 +321,58 @@ async function finalizePendingExternalReviewResume(
   intent: PendingExternalReviewIntent,
   triggeredBy: string,
 ): Promise<ScheduleItemDispatchResult> {
+  const pendingIntentMatch = {
+    kind: 'pending_external_review' as const,
+    updatedAt: intent.updatedAt,
+    targetRevision: intent.targetRevision,
+    specialistId: intent.specialistId,
+    provider: intent.provider,
+    reason: intent.reason,
+    prNumber: intent.prNumber,
+  };
+
   if (Date.parse(intent.expiresAt) <= Date.now()) {
-    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
-      kind: 'pending_external_review',
-      updatedAt: intent.updatedAt,
-      targetRevision: intent.targetRevision,
-      provider: intent.provider,
-      reason: intent.reason,
-      prNumber: intent.prNumber,
-    });
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
     return { scheduled: false, reason: 'Pending external review expired' };
   }
 
+  const specialistId = await inferPendingReviewSpecialist(intent);
   const outcome = await scheduleItemDispatch({
     productSlug: intent.productSlug,
     externalId: intent.externalId,
-    specialistId: 'reviewer-fanout',
+    specialistId,
     targetRevision: intent.targetRevision,
     prNumber: intent.prNumber,
     triggeredBy,
   });
-  if (outcome.scheduled || outcome.reason === 'Duplicate target revision') {
-    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
-      kind: 'pending_external_review',
-      updatedAt: intent.updatedAt,
-      targetRevision: intent.targetRevision,
-      provider: intent.provider,
-      reason: intent.reason,
-      prNumber: intent.prNumber,
-    });
+  if (outcome.scheduled || outcome.reason === DUPLICATE_TARGET_REVISION) {
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
     return outcome;
+  }
+  if (outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE) {
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
+    return outcome;
+  }
+
+  // Draft external readiness arrived before the item reached the matching
+  // draft stage. Re-park a review_dispatch intent so the next stage-transition
+  // replay can resume instead of leaving the pending_external_review stranded
+  // until expiry.
+  if (outcome.reason === DRAFT_REVIEWER_NOT_YET_APPLICABLE) {
+    await persistPendingReviewDispatch({
+      dataRoot: dataRootFromEnv(),
+      productSlug: intent.productSlug,
+      externalId: intent.externalId,
+      specialistId,
+      prNumber: intent.prNumber,
+      targetRevision: intent.targetRevision,
+      triggeredBy: `${triggeredBy}:awaiting-draft-stage`,
+    });
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
+    return {
+      scheduled: false,
+      reason: 'Draft reviewer not yet applicable — queued review dispatch for stage transition',
+    };
   }
 
   // Readiness arrived while another job is still running (often the deferred
@@ -246,18 +383,12 @@ async function finalizePendingExternalReviewResume(
       dataRoot: dataRootFromEnv(),
       productSlug: intent.productSlug,
       externalId: intent.externalId,
+      specialistId,
       prNumber: intent.prNumber,
       targetRevision: intent.targetRevision,
       triggeredBy: `${triggeredBy}:awaiting-job-exit`,
     });
-    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
-      kind: 'pending_external_review',
-      updatedAt: intent.updatedAt,
-      targetRevision: intent.targetRevision,
-      provider: intent.provider,
-      reason: intent.reason,
-      prNumber: intent.prNumber,
-    });
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
     return {
       scheduled: false,
       reason: 'Job already running — queued review dispatch for replay after exit',
@@ -274,45 +405,203 @@ async function replayPendingReviewDispatch(input: {
   dataRoot: string;
   githubToken: string | undefined;
 }): Promise<void> {
-  if (!input.githubToken) return;
+  const githubToken = input.githubToken;
+  if (!githubToken) return;
   const outbox = await getReviewDispatchOutbox(input.dataRoot);
-  const intent = await outbox.get(input.productSlug, input.externalId);
-  if (!intent) return;
+  const intents = await outbox.listReviewDispatch(input.productSlug, input.externalId);
+  for (const intent of intents) {
+    try {
+      await replayOnePendingReviewDispatch({ ...input, githubToken, outbox, intent });
+    } catch (err) {
+      logErrorMetadata('dispatch pending replay intent', err);
+    }
+  }
+}
+
+async function replayOnePendingReviewDispatch(input: {
+  product: Product;
+  productSlug: string;
+  externalId: string;
+  dataRoot: string;
+  githubToken: string;
+  outbox: Awaited<ReturnType<typeof getReviewDispatchOutbox>>;
+  intent: ReviewDispatchIntent;
+}): Promise<void> {
+  const { intent, outbox } = input;
   if ((intent.kind ?? 'review_dispatch') !== 'review_dispatch') return;
 
-  let targetRevision = intent.targetRevision;
-  if (intent.prNumber !== undefined) {
-    const pr = await resolveOpenPrMetadata({
-      product: input.product,
-      prNumber: intent.prNumber,
-      githubToken: input.githubToken,
+  const removeIntent = () =>
+    outbox.removeIfMatches(intent.productSlug, intent.externalId, {
+      updatedAt: intent.updatedAt,
+      targetRevision: intent.targetRevision,
+      specialistId: intent.specialistId,
     });
-    const expectedHeadRef = `helm/impl/${intent.externalId}`;
-    if (pr.headRef !== expectedHeadRef) {
-      console.info(
-        `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
-      );
+  const reparkDraftIntent = async (updatedTargetRevision: string) => {
+    if (!isDraftReviewSpecialist(replaySpecialist)) return;
+    // Same specialist-scoped slot is overwritten by put. Removing afterward can
+    // delete the freshly written row when updatedAt collides within one ms.
+    // Only remove first when migrating legacy/unscoped → specialist-scoped.
+    if (intent.specialistId !== replaySpecialist) {
+      await removeIntent();
+    }
+    await outbox.put({
+      kind: 'review_dispatch',
+      productSlug: intent.productSlug,
+      externalId: intent.externalId,
+      specialistId: replaySpecialist,
+      prNumber: intent.prNumber,
+      targetRevision: updatedTargetRevision,
+      triggeredBy: `outbox:${intent.triggeredBy}:awaiting-draft-stage`,
+    });
+  };
+  const handleReplayOutcome = async (
+    outcome: ScheduleItemDispatchResult,
+    updatedTargetRevision: string,
+  ) => {
+    if (
+      outcome.scheduled ||
+      outcome.reason === DUPLICATE_TARGET_REVISION ||
+      outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
+    ) {
+      await removeIntent();
       return;
     }
-    // Prefer the live PR head so replay tracks the newest SHA after headRef validation.
-    targetRevision = pr.headSha;
+    if (outcome.reason === DRAFT_REVIEWER_NOT_YET_APPLICABLE) {
+      await reparkDraftIntent(updatedTargetRevision);
+    }
+  };
+
+  let targetRevision = intent.targetRevision;
+  const replaySpecialist = await resolveReviewDispatchReplaySpecialist(intent);
+  if (
+    isDraftReviewSpecialist(replaySpecialist) &&
+    input.product.review?.early_loop?.enabled !== true
+  ) {
+    console.info(
+      `[dispatch-scheduler] pending replay skipped — ${replaySpecialist} requires review.early_loop.enabled=true`,
+    );
+    await removeIntent();
+    return;
+  }
+  if (intent.prNumber !== undefined) {
+    if (replaySpecialist !== 'reviewer-fanout') {
+      const artifactKind =
+        replaySpecialist === 'spec-draft-reviewer'
+          ? 'spec'
+          : replaySpecialist === 'plan-draft-reviewer'
+            ? 'plan'
+            : undefined;
+      if (artifactKind) {
+        let pr: Awaited<ReturnType<typeof resolveOpenPrMetadataForRepo>>;
+        try {
+          pr = await resolveOpenPrMetadataForRepo({
+            repo: parseGitHubRepoUrl(input.product.knowledge_repo.url),
+            prNumber: intent.prNumber,
+            githubToken: input.githubToken,
+          });
+        } catch (err) {
+          if (isTerminalPullRequestLookupError(err)) {
+            console.info(
+              `[dispatch-scheduler] pending replay skipped — artifact PR #${intent.prNumber} is no longer open`,
+            );
+            await removeIntent();
+            return;
+          }
+          throw err;
+        }
+        const expectedHeadRef = `helm/${artifactKind}/${intent.externalId}`;
+        if (pr.headRef !== expectedHeadRef) {
+          // Never reuse a knowledge-repo PR number against the code repo.
+          // Impl intents without a specialistId are routed to reviewer-fanout
+          // before this draft branch via looksLikeImplReviewTrigger.
+          console.info(
+            `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
+          );
+          await removeIntent();
+          return;
+        }
+        targetRevision = pr.headSha;
+        if (!targetRevision) return;
+        const outcome = await scheduleItemDispatch({
+          productSlug: intent.productSlug,
+          externalId: intent.externalId,
+          specialistId: replaySpecialist,
+          targetRevision,
+          prNumber: intent.prNumber,
+          triggeredBy: `outbox:${intent.triggeredBy}`,
+        });
+        await handleReplayOutcome(outcome, targetRevision);
+        return;
+      } else {
+        if (!targetRevision) return;
+        const outcome = await scheduleItemDispatch({
+          productSlug: intent.productSlug,
+          externalId: intent.externalId,
+          specialistId: replaySpecialist,
+          targetRevision,
+          prNumber: intent.prNumber,
+          triggeredBy: `outbox:${intent.triggeredBy}`,
+        });
+        await handleReplayOutcome(outcome, targetRevision);
+        return;
+      }
+    }
+    if (replaySpecialist === 'reviewer-fanout') {
+      let pr: Awaited<ReturnType<typeof resolveOpenPrMetadata>>;
+      try {
+        pr = await resolveOpenPrMetadata({
+          product: input.product,
+          prNumber: intent.prNumber,
+          githubToken: input.githubToken,
+        });
+      } catch (err) {
+        if (isTerminalPullRequestLookupError(err)) {
+          console.info(
+            `[dispatch-scheduler] pending replay skipped — implementation PR #${intent.prNumber} is no longer open`,
+          );
+          await removeIntent();
+          return;
+        }
+        throw err;
+      }
+      const expectedHeadRef = `helm/impl/${intent.externalId}`;
+      if (pr.headRef !== expectedHeadRef) {
+        console.info(
+          `[dispatch-scheduler] pending replay skipped — headRef '${pr.headRef}' !== '${expectedHeadRef}'`,
+        );
+        await removeIntent();
+        return;
+      }
+      // Prefer the live PR head so replay tracks the newest SHA after headRef validation.
+      targetRevision = pr.headSha;
+    }
   }
   if (!targetRevision) return;
 
   const outcome = await scheduleItemDispatch({
     productSlug: intent.productSlug,
     externalId: intent.externalId,
-    specialistId: 'reviewer-fanout',
+    specialistId: replaySpecialist,
     targetRevision,
     prNumber: intent.prNumber,
     triggeredBy: `outbox:${intent.triggeredBy}`,
   });
-  if (outcome.scheduled || outcome.reason === 'Duplicate target revision') {
-    await outbox.removeIfMatches(intent.productSlug, intent.externalId, {
-      updatedAt: intent.updatedAt,
-      targetRevision: intent.targetRevision,
-    });
-  }
+  await handleReplayOutcome(outcome, targetRevision);
+}
+
+/** Replay a parked review dispatch after an external state transition. */
+export async function replayPendingReviewDispatchForItem(input: {
+  product: Product;
+  productSlug: string;
+  externalId: string;
+}): Promise<void> {
+  await replayPendingReviewDispatch({
+    product: input.product,
+    productSlug: input.productSlug,
+    externalId: input.externalId,
+    dataRoot: dataRootFromEnv(),
+    githubToken: readGitHubTokenFromEnv(),
+  });
 }
 
 async function scheduleReviewAfterImplementerCompletion(input: {
@@ -328,6 +617,7 @@ async function scheduleReviewAfterImplementerCompletion(input: {
       dataRoot: input.dataRoot,
       productSlug: input.item.productSlug,
       externalId: input.item.externalId,
+      specialistId: 'reviewer-fanout',
       prNumber: prNumber ?? undefined,
       triggeredBy: 'agent:implementer:missing-token',
     });
@@ -338,6 +628,7 @@ async function scheduleReviewAfterImplementerCompletion(input: {
       dataRoot: input.dataRoot,
       productSlug: input.item.productSlug,
       externalId: input.item.externalId,
+      specialistId: 'reviewer-fanout',
       triggeredBy: 'agent:implementer:missing-pr-url',
     });
     return;
@@ -355,6 +646,7 @@ async function scheduleReviewAfterImplementerCompletion(input: {
         dataRoot: input.dataRoot,
         productSlug: input.item.productSlug,
         externalId: input.item.externalId,
+        specialistId: 'reviewer-fanout',
         prNumber,
         triggeredBy: 'agent:implementer:head-ref-mismatch',
       });
@@ -368,11 +660,12 @@ async function scheduleReviewAfterImplementerCompletion(input: {
       prNumber,
       triggeredBy: 'agent:implementer:code-review',
     });
-    if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+    if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
       await persistPendingReviewDispatch({
         dataRoot: input.dataRoot,
         productSlug: input.item.productSlug,
         externalId: input.item.externalId,
+        specialistId: 'reviewer-fanout',
         prNumber,
         targetRevision: pr.headSha,
         triggeredBy: 'agent:implementer:code-review',
@@ -383,6 +676,7 @@ async function scheduleReviewAfterImplementerCompletion(input: {
       dataRoot: input.dataRoot,
       productSlug: input.item.productSlug,
       externalId: input.item.externalId,
+      specialistId: 'reviewer-fanout',
       prNumber,
       triggeredBy: 'agent:implementer:lookup-failed',
     });
@@ -575,8 +869,32 @@ export async function scheduleItemDispatch(input: {
     return { scheduled: false, reason: DISPATCH_UNAVAILABLE };
   }
 
-  const resolvedSpecialist = resolveSpecialistId(item.currentStage, input.specialistId);
-  if (!resolvedSpecialist) {
+  const requestedSpecialist = input.specialistId ?? inferEarlyLoopDraftReviewer(product, item);
+  const resolvedSpecialist = resolveSpecialistId(item.currentStage, requestedSpecialist);
+  const dispatchSpecialist = resolvedSpecialist ?? requestedSpecialist;
+  const draftReviewerStage =
+    dispatchSpecialist === 'spec-draft-reviewer'
+      ? 'spec-draft'
+      : dispatchSpecialist === 'plan-draft-reviewer'
+        ? 'plan-draft'
+        : undefined;
+  if (draftReviewerStage) {
+    const skipReason = draftReviewerSkipReason({
+      earlyLoopEnabled: product.review?.early_loop?.enabled === true,
+      itemStage: item.currentStage,
+      draftStage: draftReviewerStage,
+    });
+    if (skipReason) {
+      console.info(
+        `[dispatch-scheduler] skip: ${dispatchSpecialist} ${skipReason} (stage '${item.currentStage}', need '${draftReviewerStage}') (${input.productSlug}/${input.externalId})`,
+      );
+      return {
+        scheduled: false,
+        reason: skipReason,
+      };
+    }
+  }
+  if (!dispatchSpecialist) {
     console.info(
       `[dispatch-scheduler] skip: no specialist for stage '${item.currentStage}' (${input.productSlug}/${input.externalId})`,
     );
@@ -595,6 +913,7 @@ export async function scheduleItemDispatch(input: {
           dataRoot: dataRootFromEnv(),
           productSlug: input.productSlug,
           externalId: input.externalId,
+          specialistId: dispatchSpecialist,
           prNumber: input.prNumber,
           targetRevision: input.targetRevision,
           triggeredBy: input.triggeredBy,
@@ -613,7 +932,7 @@ export async function scheduleItemDispatch(input: {
   const outcome = await jobStore.createJobIfNoRunning({
     productSlug: input.productSlug,
     externalId: input.externalId,
-    specialistId: input.specialistId ?? 'auto',
+    specialistId: dispatchSpecialist,
     targetRevision: input.targetRevision,
   });
   if ('duplicate' in outcome) {
@@ -622,28 +941,16 @@ export async function scheduleItemDispatch(input: {
     );
     return {
       scheduled: false,
-      reason: 'Duplicate target revision',
+      reason: DUPLICATE_TARGET_REVISION,
     };
   }
   if ('conflict' in outcome) {
-    if (
-      input.targetRevision &&
-      outcome.runningTargetRevision !== undefined &&
-      outcome.runningTargetRevision !== input.targetRevision
-    ) {
+    if (input.targetRevision || input.prNumber !== undefined) {
       await persistPendingReviewDispatch({
         dataRoot,
         productSlug: input.productSlug,
         externalId: input.externalId,
-        prNumber: input.prNumber,
-        targetRevision: input.targetRevision,
-        triggeredBy: input.triggeredBy,
-      });
-    } else if (input.targetRevision && outcome.runningTargetRevision === undefined) {
-      await persistPendingReviewDispatch({
-        dataRoot,
-        productSlug: input.productSlug,
-        externalId: input.externalId,
+        specialistId: dispatchSpecialist,
         prNumber: input.prNumber,
         targetRevision: input.targetRevision,
         triggeredBy: input.triggeredBy,
@@ -659,7 +966,7 @@ export async function scheduleItemDispatch(input: {
   }
 
   console.info(
-    `[dispatch-scheduler] ${input.triggeredBy} → job ${outcome.job.jobId} for ${input.productSlug}/${input.externalId} (${resolvedSpecialist})`,
+    `[dispatch-scheduler] ${input.triggeredBy} → job ${outcome.job.jobId} for ${input.productSlug}/${input.externalId} (${dispatchSpecialist})`,
   );
 
   void runDispatchJob(outcome.job, {
@@ -667,7 +974,7 @@ export async function scheduleItemDispatch(input: {
     item,
     workdir,
     dataRoot,
-    specialistId: resolvedSpecialist,
+    specialistId: dispatchSpecialist,
     feedback: undefined,
     githubToken,
   }).catch((err) => {

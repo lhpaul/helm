@@ -1381,6 +1381,216 @@ describe('dispatchStageHandler > early-stage remediators', () => {
     expect(runEarlyRemediation).not.toHaveBeenCalled();
   });
 
+  it('keeps draft review disabled by default and still requires explicit remediator feedback', async () => {
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-draft' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'tok', fetchFn: make404Fetch() },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain("No specialist mapped for stage 'spec-draft'");
+    expect(findArtifactPRUrl).not.toHaveBeenCalled();
+    expect(runEarlyRemediation).not.toHaveBeenCalled();
+    expect(fanoutReviewers).not.toHaveBeenCalled();
+  });
+
+  it('keeps plan-draft review disabled when early_loop is false', async () => {
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: false } };
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-draft' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'tok', fetchFn: make404Fetch() },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain("No specialist mapped for stage 'plan-draft'");
+    expect(findArtifactPRUrl).not.toHaveBeenCalled();
+    expect(runEarlyRemediation).not.toHaveBeenCalled();
+    expect(fanoutReviewers).not.toHaveBeenCalled();
+  });
+
+  it('routes spec-draft through the review loop when early_loop is enabled', async () => {
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: true } };
+    vi.mocked(shouldRemediate).mockReturnValue(false);
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const externalReviewDeps = { runHaystack: vi.fn() };
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-draft' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'tok', fetchFn: make404Fetch(), externalReviewDeps },
+    );
+
+    expect(result.specialistId).toBe('spec-draft-reviewer');
+    expect(result.status).toBe('done');
+    expect(result.prUrl).toBe('https://github.com/test-org/test-knowledge/pull/7');
+    expect(findArtifactPRUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ externalId: 'issue_1', kind: 'spec', githubToken: 'tok' }),
+      undefined,
+    );
+    expect(fanoutReviewers).toHaveBeenCalledWith(
+      'issue_1',
+      product,
+      'https://github.com/test-org/test-knowledge/pull/7',
+      'tok',
+      runtime,
+      undefined,
+      undefined,
+      expect.any(Function),
+      { url: 'https://github.com/test-org/test-knowledge', default_branch: 'main', role: 'docs' },
+      'helm/spec/issue_1',
+      expect.any(Function),
+    );
+    expect(runExternalReviewIfConfigured).toHaveBeenCalledWith(
+      product,
+      'https://github.com/test-org/test-knowledge/pull/7',
+      externalReviewDeps,
+      undefined,
+    );
+    expect(transition).not.toHaveBeenCalled();
+    expect(runEarlyRemediation).not.toHaveBeenCalled();
+  });
+
+  it('routes plan-draft through the review loop when early_loop is enabled', async () => {
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: true } };
+    vi.mocked(shouldRemediate).mockReturnValue(false);
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const externalReviewDeps = { runHaystack: vi.fn() };
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-draft' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'tok', fetchFn: make404Fetch(), externalReviewDeps },
+    );
+
+    expect(result.specialistId).toBe('plan-draft-reviewer');
+    expect(result.status).toBe('done');
+    expect(findArtifactPRUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'plan' }),
+      undefined,
+    );
+    expect(runExternalReviewIfConfigured).toHaveBeenCalledWith(
+      product,
+      'https://github.com/test-org/test-knowledge/pull/7',
+      externalReviewDeps,
+      undefined,
+    );
+  });
+
+  it('returns error when spec-draft reviewer cannot resolve an open draft PR', async () => {
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: true } };
+    vi.mocked(findArtifactPRUrl).mockResolvedValueOnce(null);
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-draft' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'tok', fetchFn: make404Fetch() },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe('no open spec PR found for issue_1 on helm/spec/issue_1');
+    expect(findArtifactPRUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'spec', externalId: 'issue_1', githubToken: 'tok' }),
+      undefined,
+    );
+    expect(fanoutReviewers).not.toHaveBeenCalled();
+  });
+
+  it('returns error when plan-draft reviewer PR lookup fails', async () => {
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: true } };
+    vi.mocked(findArtifactPRUrl).mockRejectedValueOnce(new Error('GitHub unavailable'));
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-draft' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      { workdir, githubToken: 'tok', fetchFn: make404Fetch() },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe('Failed to find plan PR');
+    expect(findArtifactPRUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'plan', externalId: 'issue_1', githubToken: 'tok' }),
+      undefined,
+    );
+    expect(fanoutReviewers).not.toHaveBeenCalled();
+  });
+
+  it('does not run spec-draft-reviewer on spec-ready even when early_loop is enabled', async () => {
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: true } };
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-ready' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        specialistId: 'spec-draft-reviewer',
+        githubToken: 'tok',
+        fetchFn: make404Fetch(),
+      },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe(
+      "spec-draft-reviewer requires review.early_loop.enabled=true and stage 'spec-draft'",
+    );
+    expect(findArtifactPRUrl).not.toHaveBeenCalled();
+    expect(fanoutReviewers).not.toHaveBeenCalled();
+  });
+
+  it('does not run plan-draft-reviewer on plan-ready even when early_loop is enabled', async () => {
+    const product = makeProduct();
+    product.review = { early_loop: { enabled: true } };
+    const runtime = new MockAgentRuntime({ messages: [] });
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-ready' },
+      product,
+      runtime,
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        specialistId: 'plan-draft-reviewer',
+        githubToken: 'tok',
+        fetchFn: make404Fetch(),
+      },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe(
+      "plan-draft-reviewer requires review.early_loop.enabled=true and stage 'plan-draft'",
+    );
+    expect(findArtifactPRUrl).not.toHaveBeenCalled();
+    expect(fanoutReviewers).not.toHaveBeenCalled();
+  });
+
   it('rejects missing GITHUB_TOKEN', async () => {
     const runtime = new MockAgentRuntime({ messages: [] });
 
@@ -1587,7 +1797,12 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     const runtime = new MockAgentRuntime({ messages: [] });
     const product: Product = {
       ...makeProduct(),
-      review: { external: { provider: 'haystack', haystack: {} } },
+      review: {
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
     };
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'escalate',

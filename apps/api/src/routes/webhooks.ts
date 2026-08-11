@@ -10,7 +10,7 @@ import {
   decisionMatchesLatestAdjudication,
   parseHumanProductDecisionComment,
 } from '@helm/orchestrator';
-import { WorkflowTransitionError } from '@helm/workflow';
+import { WORKFLOW_STAGES, WorkflowTransitionError, type WorkflowStage } from '@helm/workflow';
 import { parseArtifactBranch } from '@helm/shared';
 import { EXTERNAL_ID_REGEX } from '../services/types.js';
 import {
@@ -23,16 +23,20 @@ import { createItem, transitionItem } from '../services/item-service.js';
 import {
   scheduleItemDispatch,
   persistReviewDispatchIntent,
+  replayPendingReviewDispatchForItem,
   peekPendingExternalReviewByRevision,
   clearPendingExternalReview,
   resumePendingExternalReview,
   resumePendingExternalReviewByRevision,
+  DUPLICATE_TARGET_REVISION,
+  DRAFT_REVIEWER_NO_LONGER_APPLICABLE,
 } from '../services/dispatch-scheduler.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
 import {
   authorHasWriteAccess,
   getPrimaryCodeRepo,
   listPrIssueComments,
+  parseGitHubRepoUrl,
   resolveOpenPrMetadata,
 } from '../services/github-pr.js';
 import { readGitHubTokenFromEnv } from '../lib/github-token.js';
@@ -40,9 +44,55 @@ import { reconcileMergedArtifactPullRequest } from '../services/merge-reconcilia
 
 /** GitHub logins that push via Helm orchestration — ignore their PR synchronize webhooks. */
 const ORCHESTRATOR_SENDER_LOGINS = new Set(['helm-bot']);
+const ORPHAN_REVIEW_DISPATCH_TTL_MS = 30 * 60 * 1000;
 
 function isOrchestratorSender(login: string | null): boolean {
   return login !== null && ORCHESTRATOR_SENDER_LOGINS.has(login);
+}
+
+function orphanReviewDispatchExpiresAt(): string {
+  return new Date(Date.now() + ORPHAN_REVIEW_DISPATCH_TTL_MS).toISOString();
+}
+
+type ReviewReadinessArtifactKind = 'impl' | 'spec' | 'plan';
+
+function artifactKindForPendingExternalReview(
+  specialistId: string | undefined,
+  currentStage: string | undefined,
+): ReviewReadinessArtifactKind {
+  if (specialistId === 'spec-draft-reviewer') return 'spec';
+  if (specialistId === 'plan-draft-reviewer') return 'plan';
+  // Explicit impl fanout must not be reclassified by draft stage — a deferred
+  // code-review intent parked while the item was still in draft would otherwise
+  // fail headRef matching against helm/impl/* and never resume.
+  if (specialistId === 'reviewer-fanout') return 'impl';
+  // Legacy pending intents may omit specialistId — infer from current stage.
+  if (!specialistId) {
+    if (currentStage === 'spec-draft') return 'spec';
+    if (currentStage === 'plan-draft') return 'plan';
+  }
+  return 'impl';
+}
+
+function stageForReviewReadiness(kind: ReviewReadinessArtifactKind): string {
+  if (kind === 'spec') return 'spec-draft';
+  if (kind === 'plan') return 'plan-draft';
+  return 'code-review';
+}
+
+function specialistForReviewReadiness(
+  kind: ReviewReadinessArtifactKind,
+): 'reviewer-fanout' | 'spec-draft-reviewer' | 'plan-draft-reviewer' {
+  if (kind === 'spec') return 'spec-draft-reviewer';
+  if (kind === 'plan') return 'plan-draft-reviewer';
+  return 'reviewer-fanout';
+}
+
+function isBeforeWorkflowStage(currentStage: string | undefined, expectedStage: string): boolean {
+  if (!currentStage) return false;
+  const currentIndex = WORKFLOW_STAGES.indexOf(currentStage as WorkflowStage);
+  const expectedIndex = WORKFLOW_STAGES.indexOf(expectedStage as WorkflowStage);
+  return currentIndex >= 0 && expectedIndex >= 0 && currentIndex < expectedIndex;
 }
 
 function externalReviewTrustConfig(
@@ -150,6 +200,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
 
   // g. Dispatch.
   if (event.type === 'item_created') {
+    let createdOrExists = false;
     try {
       // getProductConfig() is inside the try so a config-load failure is caught
       // and returned as a controlled 500 rather than escaping the handler.
@@ -161,19 +212,37 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         productSlug: config.product.slug,
         triggeredBy: 'webhook:github-projects',
       });
+      createdOrExists = true;
     } catch (err) {
       if (err instanceof ItemAlreadyExistsError) {
         // Idempotent — item already exists, treat as success.
+        createdOrExists = true;
       } else {
         console.error('[webhooks/github] Unexpected error creating item:', err);
         return c.json({ error: 'Internal server error' }, 500);
+      }
+    }
+    if (createdOrExists) {
+      try {
+        const config = await getProductConfig();
+        await replayPendingReviewDispatchForItem({
+          product: config,
+          productSlug: config.product.slug,
+          externalId: event.externalId,
+        });
+      } catch (err) {
+        console.error(
+          '[webhooks/github] Pending review replay after item creation failed:',
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }
   } else if (event.type === 'item_updated' && event.subStage != null) {
     try {
       // transitionItem applies writeback, but webhook:github-projects is
       // tracker-originated → anti-echo skips it, preventing a tracker→store→
-      // tracker echo loop.
+      // tracker echo loop. Load product config only after the transition so a
+      // config failure cannot drop a durable stage update.
       await transitionItem({
         externalId: event.externalId,
         toStage: event.subStage,
@@ -181,12 +250,28 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       });
     } catch (err) {
       if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
-        // Not a delivery problem — log and return 200.
+        // Not a delivery problem — log and still attempt replay below so a
+        // prior successful transition whose replay failed can recover on retry.
         console.error('[webhooks/github] Transition not applied:', err.message);
       } else {
         console.error('[webhooks/github] Unexpected error during transition:', err);
         return c.json({ error: 'Internal server error' }, 500);
       }
+    }
+    try {
+      const config = await getProductConfig();
+      await replayPendingReviewDispatchForItem({
+        product: config,
+        productSlug: config.product.slug,
+        externalId: event.externalId,
+      });
+    } catch (err) {
+      // Transition already applied (or was a no-op) — do not fail the webhook
+      // delivery or leave GitHub/Linear retrying a durable store write.
+      console.error(
+        '[webhooks/github] Pending review replay failed:',
+        err instanceof Error ? err.message : String(err),
+      );
     }
   } else if (event.type === 'comment_added') {
     console.info(`[webhooks/github] comment_added on ${event.externalId} — no action in v0`);
@@ -302,10 +387,11 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           prNumber: pr.number,
           triggeredBy: 'webhook:pr-decision-comment',
         });
-        if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+        if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
           await persistReviewDispatchIntent({
             productSlug: config.product.slug,
             externalId: parsed.externalId,
+            specialistId: 'reviewer-fanout',
             prNumber: pr.number,
             targetRevision: pr.headSha,
             triggeredBy: 'webhook:pr-decision-comment',
@@ -324,13 +410,13 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       }
     }
   } else if (event.type === 'pull_request_synchronized') {
-    if (isOrchestratorSender(event.senderLogin)) {
-      console.info(
-        `[webhooks/github] impl PR sync ignored — orchestrator sender '${event.senderLogin}'`,
-      );
-    } else {
-      const parsed = parseArtifactBranch(event.headRef);
-      if (parsed?.kind === 'impl') {
+    const parsed = parseArtifactBranch(event.headRef);
+    if (parsed?.kind === 'impl') {
+      if (isOrchestratorSender(event.senderLogin)) {
+        console.info(
+          `[webhooks/github] impl PR sync ignored — orchestrator sender '${event.senderLogin}'`,
+        );
+      } else {
         try {
           const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
           const item = await itemStore.get(parsed.externalId);
@@ -343,11 +429,12 @@ webhooksRouter.post('/webhooks/github', async (c) => {
               prNumber: event.prNumber,
               triggeredBy: 'webhook:impl-pr-sync',
             });
-            if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+            if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
               if (event.headSha || event.prNumber !== undefined) {
                 await persistReviewDispatchIntent({
                   productSlug: config.product.slug,
                   externalId: parsed.externalId,
+                  specialistId: 'reviewer-fanout',
                   prNumber: event.prNumber,
                   targetRevision: event.headSha,
                   triggeredBy: 'webhook:impl-pr-sync',
@@ -369,6 +456,105 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           );
         }
       }
+    } else if (parsed?.kind === 'spec' || parsed?.kind === 'plan') {
+      if (isOrchestratorSender(event.senderLogin)) {
+        console.info(
+          `[webhooks/github] ${parsed.kind} PR sync ignored — orchestrator sender '${event.senderLogin}'`,
+        );
+      } else {
+        try {
+          const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
+          if (config.review?.early_loop?.enabled !== true) {
+            console.info('[webhooks/github] draft PR sync ignored — early review loop disabled');
+            return c.json({ processed: true });
+          }
+          const repo = parseGitHubRepoUrl(config.knowledge_repo.url);
+          if (event.owner !== repo.owner || event.repo !== repo.repo) {
+            console.info('[webhooks/github] draft PR sync ignored — repository mismatch');
+            return c.json({ processed: true });
+          }
+          if (event.headOwner !== repo.owner || event.headRepo !== repo.repo) {
+            console.info(
+              `[webhooks/github] draft PR sync ignored — head repo '${event.headOwner}/${event.headRepo}' is not canonical knowledge repo`,
+            );
+            return c.json({ processed: true });
+          }
+
+          const item = await itemStore.get(parsed.externalId);
+          const expectedStage = parsed.kind === 'spec' ? 'spec-draft' : 'plan-draft';
+          const specialistId =
+            parsed.kind === 'spec' ? 'spec-draft-reviewer' : 'plan-draft-reviewer';
+          if (item?.currentStage === expectedStage && item.productSlug === config.product.slug) {
+            const outcome = await scheduleItemDispatch({
+              productSlug: config.product.slug,
+              externalId: parsed.externalId,
+              specialistId,
+              targetRevision: event.headSha,
+              prNumber: event.prNumber,
+              triggeredBy: `webhook:${parsed.kind}-pr-sync`,
+            });
+            if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
+              if (
+                outcome.reason !== DRAFT_REVIEWER_NO_LONGER_APPLICABLE &&
+                (event.headSha || event.prNumber !== undefined)
+              ) {
+                await persistReviewDispatchIntent({
+                  productSlug: config.product.slug,
+                  externalId: parsed.externalId,
+                  specialistId,
+                  prNumber: event.prNumber,
+                  targetRevision: event.headSha,
+                  triggeredBy: `webhook:${parsed.kind}-pr-sync`,
+                });
+              }
+              console.info(
+                `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} — dispatch deferred: ${outcome.reason}`,
+              );
+            }
+          } else if (
+            item?.productSlug === config.product.slug &&
+            isBeforeWorkflowStage(item.currentStage, expectedStage)
+          ) {
+            if (event.headSha || event.prNumber !== undefined) {
+              await persistReviewDispatchIntent({
+                productSlug: config.product.slug,
+                externalId: parsed.externalId,
+                specialistId,
+                prNumber: event.prNumber,
+                targetRevision: event.headSha,
+                triggeredBy: `webhook:${parsed.kind}-pr-sync:awaiting-${expectedStage}`,
+              });
+            }
+            console.info(
+              `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} queued — stage '${item.currentStage}' (expected ${expectedStage})`,
+            );
+          } else if (!item) {
+            if (event.headSha || event.prNumber !== undefined) {
+              await persistReviewDispatchIntent({
+                productSlug: config.product.slug,
+                externalId: parsed.externalId,
+                specialistId,
+                prNumber: event.prNumber,
+                targetRevision: event.headSha,
+                expiresAt: orphanReviewDispatchExpiresAt(),
+                triggeredBy: `webhook:${parsed.kind}-pr-sync:awaiting-item-created`,
+              });
+            }
+            console.info(
+              `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} queued — item not found`,
+            );
+          } else {
+            console.info(
+              `[webhooks/github] ${parsed.kind} PR sync for ${parsed.externalId} ignored — stage '${item?.currentStage ?? 'missing'}' (expected ${expectedStage})`,
+            );
+          }
+        } catch (err) {
+          console.error(
+            '[webhooks/github] Failed to schedule draft PR sync dispatch:',
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
     }
   } else if (event.type === 'external_review_ready') {
     try {
@@ -377,19 +563,16 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         console.info('[webhooks/github] external review readiness ignored — resume disabled');
         return c.json({ processed: true });
       }
-      const repo = getPrimaryCodeRepo(config);
-      if (event.owner !== repo.owner || event.repo !== repo.repo) {
-        console.info('[webhooks/github] external review readiness ignored — repository mismatch');
-        return c.json({ processed: true });
-      }
       if (config.review?.external?.provider !== event.provider) {
         console.info('[webhooks/github] external review readiness ignored — provider mismatch');
         return c.json({ processed: true });
       }
 
+      let artifactKind: ReviewReadinessArtifactKind | null = null;
       let externalId: string | null = null;
       let prNumber: number | null = event.prNumber ?? null;
       let matchedByRevision = false;
+      let matchedItem: Awaited<ReturnType<typeof itemStore.get>> | null = null;
 
       // Revision-first: locate the pending intent by SHA, then validate optional
       // branch/PR metadata against that match so multi-PR payloads cannot steer.
@@ -399,14 +582,19 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         targetRevision: event.targetRevision,
       });
       if (matched) {
+        matchedItem = await itemStore.get(matched.externalId);
+        const matchedArtifactKind = artifactKindForPendingExternalReview(
+          matched.specialistId,
+          matchedItem?.currentStage,
+        );
         if (matched.targetRevision !== event.targetRevision) {
           console.info('[webhooks/github] external review readiness ignored — SHA/intent mismatch');
           return c.json({ processed: true });
         }
         if (event.headRef) {
           const parsed = parseArtifactBranch(event.headRef);
-          if (parsed?.kind !== 'impl') {
-            console.info('[webhooks/github] external review readiness ignored — non-impl ref');
+          if (parsed?.kind !== 'impl' && parsed?.kind !== 'spec' && parsed?.kind !== 'plan') {
+            console.info('[webhooks/github] external review readiness ignored — non-artifact ref');
             return c.json({ processed: true });
           }
           if (parsed.externalId !== matched.externalId) {
@@ -415,6 +603,15 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             );
             return c.json({ processed: true });
           }
+          if (parsed.kind !== matchedArtifactKind) {
+            console.info(
+              '[webhooks/github] external review readiness ignored — artifact/intent mismatch',
+            );
+            return c.json({ processed: true });
+          }
+          artifactKind = parsed.kind;
+        } else {
+          artifactKind = matchedArtifactKind;
         }
         if (event.prNumber !== undefined && event.prNumber !== matched.prNumber) {
           console.info('[webhooks/github] external review readiness ignored — PR/intent mismatch');
@@ -425,10 +622,11 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         matchedByRevision = true;
       } else if (event.headRef) {
         const parsed = parseArtifactBranch(event.headRef);
-        if (parsed?.kind !== 'impl') {
-          console.info('[webhooks/github] external review readiness ignored — non-impl ref');
+        if (parsed?.kind !== 'impl' && parsed?.kind !== 'spec' && parsed?.kind !== 'plan') {
+          console.info('[webhooks/github] external review readiness ignored — non-artifact ref');
           return c.json({ processed: true });
         }
+        artifactKind = parsed.kind;
         externalId = parsed.externalId;
       } else {
         console.info(
@@ -437,22 +635,77 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         return c.json({ processed: true });
       }
 
-      if (prNumber === null || externalId === null) {
+      if (prNumber === null || externalId === null || artifactKind === null) {
         console.info('[webhooks/github] external review readiness ignored — missing PR identity');
         return c.json({ processed: true });
       }
 
-      const item = await itemStore.get(externalId);
-      if (item?.productSlug !== config.product.slug || item.currentStage !== 'code-review') {
+      const expectedRepo =
+        artifactKind === 'impl'
+          ? getPrimaryCodeRepo(config)
+          : parseGitHubRepoUrl(config.knowledge_repo.url);
+      if (event.owner !== expectedRepo.owner || event.repo !== expectedRepo.repo) {
+        console.info('[webhooks/github] external review readiness ignored — repository mismatch');
+        return c.json({ processed: true });
+      }
+
+      const expectedStage = stageForReviewReadiness(artifactKind);
+      const item =
+        matchedItem?.externalId === externalId ? matchedItem : await itemStore.get(externalId);
+      if (item?.productSlug !== config.product.slug || item.currentStage !== expectedStage) {
+        if (
+          (artifactKind === 'spec' || artifactKind === 'plan') &&
+          (!item ||
+            (item.productSlug === config.product.slug &&
+              isBeforeWorkflowStage(item.currentStage, expectedStage)))
+        ) {
+          // Convert pending_external_review → review_dispatch so stage-transition
+          // replay can resume; leaving the pending row alone strands readiness
+          // until expiry because replay only walks review_dispatch intents.
+          const specialistId = matched?.specialistId ?? specialistForReviewReadiness(artifactKind);
+          await persistReviewDispatchIntent({
+            productSlug: config.product.slug,
+            externalId,
+            specialistId,
+            prNumber: prNumber ?? undefined,
+            targetRevision: event.targetRevision,
+            triggeredBy: 'webhook:external-review-ready:awaiting-draft-stage',
+          });
+          // Clear the matched slot (may be legacy/unscoped). When the match was
+          // specialist-scoped, also drop a leftover legacy pending row so the
+          // same readiness signal cannot duplicate-replay.
+          await clearPendingExternalReview({
+            productSlug: config.product.slug,
+            externalId,
+            specialistId: matched?.specialistId,
+            provider: event.provider,
+            prNumber: prNumber ?? undefined,
+            targetRevision: event.targetRevision,
+          });
+          if (matched?.specialistId) {
+            await clearPendingExternalReview({
+              productSlug: config.product.slug,
+              externalId,
+              provider: event.provider,
+              prNumber: prNumber ?? undefined,
+              targetRevision: event.targetRevision,
+            });
+          }
+          console.info(
+            `[webhooks/github] external review readiness re-parked — item not yet in ${expectedStage}`,
+          );
+          return c.json({ processed: true });
+        }
         await clearPendingExternalReview({
           productSlug: config.product.slug,
           externalId,
+          specialistId: specialistForReviewReadiness(artifactKind),
           provider: event.provider,
           prNumber: prNumber ?? undefined,
           targetRevision: event.targetRevision,
         });
         console.info(
-          '[webhooks/github] external review readiness ignored — item not in code-review',
+          `[webhooks/github] external review readiness ignored — item not in ${expectedStage}`,
         );
         return c.json({ processed: true });
       }
@@ -466,12 +719,13 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         : await resumePendingExternalReview({
             productSlug: config.product.slug,
             externalId,
+            specialistId: specialistForReviewReadiness(artifactKind),
             provider: event.provider,
             prNumber,
             targetRevision: event.targetRevision,
             triggeredBy: 'webhook:external-review-ready',
           });
-      if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+      if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
         console.info(
           `[webhooks/github] external review readiness did not resume ${externalId}: ${outcome.reason}`,
         );
@@ -606,6 +860,7 @@ webhooksRouter.post('/webhooks/linear', async (c) => {
 
   // g. Dispatch.
   if (event.type === 'item_created') {
+    let createdOrExists = false;
     try {
       // webhook:linear is tracker-originated → createItem's writeback is
       // anti-echo-skipped (the issue already exists in Linear).
@@ -614,12 +869,28 @@ webhooksRouter.post('/webhooks/linear', async (c) => {
         productSlug: config.product.slug,
         triggeredBy: 'webhook:linear',
       });
+      createdOrExists = true;
     } catch (err) {
       if (err instanceof ItemAlreadyExistsError) {
         // Idempotent — item already exists, treat as success.
+        createdOrExists = true;
       } else {
         console.error('[webhooks/linear] Unexpected error creating item:', err);
         return c.json({ error: 'Internal server error' }, 500);
+      }
+    }
+    if (createdOrExists) {
+      try {
+        await replayPendingReviewDispatchForItem({
+          product: config,
+          productSlug: config.product.slug,
+          externalId: event.externalId,
+        });
+      } catch (err) {
+        console.error(
+          '[webhooks/linear] Pending review replay after item creation failed:',
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }
   } else if (event.type === 'item_updated' && event.subStage != null) {
@@ -633,11 +904,25 @@ webhooksRouter.post('/webhooks/linear', async (c) => {
       });
     } catch (err) {
       if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
+        // Not a delivery problem — still attempt replay below so a prior
+        // successful transition whose replay failed can recover on retry.
         console.error('[webhooks/linear] Transition not applied:', err.message);
       } else {
         console.error('[webhooks/linear] Unexpected error during transition:', err);
         return c.json({ error: 'Internal server error' }, 500);
       }
+    }
+    try {
+      await replayPendingReviewDispatchForItem({
+        product: config,
+        productSlug: config.product.slug,
+        externalId: event.externalId,
+      });
+    } catch (err) {
+      console.error(
+        '[webhooks/linear] Pending review replay failed:',
+        err instanceof Error ? err.message : String(err),
+      );
     }
   } else if (event.type === 'comment_added') {
     console.info(`[webhooks/linear] comment_added on ${event.externalId} — no action in v0`);

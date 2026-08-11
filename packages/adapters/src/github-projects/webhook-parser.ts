@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseArtifactBranch } from '@helm/shared';
 import type { NormalizedEvent } from '../types.js';
 
 // ── Context schema ────────────────────────────────────────────────────────────
@@ -44,7 +45,17 @@ const PullRequestWebhookSchema = z.object({
     id: z.number().int().positive().optional(),
     number: z.number().int().positive().optional(),
     merged: z.boolean(),
-    head: z.object({ ref: z.string(), sha: z.string().optional() }),
+    head: z.object({
+      ref: z.string(),
+      sha: z.string().optional(),
+      repo: z
+        .object({
+          name: z.string(),
+          owner: z.object({ login: z.string() }),
+        })
+        .nullable()
+        .optional(),
+    }),
   }),
   repository: z
     .object({
@@ -276,10 +287,17 @@ export function parseGitHubWebhook(
           timestamp,
         };
       }
-      if (action === 'synchronize') {
+      if (
+        action === 'synchronize' ||
+        ((action === 'opened' || action === 'reopened') && isEarlyDraftArtifactBranch(pr.head.ref))
+      ) {
         return {
           type: 'pull_request_synchronized',
           headRef: pr.head.ref,
+          owner: parsed.data.repository?.owner.login ?? null,
+          repo: parsed.data.repository?.name ?? null,
+          headOwner: pr.head.repo?.owner.login ?? null,
+          headRepo: pr.head.repo?.name ?? null,
           prNumber: pr.number,
           headSha: pr.head.sha,
           senderLogin: parsed.data.sender?.login ?? null,
@@ -371,4 +389,9 @@ export function parseGitHubWebhook(
     // Never throw — catch any unexpected runtime error
     return { type: 'unknown', raw: rawEvent };
   }
+}
+
+function isEarlyDraftArtifactBranch(headRef: string): boolean {
+  const parsed = parseArtifactBranch(headRef);
+  return parsed?.kind === 'spec' || parsed?.kind === 'plan';
 }

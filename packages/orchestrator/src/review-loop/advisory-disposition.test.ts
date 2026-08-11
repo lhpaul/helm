@@ -3,7 +3,7 @@ import { resolveAdvisoryDispositions } from './advisory-disposition.js';
 import type { FalsePositiveEntry } from './false-positives.js';
 
 describe('resolveAdvisoryDispositions', () => {
-  it('marks catalog matches as Rejected', () => {
+  it('marks catalog matches as Rejected from structured finding fields', () => {
     const catalog: FalsePositiveEntry[] = [
       {
         title: 'Health endpoint',
@@ -18,10 +18,12 @@ describe('resolveAdvisoryDispositions', () => {
           id: 'adv-1',
           severity: 'low',
           blocking: false,
-          summary: 'Rules violation on /health endpoint shape',
+          summary: 'Rules violation on endpoint shape',
+          detail: 'The structured review detail names the /health endpoint.',
         },
       ],
       catalog,
+      'code-review',
     );
     expect(rows[0]).toMatchObject({
       disposition: 'Rejected',
@@ -40,7 +42,79 @@ describe('resolveAdvisoryDispositions', () => {
         },
       ],
       [],
+      'code-review',
     );
     expect(rows[0]!.disposition).toBe('Deferred');
+  });
+
+  it('only matches catalog entries that apply to the current stage', () => {
+    const catalog: FalsePositiveEntry[] = [
+      {
+        title: 'Sequential artifact',
+        pattern: 'pair-spec-and-plan-files',
+        appliesTo: ['spec-draft', 'plan-draft'],
+        rationale: 'Spec and plan artifacts are reviewed sequentially.',
+        matchesSummary: (summary) => summary.includes('pair-spec-and-plan-files'),
+      },
+    ];
+
+    const advisory = {
+      id: 'adv-3',
+      severity: 'low' as const,
+      blocking: false,
+      summary: 'pair-spec-and-plan-files',
+    };
+
+    expect(resolveAdvisoryDispositions([advisory], catalog, 'spec-draft')[0]).toMatchObject({
+      disposition: 'Rejected',
+    });
+    expect(resolveAdvisoryDispositions([advisory], catalog, 'plan-draft')[0]).toMatchObject({
+      disposition: 'Rejected',
+    });
+    expect(resolveAdvisoryDispositions([advisory], catalog, 'code-review')[0]).toMatchObject({
+      disposition: 'Deferred',
+    });
+  });
+
+  it('matches pair-spec-and-plan-files through path or fixHint alone', () => {
+    const catalog = [
+      {
+        title: 'Sequential artifact',
+        pattern: 'pair-spec-and-plan-files',
+        appliesTo: ['spec-draft', 'plan-draft'],
+        rationale: 'Spec and plan artifacts are reviewed sequentially.',
+        matchesSummary: (summary: string) => summary.includes('pair-spec-and-plan-files'),
+      },
+    ] satisfies FalsePositiveEntry[];
+
+    const pathOnlyRows = resolveAdvisoryDispositions(
+      [
+        {
+          id: 'adv-path',
+          severity: 'low',
+          blocking: false,
+          summary: 'Artifact ordering',
+          path: 'docs/reviews/pair-spec-and-plan-files.md',
+        },
+      ],
+      catalog,
+      'spec-draft',
+    );
+    const fixHintOnlyRows = resolveAdvisoryDispositions(
+      [
+        {
+          id: 'adv-fixhint',
+          severity: 'low',
+          blocking: false,
+          summary: 'Artifact ordering',
+          fixHint: 'See pair-spec-and-plan-files before changing the workflow.',
+        },
+      ],
+      catalog,
+      'plan-draft',
+    );
+
+    expect(pathOnlyRows[0]).toMatchObject({ disposition: 'Rejected' });
+    expect(fixHintOnlyRows[0]).toMatchObject({ disposition: 'Rejected' });
   });
 });

@@ -1,5 +1,6 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Product } from '@helm/shared';
 import type { ItemTransitionFn } from '../specialists/spec-writer.js';
@@ -7,6 +8,7 @@ import type { RunGit } from '../specialists/git-helpers.js';
 import { MockAgentRuntime } from '../runtimes/mock.js';
 import {
   runCodeReviewLoop,
+  runEarlyArtifactReviewLoop,
   formatExternalBlockersForRemediation,
   buildFindingsByKind,
 } from './code-review-loop.js';
@@ -38,11 +40,20 @@ vi.mock('../specialists/review-adjudicator.js', () => ({
   buildReviewAdjudicatorParams: vi.fn(),
   handleReviewAdjudicatorResult: vi.fn(),
 }));
-vi.mock('../specialists/fetch-product-context.js', () => ({
-  fetchSpecForPlan: vi.fn().mockResolvedValue(null),
-}));
+vi.mock('../specialists/fetch-product-context.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../specialists/fetch-product-context.js')>();
+  return {
+    ...actual,
+    fetchSpecForPlan: vi.fn().mockResolvedValue(null),
+  };
+});
 vi.mock('../specialists/code-workspace.js', () => ({
-  provisionReviewerWorkspace: vi.fn().mockResolvedValue({ workspacePath: '/tmp/ws' }),
+  EXTERNAL_ID_SAFE: /^(?!\.)[A-Za-z0-9._-]+$/,
+  provisionReviewerWorkspace: vi.fn().mockResolvedValue({
+    workspacePath: '/tmp/ws',
+    branchName: 'helm/impl/issue_1',
+    artifactsPath: '/tmp/ws-artifacts',
+  }),
   artifactsDirFor: vi.fn((workspacePath: string) => `${workspacePath}-artifacts`),
 }));
 vi.mock('../external-review/run.js', () => ({
@@ -66,12 +77,20 @@ vi.mock('../specialists/pr-helpers.js', async (importOriginal) => {
     postPRComment: vi.fn().mockResolvedValue(undefined),
   };
 });
-vi.mock('./false-positives.js', () => ({
-  fetchFalsePositivesCatalog: vi.fn().mockResolvedValue([]),
-}));
-vi.mock('./summary.js', () => ({
-  upsertReviewLoopSummaryComment: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock('./false-positives.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./false-positives.js')>();
+  return {
+    ...actual,
+    fetchFalsePositivesCatalog: vi.fn().mockResolvedValue([]),
+  };
+});
+vi.mock('./summary.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./summary.js')>();
+  return {
+    ...actual,
+    upsertReviewLoopSummaryComment: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 import { fanoutReviewers, shouldRemediate } from '../specialists/reviewer-fanout.js';
 import { buildRemediationParams, handleRemediationResult } from '../specialists/remediation.js';
@@ -84,7 +103,8 @@ import { fetchSpecForPlan } from '../specialists/fetch-product-context.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
 import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
-import { upsertReviewLoopSummaryComment } from './summary.js';
+import { buildAdvisorySummaryRows, upsertReviewLoopSummaryComment } from './summary.js';
+import { builtInFalsePositiveEntries, fetchFalsePositivesCatalog } from './false-positives.js';
 import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
 
 const PR_URL = 'https://github.com/o/r/pull/42';
@@ -92,13 +112,20 @@ const PR_URL = 'https://github.com/o/r/pull/42';
 const baseProduct = {
   helm_version: '0' as const,
   product: { slug: 'test', name: 'Test' },
-  issue_tracker: { provider: 'github_projects' as const, org: 'o', project_number: 1 },
+  issue_tracker: {
+    provider: 'github_projects' as const,
+    org: 'o',
+    project_number: 1,
+    custom_field_name: 'Helm Stage',
+  },
   code_repos: [{ url: 'https://github.com/o/r', default_branch: 'main', role: 'app' as const }],
   knowledge_repo: { url: 'https://github.com/o/k', default_branch: 'main' },
   workflow: {
     stages_enabled: ['code-review' as const],
     designer_gate: 'skip' as const,
     qa_gate: 'skip' as const,
+    readiness_gate: 'skip' as const,
+    final_stage: 'released' as const,
   },
   specialists: {
     'spec-writer': { runtime: 'claude_code' as const, model: 'm' },
@@ -140,9 +167,11 @@ function makeFanout(
 describe('runCodeReviewLoop', () => {
   let transition: ReturnType<typeof vi.fn>;
   let runGit: RunGit;
+  let tempDirs: string[];
 
   beforeEach(() => {
     vi.clearAllMocks();
+    tempDirs = [];
     transition = vi.fn().mockResolvedValue({ currentStage: 'code-review' });
     runGit = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === 'clone') {
@@ -157,6 +186,7 @@ describe('runCodeReviewLoop', () => {
       status: 'skipped',
       reason: 'not_configured',
     });
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue([]);
     vi.mocked(fetchHaystackSkipEvidence).mockResolvedValue(null);
     vi.mocked(handleRemediationResult).mockResolvedValue({
       status: 'done',
@@ -168,8 +198,13 @@ describe('runCodeReviewLoop', () => {
     });
   });
 
-  afterEach(() => {
-    vi.mocked(provisionReviewerWorkspace).mockResolvedValue({ workspacePath: '/tmp/ws' });
+  afterEach(async () => {
+    await Promise.all(tempDirs.map((tempDir) => rm(tempDir, { recursive: true, force: true })));
+    vi.mocked(provisionReviewerWorkspace).mockResolvedValue({
+      workspacePath: '/tmp/ws',
+      branchName: 'helm/impl/issue_1',
+      artifactsPath: '/tmp/ws-artifacts',
+    });
   });
 
   const runLoop = (product: Product = baseProduct) =>
@@ -197,10 +232,91 @@ describe('runCodeReviewLoop', () => {
     expect(transition).not.toHaveBeenCalled();
   });
 
+  it('runs early artifact remediation without code-review stage transitions', async () => {
+    vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(makeFanout())
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product: baseProduct,
+      prUrl: PR_URL,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(result.newStage).toBeUndefined();
+    expect(transition).not.toHaveBeenCalled();
+    expect(fanoutReviewers).toHaveBeenCalledWith(
+      'issue_1',
+      baseProduct,
+      PR_URL,
+      'token',
+      expect.any(MockAgentRuntime),
+      runGit,
+      undefined,
+      {
+        fetchFn: undefined,
+        selectedCodeRepo: { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
+        selectedBranchName: 'helm/spec/issue_1',
+        transformReviewComment: undefined,
+      },
+    );
+    expect(buildRemediationParams).toHaveBeenCalledWith(
+      'issue_1',
+      baseProduct,
+      '/tmp/ws',
+      PR_URL,
+      expect.any(Map),
+      undefined,
+      { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
+      'helm/spec/issue_1',
+    );
+  });
+
+  it('returns early artifact remediation failures without transition or recovery attempts', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(handleRemediationResult).mockResolvedValue({
+      status: 'error',
+      costUsd: 0.02,
+      durationMs: 200,
+      commentPosted: false,
+      pushed: false,
+      error: 'remediation summary missing',
+    });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product: baseProduct,
+      prUrl: PR_URL,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result).toMatchObject({
+      status: 'error',
+      prUrl: PR_URL,
+      error: 'remediation summary missing',
+    });
+    expect(result.newStage).toBeUndefined();
+    expect(transition).not.toHaveBeenCalled();
+    expect(buildRemediationParams).toHaveBeenCalledOnce();
+    expect(handleRemediationResult).toHaveBeenCalledTimes(2);
+  });
+
   it('escalates when max_cycles is reached before another remediation pass', async () => {
     const product: Product = {
       ...baseProduct,
-      review: { loop: { max_cycles: 1 } },
+      review: { loop: { max_cycles: 1, remediate_severity: 'critical_high' } },
     };
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
@@ -221,7 +337,11 @@ describe('runCodeReviewLoop', () => {
     const product: Product = {
       ...baseProduct,
       review: {
-        loop: { max_cycles: 10, stop_rule: { no_progress_cycles: 2 } },
+        loop: {
+          max_cycles: 10,
+          stop_rule: { no_progress_cycles: 2 },
+          remediate_severity: 'critical_high',
+        },
       },
     };
     vi.mocked(shouldRemediate).mockReturnValue(true);
@@ -393,6 +513,31 @@ describe('runCodeReviewLoop', () => {
     expect(transition).not.toHaveBeenCalled();
   });
 
+  it('preserves stage when early artifact remediation provisioning fails', async () => {
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+    vi.mocked(provisionReviewerWorkspace).mockRejectedValueOnce(new Error('clone failed'));
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product: baseProduct,
+      prUrl: PR_URL,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result).toMatchObject({
+      status: 'error',
+      cyclesCompleted: 1,
+    });
+    expect(result.newStage).toBeUndefined();
+    expect(result.error).toContain('Failed to provision remediation workspace');
+    expect(transition).not.toHaveBeenCalled();
+  });
+
   it('returns error when transition back to code-review fails after remediation', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);
     vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
@@ -510,6 +655,7 @@ describe('runCodeReviewLoop', () => {
       deferredExternalReview: {
         productSlug: 'test',
         externalId: 'issue_1',
+        specialistId: 'reviewer-fanout',
         provider: 'haystack',
         reason: 'analysis_pending',
         providerReason: 'pending_timeout',
@@ -597,10 +743,62 @@ describe('runCodeReviewLoop', () => {
     expect(onExternalReviewDeferred).toHaveBeenCalledTimes(1);
   });
 
+  it('persists the draft reviewer identity when early artifact review defers', async () => {
+    const product = {
+      ...baseProduct,
+      review: {
+        early_loop: { enabled: true },
+        external: {
+          provider: 'haystack',
+          max_defer_sec: 600,
+          haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 5 },
+        },
+      },
+    } as Product;
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'deferred',
+      reason: 'analysis_pending',
+      providerReason: 'pending_timeout',
+    });
+    const onExternalReviewDeferred = vi.fn();
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'plan',
+      externalId: 'issue_1',
+      product,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+      targetRevision: 'sha-42',
+      onExternalReviewDeferred,
+    });
+
+    expect(result).toMatchObject({
+      status: 'deferred',
+      deferredExternalReview: {
+        productSlug: 'test',
+        externalId: 'issue_1',
+        specialistId: 'plan-draft-reviewer',
+        provider: 'haystack',
+        reason: 'analysis_pending',
+        prNumber: 7,
+        targetRevision: 'sha-42',
+      },
+    });
+    expect(onExternalReviewDeferred).toHaveBeenCalledWith(result.deferredExternalReview);
+  });
+
   it('escalates when external review skips with Haystack evidence', async () => {
     const product: Product = {
       ...baseProduct,
-      review: { external: { provider: 'haystack', haystack: {} } },
+      review: {
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
     };
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'skipped',
@@ -625,8 +823,15 @@ describe('runCodeReviewLoop', () => {
     const product: Product = {
       ...baseProduct,
       review: {
-        external: { provider: 'haystack', haystack: { poll_interval_sec: 1 } },
-        loop: { stop_rule: { no_progress_cycles: 2 } },
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 120 },
+        },
+        loop: {
+          max_cycles: 5,
+          stop_rule: { no_progress_cycles: 2 },
+          remediate_severity: 'critical_high',
+        },
       },
     };
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
@@ -711,6 +916,8 @@ describe('runCodeReviewLoop', () => {
       PR_URL,
       expect.any(Map),
       undefined,
+      baseProduct.code_repos[0],
+      undefined,
     );
     const findingsByKind = vi.mocked(buildRemediationParams).mock.calls.at(-1)![4] as Map<
       string,
@@ -750,7 +957,12 @@ describe('runCodeReviewLoop', () => {
   it('posts Review Loop Summary on clean exit with external advisories', async () => {
     const product: Product = {
       ...baseProduct,
-      review: { external: { provider: 'haystack', haystack: {} } },
+      review: {
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
     };
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'clean',
@@ -773,10 +985,705 @@ describe('runCodeReviewLoop', () => {
         prUrl: PR_URL,
         cyclesCompleted: 1,
         externalProvider: 'haystack',
+        stage: 'code-review',
         advisories: expect.arrayContaining([
           expect.objectContaining({ id: 'adv-1', summary: 'Weak test coverage on summary module' }),
         ]),
       }),
+    );
+  });
+
+  it('routes early artifact advisories through draft-stage false-positive disposition', async () => {
+    const builtInCatalog = builtInFalsePositiveEntries();
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        early_loop: { enabled: true },
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
+    };
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInCatalog);
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'clean',
+      blockers: [],
+      advisories: [
+        {
+          id: 'adv-sequential',
+          severity: 'low',
+          blocking: false,
+          summary: 'pair-spec-and-plan-files',
+        },
+      ],
+    });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(fanoutReviewers).toHaveBeenCalledWith(
+      'issue_1',
+      product,
+      'https://github.com/o/k/pull/7',
+      'token',
+      expect.any(MockAgentRuntime),
+      runGit,
+      undefined,
+      {
+        fetchFn: undefined,
+        selectedCodeRepo: { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
+        selectedBranchName: 'helm/spec/issue_1',
+        transformReviewComment: expect.any(Function),
+      },
+    );
+    expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prUrl: 'https://github.com/o/k/pull/7',
+        stage: 'spec-draft',
+        catalog: builtInCatalog,
+        advisories: [
+          expect.objectContaining({
+            id: 'adv-sequential',
+            summary: 'pair-spec-and-plan-files',
+          }),
+        ],
+      }),
+    );
+    const summaryInput = vi.mocked(upsertReviewLoopSummaryComment).mock.calls.at(-1)![0];
+    expect(summaryInput).toEqual(
+      expect.objectContaining({
+        cyclesCompleted: 1,
+        externalProvider: 'haystack',
+        stage: 'spec-draft',
+        advisories: [
+          expect.objectContaining({
+            id: 'adv-sequential',
+            severity: 'low',
+            blocking: false,
+            summary: 'pair-spec-and-plan-files',
+          }),
+        ],
+        catalog: expect.arrayContaining([
+          expect.objectContaining({
+            pattern: 'pair-spec-and-plan-files',
+            appliesTo: ['spec-draft', 'plan-draft'],
+          }),
+        ]),
+      }),
+    );
+    expect(
+      buildAdvisorySummaryRows(
+        summaryInput.advisories,
+        summaryInput.catalog,
+        summaryInput.stage,
+      )[0],
+    ).toMatchObject({
+      disposition: 'Rejected',
+      rationale:
+        'Draft artifact review may see only one side of the spec/plan pair before the operator merges the current artifact PR.',
+    });
+  });
+
+  it('routes plan-draft advisories through draft-stage false-positive disposition', async () => {
+    const builtInCatalog = builtInFalsePositiveEntries();
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        early_loop: { enabled: true },
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
+    };
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInCatalog);
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'clean',
+      blockers: [],
+      advisories: [
+        {
+          id: 'adv-sequential',
+          severity: 'low',
+          blocking: false,
+          summary: 'pair-spec-and-plan-files',
+        },
+      ],
+    });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'plan',
+      externalId: 'issue_1',
+      product,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prUrl: 'https://github.com/o/k/pull/7',
+        stage: 'plan-draft',
+        catalog: builtInCatalog,
+        advisories: [
+          expect.objectContaining({
+            id: 'adv-sequential',
+            summary: 'pair-spec-and-plan-files',
+          }),
+        ],
+      }),
+    );
+  });
+
+  it.each([
+    { kind: 'spec' as const, stage: 'spec-draft' as const, path: 'specs/issue_1.md' },
+    { kind: 'plan' as const, stage: 'plan-draft' as const, path: 'plans/issue_1.md' },
+  ])(
+    'suppresses pair-spec-and-plan-files through the real fetched catalog merge for $stage',
+    async ({ kind, stage, path }) => {
+      const actualFalsePositives =
+        await vi.importActual<typeof import('./false-positives.js')>('./false-positives.js');
+      vi.mocked(fetchFalsePositivesCatalog).mockImplementation(
+        actualFalsePositives.fetchFalsePositivesCatalog,
+      );
+      const fetchFn = vi.fn(async () => {
+        return new Response(
+          [
+            '# Code-review false positives',
+            '',
+            '---',
+            '',
+            '## Remote-only pattern',
+            '',
+            '**Pattern:** remote-only-pattern',
+            '',
+            '**Applies to:** code-review',
+            '',
+            "**Why it's a false positive:** Remote catalog entries are merged with built-ins.",
+            '',
+          ].join('\n'),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+      const product: Product = {
+        ...baseProduct,
+        review: {
+          early_loop: { enabled: true },
+          external: {
+            provider: 'haystack',
+            haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+          },
+        },
+      };
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'needs_fixes',
+        blockers: [
+          {
+            id: `adv-pair-${kind}`,
+            severity: 'high',
+            blocking: true,
+            summary: 'pair-spec-and-plan-files sequencing',
+            path,
+          },
+        ],
+        advisories: [],
+      });
+
+      const result = await runEarlyArtifactReviewLoop({
+        kind,
+        externalId: 'issue_1',
+        product,
+        prUrl: 'https://github.com/o/k/pull/7',
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+        fetchFn,
+      });
+
+      expect(result.status).toBe('done');
+      expect(fetchFn).toHaveBeenCalledWith(
+        'https://raw.githubusercontent.com/o/k/main/false-positives.md',
+        { headers: { Authorization: 'Bearer token' } },
+      );
+      expect(buildRemediationParams).not.toHaveBeenCalled();
+      expect(handleRemediationResult).not.toHaveBeenCalled();
+      expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prUrl: 'https://github.com/o/k/pull/7',
+          stage,
+          advisories: [
+            expect.objectContaining({
+              id: `adv-pair-${kind}`,
+              summary: 'pair-spec-and-plan-files sequencing',
+              blocking: false,
+            }),
+          ],
+          catalog: expect.arrayContaining([
+            expect.objectContaining({
+              pattern: 'pair-spec-and-plan-files',
+              appliesTo: ['spec-draft', 'plan-draft'],
+              source: 'built-in',
+            }),
+            expect.objectContaining({
+              pattern: 'remote-only-pattern',
+              source: 'remote',
+            }),
+          ]),
+        }),
+      );
+    },
+  );
+
+  it.each([
+    {
+      kind: 'spec' as const,
+      summary: 'plan file is missing while spec remains in spec-draft',
+    },
+    {
+      kind: 'plan' as const,
+      summary: 'pair-spec-and-plan-files sequencing',
+    },
+    {
+      kind: 'plan' as const,
+      summary: 'spec file is missing while plan remains in plan-draft',
+    },
+  ])(
+    'suppresses sequential $kind-draft reviewer findings before remediation',
+    async ({ kind, summary }) => {
+      const builtInCatalog = builtInFalsePositiveEntries();
+      vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInCatalog);
+      vi.mocked(fanoutReviewers).mockResolvedValue(
+        makeFanout(
+          {
+            prUrl: 'https://github.com/o/k/pull/7',
+            reviewerResults: [
+              {
+                kind: 'code',
+                status: 'done',
+                costUsd: 0.01,
+                durationMs: 50,
+                commentPosted: true,
+                findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+                commentBody: `# Code Review\n\n## Findings\n- **HIGH** · ${summary}\n\n## Status\nCHANGES_REQUESTED`,
+              },
+            ],
+          },
+          undefined,
+        ),
+      );
+      vi.mocked(shouldRemediate).mockImplementation((results) =>
+        results.some(
+          (result) =>
+            result.findings !== undefined &&
+            result.findings.critical + result.findings.high + result.findings.medium > 0,
+        ),
+      );
+
+      const result = await runEarlyArtifactReviewLoop({
+        kind,
+        externalId: 'issue_1',
+        product: baseProduct,
+        prUrl: 'https://github.com/o/k/pull/7',
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      expect(result.status).toBe('done');
+      expect(shouldRemediate).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            findings: { critical: 0, high: 0, medium: 0, low: 0, info: 1 },
+            commentBody: expect.stringContaining('Catalogued false positive'),
+          }),
+        ],
+        'critical_high',
+      );
+      expect(buildRemediationParams).not.toHaveBeenCalled();
+      expect(handleRemediationResult).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rewrites early artifact review status after suppressing catalogued findings', async () => {
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInFalsePositiveEntries());
+    let transformedBody = '';
+    vi.mocked(fanoutReviewers).mockImplementationOnce(async (...args) => {
+      const transformReviewComment = args[7]?.transformReviewComment;
+      expect(transformReviewComment).toBeTypeOf('function');
+      const transformed = await transformReviewComment!({
+        kind: 'code',
+        reviewContent: [
+          '# Code Review',
+          '',
+          '## Findings',
+          '- **HIGH** · pair-spec-and-plan-files sequencing',
+          '',
+          '## Status',
+          'CHANGES_REQUESTED',
+        ].join('\n'),
+        findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+      });
+      transformedBody = transformed.reviewContent;
+      return makeFanout(
+        {
+          prUrl: 'https://github.com/o/k/pull/7',
+          reviewerResults: [
+            {
+              kind: 'code',
+              status: 'done',
+              costUsd: 0.01,
+              durationMs: 50,
+              commentPosted: true,
+              findings: transformed.findings,
+              commentBody: transformed.reviewContent,
+            },
+          ],
+        },
+        undefined,
+      );
+    });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product: baseProduct,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(transformedBody).toContain('**INFO** · Catalogued false positive');
+    expect(transformedBody).toContain('## Status\nAPPROVED');
+    expect(transformedBody).not.toContain('## Status\nCHANGES_REQUESTED');
+    expect(shouldRemediate).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          findings: { critical: 0, high: 0, medium: 0, low: 0, info: 1 },
+          commentBody: expect.stringContaining('## Status\nAPPROVED'),
+        }),
+      ],
+      'critical_high',
+    );
+  });
+
+  it('does not rewrite early-artifact status when no catalog entry matches', async () => {
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInFalsePositiveEntries());
+    let transformedBody = '';
+    vi.mocked(fanoutReviewers).mockImplementationOnce(async (...args) => {
+      const transformReviewComment = args[7]?.transformReviewComment;
+      expect(transformReviewComment).toBeTypeOf('function');
+      const transformed = await transformReviewComment!({
+        kind: 'code',
+        reviewContent: [
+          '# Code Review',
+          '',
+          '## Findings',
+          '- **HIGH** · totally novel domain finding',
+          '',
+          '## Status',
+          'CHANGES_REQUESTED',
+        ].join('\n'),
+        // Counts already zero (e.g. only info-level findings were tallied upstream)
+        // yet Status still says CHANGES_REQUESTED — must not flip to APPROVED.
+        findings: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+      });
+      transformedBody = transformed.reviewContent;
+      return makeFanout(
+        {
+          prUrl: 'https://github.com/o/k/pull/7',
+          reviewerResults: [
+            {
+              kind: 'code',
+              status: 'done',
+              costUsd: 0.01,
+              durationMs: 50,
+              commentPosted: true,
+              findings: transformed.findings,
+              commentBody: transformed.reviewContent,
+            },
+          ],
+        },
+        undefined,
+      );
+    });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product: baseProduct,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(transformedBody).toContain('- **HIGH** · totally novel domain finding');
+    expect(transformedBody).toContain('## Status\nCHANGES_REQUESTED');
+    expect(transformedBody).not.toContain('## Status\nAPPROVED');
+    expect(transformedBody).not.toContain('Catalogued false positive');
+  });
+
+  it('still remediates a sequential-artifact-looking reviewer finding in code-review mode', async () => {
+    const builtInCatalog = builtInFalsePositiveEntries();
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInCatalog);
+    vi.mocked(fanoutReviewers)
+      .mockResolvedValueOnce(
+        makeFanout(
+          {
+            reviewerResults: [
+              {
+                kind: 'code',
+                status: 'done',
+                costUsd: 0.01,
+                durationMs: 50,
+                commentPosted: true,
+                findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+                commentBody:
+                  '# Code Review\n\n## Findings\n- **HIGH** · pair-spec-and-plan-files sequencing\n\n## Status\nCHANGES_REQUESTED',
+              },
+            ],
+          },
+          undefined,
+        ),
+      )
+      .mockResolvedValueOnce(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+    vi.mocked(shouldRemediate).mockImplementation((results) =>
+      results.some(
+        (result) =>
+          result.findings !== undefined &&
+          result.findings.critical + result.findings.high + result.findings.medium > 0,
+      ),
+    );
+
+    const result = await runCodeReviewLoop({
+      externalId: 'issue_1',
+      product: baseProduct,
+      prUrl: PR_URL,
+      codeRepo: baseProduct.code_repos[0]!,
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(shouldRemediate).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+          commentBody: expect.stringContaining('**HIGH** · pair-spec-and-plan-files sequencing'),
+        }),
+      ],
+      'critical_high',
+    );
+    expect(buildRemediationParams).toHaveBeenCalled();
+    const findingsByKind = vi.mocked(buildRemediationParams).mock.calls[0]![4] as Map<
+      string,
+      string
+    >;
+    expect(findingsByKind.get('code')).toContain('pair-spec-and-plan-files sequencing');
+  });
+
+  it.each([
+    {
+      kind: 'spec' as const,
+      id: 'adv-plan-missing',
+      summary: 'plan file is missing while spec remains in spec-draft',
+    },
+    {
+      kind: 'plan' as const,
+      id: 'adv-pair-sequencing',
+      summary: 'pair-spec-and-plan-files sequencing',
+    },
+    {
+      kind: 'plan' as const,
+      id: 'adv-spec-missing',
+      summary: 'spec file is missing while plan remains in plan-draft',
+    },
+  ])(
+    'suppresses sequential $kind-draft external blockers before remediation',
+    async ({ kind, id, summary }) => {
+      const builtInCatalog = builtInFalsePositiveEntries();
+      const product: Product = {
+        ...baseProduct,
+        review: {
+          early_loop: { enabled: true },
+          external: {
+            provider: 'haystack',
+            haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+          },
+        },
+      };
+      vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInCatalog);
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'needs_fixes',
+        blockers: [
+          {
+            id,
+            severity: 'high',
+            blocking: true,
+            summary,
+            path: kind === 'spec' ? 'specs/issue_1.md' : 'plans/issue_1.md',
+          },
+        ],
+        advisories: [],
+      });
+
+      const result = await runEarlyArtifactReviewLoop({
+        kind,
+        externalId: 'issue_1',
+        product,
+        prUrl: 'https://github.com/o/k/pull/7',
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      expect(result.status).toBe('done');
+      expect(buildRemediationParams).not.toHaveBeenCalled();
+      expect(handleRemediationResult).not.toHaveBeenCalled();
+      expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prUrl: 'https://github.com/o/k/pull/7',
+          stage: kind === 'spec' ? 'spec-draft' : 'plan-draft',
+          catalog: builtInCatalog,
+          advisories: [
+            expect.objectContaining({
+              id,
+              summary,
+              blocking: false,
+            }),
+          ],
+        }),
+      );
+    },
+  );
+
+  it('returns error when fan-out errored and external blockers are all suppressed', async () => {
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        early_loop: { enabled: true },
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
+    };
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInFalsePositiveEntries());
+    vi.mocked(fanoutReviewers).mockResolvedValue(
+      makeFanout(
+        { status: 'error', error: 'security reviewer comment failed' },
+        { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+      ),
+    );
+    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+      status: 'needs_fixes',
+      blockers: [
+        {
+          id: 'adv-plan-missing',
+          severity: 'high',
+          blocking: true,
+          summary: 'plan file is missing while spec remains in spec-draft',
+          path: 'specs/issue_1.md',
+        },
+      ],
+      advisories: [],
+    });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Reviewer fan-out reported an error');
+    expect(result.error).toContain('security reviewer comment failed');
+  });
+
+  it('remediates genuine external blockers when catalogued false positives coexist', async () => {
+    const builtInCatalog = builtInFalsePositiveEntries();
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        early_loop: { enabled: true },
+        external: {
+          provider: 'haystack',
+          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+        },
+      },
+    };
+    vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInCatalog);
+    vi.mocked(runExternalReviewIfConfigured)
+      .mockResolvedValueOnce({
+        status: 'needs_fixes',
+        blockers: [
+          {
+            id: 'adv-plan-missing',
+            severity: 'high',
+            blocking: true,
+            summary: 'plan file is missing while spec remains in spec-draft',
+            path: 'specs/issue_1.md',
+          },
+          {
+            id: 'real-blocker',
+            severity: 'high',
+            blocking: true,
+            summary: 'Spec omits the webhook persistence guard',
+            path: 'specs/issue_1.md',
+          },
+        ],
+        advisories: [],
+      })
+      .mockResolvedValueOnce({ status: 'skipped', reason: 'not_configured' });
+
+    const result = await runEarlyArtifactReviewLoop({
+      kind: 'spec',
+      externalId: 'issue_1',
+      product,
+      prUrl: 'https://github.com/o/k/pull/7',
+      githubToken: 'token',
+      runtime: new MockAgentRuntime({ messages: [] }),
+      transition: transition as ItemTransitionFn,
+      runGit,
+    });
+
+    expect(result.status).toBe('done');
+    expect(buildRemediationParams).toHaveBeenCalled();
+    expect(handleRemediationResult).toHaveBeenCalled();
+    const findingsByKind = vi.mocked(buildRemediationParams).mock.calls.at(-1)![4] as Map<
+      string,
+      string
+    >;
+    expect(findingsByKind.get('code')).toContain('Spec omits the webhook persistence guard');
+    expect(findingsByKind.get('code')).not.toContain(
+      'plan file is missing while spec remains in spec-draft',
     );
   });
 
@@ -901,6 +1808,8 @@ describe('runCodeReviewLoop', () => {
       expect.any(String),
       expect.any(Map),
       expect.stringContaining('SETTLED'),
+      expect.any(Object),
+      undefined,
     );
   });
 
@@ -1038,7 +1947,7 @@ describe('runCodeReviewLoop', () => {
       workdir: '/tmp/ws',
       productSlug: 'test',
       externalId: 'issue_1',
-      permissionMode: 'default',
+      permissionMode: 'acceptEdits',
       timeoutMs: 1000,
     });
     vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
@@ -1065,6 +1974,8 @@ describe('runCodeReviewLoop', () => {
       PR_URL,
       expect.any(Map),
       '- **AUTO** · Add CSRF guard on POST /api/sync',
+      product.code_repos[0],
+      undefined,
     );
   });
 
@@ -1097,7 +2008,7 @@ describe('runCodeReviewLoop', () => {
       workdir: '/tmp/ws',
       productSlug: 'test',
       externalId: 'issue_1',
-      permissionMode: 'default',
+      permissionMode: 'acceptEdits',
       timeoutMs: 1000,
     });
     vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
@@ -1128,7 +2039,7 @@ describe('runCodeReviewLoop', () => {
       workdir: '/tmp/ws',
       productSlug: 'test',
       externalId: 'issue_1',
-      permissionMode: 'default',
+      permissionMode: 'acceptEdits',
       timeoutMs: 1000,
     });
     vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
@@ -1154,9 +2065,141 @@ describe('runCodeReviewLoop', () => {
       '/tmp/ws',
       PR_URL,
       expect.any(Map),
-      { spec: undefined, resolvedProductDecisions: [] },
+      {
+        spec: undefined,
+        resolvedProductDecisions: [],
+        codeRepo: productWithAdjudicator().code_repos[0],
+        branchName: undefined,
+      },
     );
   });
+
+  it.each([
+    {
+      kind: 'spec' as const,
+      artifactDir: 'specs',
+      branchName: 'helm/spec/issue_1',
+      content: '# Draft Spec\n\nchecked-out branch content',
+    },
+    {
+      kind: 'plan' as const,
+      artifactDir: 'plans',
+      branchName: 'helm/plan/issue_1',
+      content: '# Draft Plan\n\nchecked-out branch content',
+    },
+  ])(
+    'passes checked-out $kind draft content to adjudication without fetching the default-branch spec',
+    async ({ kind, artifactDir, branchName, content }) => {
+      const workspacePath = await mkdtemp(join(tmpdir(), `helm-${kind}-draft-`));
+      tempDirs.push(workspacePath);
+      await mkdir(join(workspacePath, artifactDir), { recursive: true });
+      await writeFile(join(workspacePath, artifactDir, 'issue_1.md'), content, 'utf-8');
+      vi.mocked(provisionReviewerWorkspace).mockResolvedValue({
+        workspacePath,
+        branchName,
+        artifactsPath: `${workspacePath}-artifacts`,
+      });
+      vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+      vi.mocked(fanoutReviewers)
+        .mockResolvedValueOnce(makeFanout())
+        .mockResolvedValueOnce(
+          makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }),
+        );
+      vi.mocked(fetchSpecForPlan).mockResolvedValue('stale default-branch spec');
+      vi.mocked(buildReviewAdjudicatorParams).mockReturnValue({
+        specialistId: 'review-adjudicator',
+        prompt: 'adjudicate',
+        workdir: workspacePath,
+        productSlug: 'test',
+        externalId: 'issue_1',
+        permissionMode: 'acceptEdits',
+        timeoutMs: 1000,
+      });
+      vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+        status: 'done',
+        costUsd: 0,
+        durationMs: 1,
+        commentPosted: true,
+        parsed: {
+          status: 'AUTO_REMEDIATE',
+          unifiedPlan: '- **AUTO** · Fix',
+          body: '# Review Adjudication\n\n## Status\nAUTO_REMEDIATE',
+          conflictsSection: '',
+          conflicts: [],
+        },
+      });
+
+      const result = await runEarlyArtifactReviewLoop({
+        kind,
+        externalId: 'issue_1',
+        product: productWithAdjudicator(),
+        prUrl: PR_URL,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      expect(result.status).toBe('done');
+      expect(fetchSpecForPlan).not.toHaveBeenCalled();
+      expect(buildReviewAdjudicatorParams).toHaveBeenCalledWith(
+        'issue_1',
+        expect.anything(),
+        workspacePath,
+        PR_URL,
+        expect.any(Map),
+        expect.objectContaining({
+          draftArtifact: { kind, content },
+          spec: undefined,
+          codeRepo: { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
+          branchName,
+        }),
+      );
+    },
+  );
+
+  it.each([
+    { kind: 'spec' as const, branchName: 'helm/spec/issue_1', expectedPath: 'specs/issue_1.md' },
+    { kind: 'plan' as const, branchName: 'helm/plan/issue_1', expectedPath: 'plans/issue_1.md' },
+  ])(
+    'fails closed when the checked-out $kind draft artifact is missing',
+    async ({ kind, branchName, expectedPath }) => {
+      const workspacePath = await mkdtemp(join(tmpdir(), `helm-${kind}-draft-missing-`));
+      tempDirs.push(workspacePath);
+      vi.mocked(provisionReviewerWorkspace).mockResolvedValue({
+        workspacePath,
+        branchName,
+        artifactsPath: `${workspacePath}-artifacts`,
+      });
+      vi.mocked(shouldRemediate).mockReturnValue(true);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const result = await runEarlyArtifactReviewLoop({
+          kind,
+          externalId: 'issue_1',
+          product: productWithAdjudicator(),
+          prUrl: PR_URL,
+          githubToken: 'token',
+          runtime: new MockAgentRuntime({ messages: [] }),
+          transition: transition as ItemTransitionFn,
+          runGit,
+        });
+
+        expect(result.status).toBe('error');
+        expect(result.error).toBe('Review adjudication failed');
+        expect(buildReviewAdjudicatorParams).not.toHaveBeenCalled();
+        expect(handleReviewAdjudicatorResult).not.toHaveBeenCalled();
+        expect(consoleSpy).toHaveBeenCalledWith(
+          '[code-review-loop] Review adjudication failed:',
+          `Draft ${kind} artifact not found at ${expectedPath}`,
+        );
+      } finally {
+        consoleSpy.mockRestore();
+      }
+    },
+  );
 
   it('fails runAdjudicationPass when fetchSpecForPlan throws a non-ENOENT error', async () => {
     vi.mocked(shouldRemediate).mockReturnValue(true);

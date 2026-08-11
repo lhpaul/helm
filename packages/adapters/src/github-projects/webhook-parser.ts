@@ -115,6 +115,8 @@ const BUGBOT_APP_IDENTITIES = new Set([
   'cursor-agent',
 ]);
 
+const NonEmptyString = z.string().trim().min(1);
+
 export type ExternalReviewWebhookTrustConfig = {
   bugbot?: {
     checkNames?: string[];
@@ -126,20 +128,30 @@ export type ExternalReviewWebhookTrustConfig = {
   };
 };
 
-const StatusWebhookSchema = z.object({
-  state: z.string(),
-  context: z.string(),
-  description: z.string().nullable().optional(),
-  sha: z.string(),
-  target_url: z.string().nullable().optional(),
-  sender: z.object({ login: z.string() }).optional(),
-  repository: z
-    .object({
-      name: z.string(),
-      owner: z.object({ login: z.string() }),
-    })
-    .optional(),
-});
+const StatusWebhookSchema = z
+  .object({
+    id: z.number().int().optional(),
+    sha: NonEmptyString,
+    name: z.string().nullable().optional(),
+    context: NonEmptyString,
+    state: NonEmptyString,
+    description: z.string().nullable().optional(),
+    target_url: z.string().nullable().optional(),
+    url: z.string().optional(),
+    avatar_url: z.string().nullable().optional(),
+    created_at: z.string().optional(),
+    updated_at: z.string().optional(),
+    commit: z.unknown().optional(),
+    branches: z.unknown().optional(),
+    sender: z.object({ login: NonEmptyString }).optional(),
+    repository: z
+      .object({
+        name: NonEmptyString,
+        owner: z.object({ login: NonEmptyString }),
+      })
+      .optional(),
+  })
+  .strict();
 
 const DEFAULT_CODERABBIT_STATUS_CONTEXTS = new Set(['coderabbit']);
 const DEFAULT_CODERABBIT_TRUSTED_IDENTITIES = new Set([

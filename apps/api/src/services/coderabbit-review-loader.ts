@@ -17,6 +17,7 @@ type GitHubCombinedStatusResponse = {
     target_url?: string | null;
     created_at?: string | null;
     updated_at?: string | null;
+    creator?: { login?: string | null } | null;
   }[];
 };
 
@@ -141,6 +142,25 @@ async function fetchPaginatedGitHubJson<T>(url: string, token: string): Promise<
   return items;
 }
 
+async function fetchPaginatedCombinedStatuses(
+  url: string,
+  token: string,
+): Promise<GitHubCombinedStatusResponse> {
+  const statuses: NonNullable<GitHubCombinedStatusResponse['statuses']> = [];
+  let page = 1;
+  while (true) {
+    const pageUrl = new URL(url);
+    pageUrl.searchParams.set('per_page', '100');
+    if (page > 1) pageUrl.searchParams.set('page', `${page}`);
+    const payload = await fetchGitHubJson<GitHubCombinedStatusResponse>(pageUrl.toString(), token);
+    const pageStatuses = payload.statuses ?? [];
+    statuses.push(...pageStatuses);
+    if (pageStatuses.length < 100) break;
+    page += 1;
+  }
+  return { statuses };
+}
+
 async function fetchGitHubGraphQL<T>(
   query: string,
   variables: Record<string, unknown>,
@@ -231,7 +251,6 @@ async function fetchCodeRabbitReviewThreads(input: {
     );
     const page = data.repository?.pullRequest?.reviewThreads;
     for (const thread of page?.nodes ?? []) {
-      if (thread.isResolved === true) continue;
       const comments = (thread.comments?.nodes ?? [])
         .map(
           (comment): GitHubReviewCommentResponse => ({
@@ -266,49 +285,68 @@ export function createGitHubCodeRabbitReviewLoader(input: {
 }): NonNullable<RunExternalReviewDeps['loadCodeRabbitReview']> {
   return async (ctx) => {
     const repoBase = `https://api.github.com/repos/${ctx.owner}/${ctx.repo}`;
-    const pr = await fetchGitHubJson<GitHubPullRequestResponse>(
-      `${repoBase}/pulls/${ctx.prNumber}`,
-      input.githubToken,
-    );
-    const targetSha = ctx.targetRevision ?? pr.head?.sha;
-    if (!targetSha || !GIT_SHA_RE.test(targetSha)) return { unavailable: true };
-
-    const combined = await fetchGitHubJson<GitHubCombinedStatusResponse>(
-      `${repoBase}/commits/${targetSha}/status`,
-      input.githubToken,
-    );
-    const status = (combined.statuses ?? []).find((candidate) =>
-      isTrustedCodeRabbitStatusContext(candidate.context, input.product),
-    );
-    if (!status) return { unavailable: true };
-
-    const [reviewComments, reviewThreads] = await Promise.all([
-      fetchPaginatedGitHubJson<GitHubReviewCommentResponse>(
-        `${repoBase}/pulls/${ctx.prNumber}/comments`,
+    try {
+      const pr = await fetchGitHubJson<GitHubPullRequestResponse>(
+        `${repoBase}/pulls/${ctx.prNumber}`,
         input.githubToken,
-      ),
-      fetchCodeRabbitReviewThreads({
-        owner: ctx.owner,
-        repo: ctx.repo,
-        prNumber: ctx.prNumber,
-        product: input.product,
-        githubToken: input.githubToken,
-      }),
-    ]);
+      );
+      const targetSha = ctx.targetRevision ?? pr.head?.sha;
+      if (!targetSha || !GIT_SHA_RE.test(targetSha)) return { unavailable: true };
 
-    return {
-      status: {
-        context: status.context,
-        state: status.state,
-        description: status.description,
-        target_url: status.target_url,
-        created_at: status.created_at,
-        updated_at: status.updated_at,
-      },
-      reviewComments: reviewComments.filter((comment) =>
-        isTrustedCodeRabbitIdentity(comment.user?.login, input.product),
-      ),
-      reviewThreads,
-    };
+      const combined = await fetchPaginatedCombinedStatuses(
+        `${repoBase}/commits/${targetSha}/status`,
+        input.githubToken,
+      );
+      const status = (combined.statuses ?? []).find(
+        (candidate) =>
+          isTrustedCodeRabbitStatusContext(candidate.context, input.product) &&
+          isTrustedCodeRabbitIdentity(candidate.creator?.login, input.product),
+      );
+      if (!status) return { unavailable: true };
+
+      const [reviewComments, reviewThreads] = await Promise.all([
+        fetchPaginatedGitHubJson<GitHubReviewCommentResponse>(
+          `${repoBase}/pulls/${ctx.prNumber}/comments`,
+          input.githubToken,
+        ),
+        fetchCodeRabbitReviewThreads({
+          owner: ctx.owner,
+          repo: ctx.repo,
+          prNumber: ctx.prNumber,
+          product: input.product,
+          githubToken: input.githubToken,
+        }),
+      ]);
+      const trustedResolvedThreadCommentIds = new Set(
+        reviewThreads
+          .filter((thread) => thread.isResolved === true || thread.is_resolved === true)
+          .flatMap((thread) => thread.comments ?? [])
+          .flatMap((comment) => [comment.id, comment.node_id])
+          .filter((id): id is string | number => id !== undefined),
+      );
+
+      return {
+        status: {
+          context: status.context,
+          state: status.state,
+          description: status.description,
+          target_url: status.target_url,
+          created_at: status.created_at,
+          updated_at: status.updated_at,
+        },
+        reviewComments: reviewComments.filter(
+          (comment) =>
+            isTrustedCodeRabbitIdentity(comment.user?.login, input.product) &&
+            !trustedResolvedThreadCommentIds.has(comment.id ?? '') &&
+            !trustedResolvedThreadCommentIds.has(comment.node_id ?? ''),
+        ),
+        reviewThreads: reviewThreads.filter(
+          (thread) => thread.isResolved !== true && thread.is_resolved !== true,
+        ),
+      };
+    } catch (err) {
+      console.error('[coderabbit-review-loader] Failed to load GitHub review payload:', err);
+      return { error: 'github_review_fetch_failed' };
+    }
   };
 }

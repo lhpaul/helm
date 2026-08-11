@@ -482,6 +482,33 @@ describe('parseGitHubWebhook', () => {
       );
       expect(result.type).toBe('unknown');
     });
+
+    it('rejects CodeRabbit status with empty trust inputs', () => {
+      const result = parseGitHubWebhook(
+        ctx('status', {
+          context: ' ',
+          state: 'success',
+          sha: ' ',
+          sender: { login: 'coderabbitai[bot]' },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('rejects CodeRabbit status payloads with unexpected fields', () => {
+      const result = parseGitHubWebhook(
+        ctx('status', {
+          context: 'CodeRabbit',
+          state: 'success',
+          sha: 'abc123def',
+          sender: { login: 'coderabbitai[bot]' },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+          unexpected: 'spoofed',
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
   });
 
   describe('unknown / malformed inputs', () => {

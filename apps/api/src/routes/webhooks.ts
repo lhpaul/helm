@@ -107,7 +107,9 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       // helm/plan/*, helm/impl/*) AND release.published events must process for
       // Linear products too (a Linear product still ships via GitHub releases).
       const trustConfig =
-        eventType === 'check_run' ? externalReviewTrustConfig(await getProductConfig()) : undefined;
+        eventType === 'check_run' || eventType === 'status'
+          ? externalReviewTrustConfig(await getProductConfig())
+          : undefined;
       event = parseGitHubWebhook({ eventType, payload: body }, trustConfig);
     } else {
       // issues / projects_v2_item — require the GitHub Projects

@@ -472,10 +472,12 @@ export async function runCodeReviewLoop(
         params.runtime,
         params.runGit,
         params.runGh,
-        params.fetchFn,
-        params.codeRepo,
-        params.branchName,
-        transformReviewComment,
+        {
+          fetchFn: params.fetchFn,
+          selectedCodeRepo: params.codeRepo,
+          selectedBranchName: params.branchName,
+          transformReviewComment,
+        },
       );
       lastFanout = fanoutResult;
       totalCost += fanoutResult.costUsd;

@@ -105,11 +105,7 @@ import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evid
 import { postPRComment } from '../specialists/pr-helpers.js';
 import { buildAdvisorySummaryRows, upsertReviewLoopSummaryComment } from './summary.js';
 import { builtInFalsePositiveEntries, fetchFalsePositivesCatalog } from './false-positives.js';
-import type {
-  ReviewerFanoutResult,
-  ReviewerResult,
-  ReviewCommentTransform,
-} from '../specialists/reviewer-fanout.js';
+import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
 
 const PR_URL = 'https://github.com/o/r/pull/42';
 
@@ -264,10 +260,12 @@ describe('runCodeReviewLoop', () => {
       expect.any(MockAgentRuntime),
       runGit,
       undefined,
-      undefined,
-      { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
-      'helm/spec/issue_1',
-      undefined,
+      {
+        fetchFn: undefined,
+        selectedCodeRepo: { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
+        selectedBranchName: 'helm/spec/issue_1',
+        transformReviewComment: undefined,
+      },
     );
     expect(buildRemediationParams).toHaveBeenCalledWith(
       'issue_1',
@@ -1041,10 +1039,12 @@ describe('runCodeReviewLoop', () => {
       expect.any(MockAgentRuntime),
       runGit,
       undefined,
-      undefined,
-      { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
-      'helm/spec/issue_1',
-      expect.any(Function),
+      {
+        fetchFn: undefined,
+        selectedCodeRepo: { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
+        selectedBranchName: 'helm/spec/issue_1',
+        transformReviewComment: expect.any(Function),
+      },
     );
     expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1322,7 +1322,7 @@ describe('runCodeReviewLoop', () => {
     vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInFalsePositiveEntries());
     let transformedBody = '';
     vi.mocked(fanoutReviewers).mockImplementationOnce(async (...args) => {
-      const transformReviewComment = args[10] as ReviewCommentTransform | undefined;
+      const transformReviewComment = args[7]?.transformReviewComment;
       expect(transformReviewComment).toBeTypeOf('function');
       const transformed = await transformReviewComment!({
         kind: 'code',
@@ -1387,7 +1387,7 @@ describe('runCodeReviewLoop', () => {
     vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInFalsePositiveEntries());
     let transformedBody = '';
     vi.mocked(fanoutReviewers).mockImplementationOnce(async (...args) => {
-      const transformReviewComment = args[10] as ReviewCommentTransform | undefined;
+      const transformReviewComment = args[7]?.transformReviewComment;
       expect(transformReviewComment).toBeTypeOf('function');
       const transformed = await transformReviewComment!({
         kind: 'code',

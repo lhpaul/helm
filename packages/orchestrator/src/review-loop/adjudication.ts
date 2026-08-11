@@ -308,7 +308,7 @@ function declaredConflictChoices(body: string): string[] {
   const choices: string[] = [];
   for (const line of body.split(/\r?\n/u)) {
     const match = line.match(
-      /^\s*(?:(?:[-*]|\d+\.)\s*(?:\[[ xX]\]\s*)?(?:\*\*)?([A-Za-z])(?:\*\*)?|(?:\[[ xX]\]\s*)?(?:\*\*)?(Option\s+[A-Za-z0-9][\w .-]*?)(?:\*\*)?)\s*:\s*(.*)$/iu,
+      /^\s*(?:(?:[-*]|\d+\.)\s*(?:\[[ xX]\]\s*)?(?:\*\*)?([A-Za-z])(?:\*\*)?|(?:(?:[-*]|\d+\.)\s*)?(?:\[[ xX]\]\s*)?(?:\*\*)?(Option\s+[A-Za-z0-9][\w .-]*?)(?:\*\*)?)\s*:\s*(.*)$/iu,
     );
     if (!match) continue;
     const rawLabel = (match[1] ?? match[2])?.trim();

@@ -146,6 +146,31 @@ Chosen option: Option X`);
     ).toBe(false);
   });
 
+  it('matches bulleted Option labels to Option decisions', () => {
+    const body = `# Review Adjudication: LEA-1
+
+## Conflicts
+- **product_decision** · Fork PRs and early-loop triggering
+  - Option A: require canonical head repo
+  - Option B: keep branch-name-only triggering
+
+## Status
+HUMAN_REQUIRED`;
+    const decision = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Fork PRs and early-loop triggering
+Chosen option: Option A`);
+
+    expect(decision).not.toBeNull();
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'LEA-1',
+        decision: decision!,
+        adjudicationBodies: [body],
+      }),
+    ).toBe(true);
+  });
+
   it('normalizes structured and checklist inputs to the same fingerprint', () => {
     const structured = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
 Conflict kind: product_decision

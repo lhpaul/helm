@@ -97,6 +97,13 @@ export type ReviewCommentTransform = (
   input: ReviewCommentTransformInput,
 ) => ReviewCommentTransformResult | Promise<ReviewCommentTransformResult>;
 
+export interface FanoutReviewersOptions {
+  fetchFn?: FetchFn;
+  selectedCodeRepo?: CodeRepo;
+  selectedBranchName?: string;
+  transformReviewComment?: ReviewCommentTransform;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 // Map ReviewerKind → product.specialists key
@@ -485,11 +492,9 @@ export async function fanoutReviewers(
   runtime: IAgentRuntime,
   runGit?: RunGit,
   runGh?: RunGh,
-  fetchFn?: FetchFn,
-  selectedCodeRepo?: CodeRepo,
-  selectedBranchName?: string,
-  transformReviewComment?: ReviewCommentTransform,
+  options: FanoutReviewersOptions = {},
 ): Promise<ReviewerFanoutResult> {
+  const { fetchFn, selectedCodeRepo, selectedBranchName, transformReviewComment } = options;
   const codeRepo = selectedCodeRepo ?? product.code_repos[0];
   if (!codeRepo) {
     return {

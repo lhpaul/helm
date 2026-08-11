@@ -831,16 +831,9 @@ describe('fanoutReviewers', () => {
     const runGit = makeMockRunGit();
     const runGh = makeMockRunGh();
 
-    await fanoutReviewers(
-      'HLM-42',
-      makeProduct(),
-      PR_URL,
-      'test-token',
-      runtime,
-      runGit,
-      runGh,
+    await fanoutReviewers('HLM-42', makeProduct(), PR_URL, 'test-token', runtime, runGit, runGh, {
       fetchFn,
-    );
+    });
 
     expect(spawnedParams).toHaveLength(3);
     for (const params of spawnedParams) {
@@ -888,7 +881,7 @@ describe('fanoutReviewers', () => {
       runtime,
       runGit,
       runGh,
-      fetchFn,
+      { fetchFn },
     );
 
     // Dispatch should succeed despite spec fetch failure

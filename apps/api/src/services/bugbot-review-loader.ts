@@ -52,6 +52,8 @@ type LoadedReviewThread = {
   id?: string | number;
   isResolved?: boolean;
   is_resolved?: boolean;
+  isOutdated?: boolean;
+  is_outdated?: boolean;
   path?: string | null;
   line?: number | null;
   comments?: GitHubReviewCommentResponse[];
@@ -69,6 +71,7 @@ type GitHubReviewThreadsGraphQL = {
         nodes?: {
           id?: string;
           isResolved?: boolean;
+          isOutdated?: boolean;
           path?: string | null;
           line?: number | null;
           comments?: {
@@ -217,6 +220,7 @@ const REVIEW_THREADS_QUERY = `
           nodes {
             id
             isResolved
+            isOutdated
             path
             line
             comments(first: 100) {
@@ -262,6 +266,7 @@ async function fetchBugbotReviewThreads(input: {
     const page = data.repository?.pullRequest?.reviewThreads;
     for (const thread of page?.nodes ?? []) {
       if (thread.isResolved === true) continue;
+      if (thread.isOutdated === true) continue;
       const comments = (thread.comments?.nodes ?? [])
         .map(
           (comment): GitHubReviewCommentResponse => ({
@@ -279,6 +284,7 @@ async function fetchBugbotReviewThreads(input: {
       threads.push({
         id: thread.id,
         isResolved: thread.isResolved,
+        isOutdated: thread.isOutdated,
         path: thread.path,
         line: thread.line,
         comments,

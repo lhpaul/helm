@@ -308,11 +308,11 @@ function declaredConflictChoices(body: string): string[] {
   const choices: string[] = [];
   for (const line of body.split(/\r?\n/u)) {
     const match = line.match(
-      /^\s*(?:[-*]\s*)?(?:\[[ xX]\]\s*)?(?:\*\*)?(Option\s+[A-Za-z0-9][\w .-]*?|[A-Za-z])(?:\*\*)?\s*:\s*(.*)$/iu,
+      /^\s*(?:(?:[-*]|\d+\.)\s*(?:\[[ xX]\]\s*)?(?:\*\*)?([A-Za-z])(?:\*\*)?|(?:\[[ xX]\]\s*)?(?:\*\*)?(Option\s+[A-Za-z0-9][\w .-]*?)(?:\*\*)?)\s*:\s*(.*)$/iu,
     );
     if (!match) continue;
-    const rawLabel = match[1]?.trim();
-    const value = match[2]?.trim();
+    const rawLabel = (match[1] ?? match[2])?.trim();
+    const value = match[3]?.trim();
     // Normalize short labels ("A") to "Option A" so human decisions that use
     // either form still match adjudication bullets like `- A: …`.
     const label =

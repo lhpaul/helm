@@ -20,7 +20,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { rm } from 'node:fs/promises';
-import type { CodeRepo, Product } from '@helm/shared';
+import { implBranchName, type CodeRepo, type Product } from '@helm/shared';
 import type { AgentResult, IAgentRuntime, SpawnParams } from '../runtime.js';
 import {
   provisionReviewerWorkspace,
@@ -208,7 +208,7 @@ export function buildReviewerParams(
   const kindLabel = kind.charAt(0).toUpperCase() + kind.slice(1);
   const codeRepo = options.codeRepo ?? product.code_repos[0];
   const defaultBranch = codeRepo?.default_branch ?? 'main';
-  const branchName = options.branchName ?? `helm/impl/${externalId}`;
+  const branchName = options.branchName ?? implBranchName(externalId);
 
   const commonHeader = [
     `You are Helm's ${kindLabel} reviewer specialist. Your task is to review item \`${externalId}\`.`,
@@ -515,7 +515,7 @@ export async function fanoutReviewers(
   }
 
   // Provision all 3 workspaces in parallel.
-  const branchName = selectedBranchName ?? `helm/impl/${externalId}`;
+  const branchName = selectedBranchName ?? implBranchName(externalId);
 
   // provisionReviewerWorkspace clones the selected review branch directly from
   // the remote, so each reviewer workspace contains the real PR contents.

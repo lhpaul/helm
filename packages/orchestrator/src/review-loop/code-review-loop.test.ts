@@ -48,6 +48,7 @@ vi.mock('../specialists/fetch-product-context.js', async (importOriginal) => {
   };
 });
 vi.mock('../specialists/code-workspace.js', () => ({
+  EXTERNAL_ID_SAFE: /^(?!\.)[A-Za-z0-9._-]+$/,
   provisionReviewerWorkspace: vi.fn().mockResolvedValue({
     workspacePath: '/tmp/ws',
     branchName: 'helm/impl/issue_1',

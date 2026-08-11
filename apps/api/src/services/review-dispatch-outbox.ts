@@ -45,6 +45,36 @@ function normalizeKind(kind: ReviewDispatchIntentKind | undefined): ReviewDispat
   return kind ?? 'review_dispatch';
 }
 
+const REVIEW_DISPATCH_SPECIALIST_SLOTS = [
+  undefined,
+  'spec-draft-reviewer',
+  'plan-draft-reviewer',
+] as const;
+
+type ReviewDispatchSpecialistSlot = (typeof REVIEW_DISPATCH_SPECIALIST_SLOTS)[number];
+
+const REVIEW_DISPATCH_FILE_SUFFIX_BY_SPECIALIST: Record<
+  Exclude<ReviewDispatchSpecialistSlot, undefined>,
+  string
+> = {
+  'spec-draft-reviewer': '.spec-draft-review',
+  'plan-draft-reviewer': '.plan-draft-review',
+};
+
+const PENDING_EXTERNAL_REVIEW_FILE_SUFFIX_BY_SPECIALIST: Record<
+  Exclude<ReviewDispatchSpecialistSlot, undefined>,
+  string
+> = {
+  'spec-draft-reviewer': '.spec-draft-pending-external-review',
+  'plan-draft-reviewer': '.plan-draft-pending-external-review',
+};
+
+function isReviewDispatchSpecialistSlot(
+  specialistId: string | undefined,
+): specialistId is ReviewDispatchSpecialistSlot {
+  return REVIEW_DISPATCH_SPECIALIST_SLOTS.includes(specialistId as ReviewDispatchSpecialistSlot);
+}
+
 /** Prefer a specialist-scoped slot when sharding leaves duplicate pending rows. */
 function pickPendingExternalReviewMatch(
   matches: PendingExternalReviewIntent[],
@@ -59,21 +89,21 @@ function pickPendingExternalReviewMatch(
 function reviewDispatchFileName(externalId: string, specialistId?: string): string {
   // Draft reviewers share an item but not an outbox slot — keep separate files so a
   // later plan sync cannot clobber a parked spec intent (or vice versa).
-  if (specialistId === 'spec-draft-reviewer') return `${externalId}.spec-draft-review.json`;
-  if (specialistId === 'plan-draft-reviewer') return `${externalId}.plan-draft-review.json`;
-  return `${externalId}.json`;
+  const suffix =
+    isReviewDispatchSpecialistSlot(specialistId) && specialistId
+      ? REVIEW_DISPATCH_FILE_SUFFIX_BY_SPECIALIST[specialistId]
+      : '';
+  return `${externalId}${suffix}.json`;
 }
 
 function pendingExternalReviewFileName(externalId: string, specialistId?: string): string {
   // External analysis deferrals are per artifact. A spec-draft and plan-draft
   // review can be pending for the same item at the same time.
-  if (specialistId === 'spec-draft-reviewer') {
-    return `${externalId}.spec-draft-pending-external-review.json`;
-  }
-  if (specialistId === 'plan-draft-reviewer') {
-    return `${externalId}.plan-draft-pending-external-review.json`;
-  }
-  return `${externalId}.pending-external-review.json`;
+  const suffix =
+    isReviewDispatchSpecialistSlot(specialistId) && specialistId
+      ? PENDING_EXTERNAL_REVIEW_FILE_SUFFIX_BY_SPECIALIST[specialistId]
+      : '.pending-external-review';
+  return `${externalId}${suffix}.json`;
 }
 
 export class ReviewDispatchOutbox {
@@ -147,9 +177,8 @@ export class ReviewDispatchOutbox {
     externalId: string,
   ): Promise<ReviewDispatchIntent[]> {
     assertSafeIntentKey(productSlug, externalId);
-    const specialists = [undefined, 'spec-draft-reviewer', 'plan-draft-reviewer'] as const;
     const intents: ReviewDispatchIntent[] = [];
-    for (const specialistId of specialists) {
+    for (const specialistId of REVIEW_DISPATCH_SPECIALIST_SLOTS) {
       const intent = await this.get(productSlug, externalId, 'review_dispatch', specialistId);
       if (intent && (intent.kind ?? 'review_dispatch') === 'review_dispatch') {
         intents.push(intent);
@@ -164,9 +193,8 @@ export class ReviewDispatchOutbox {
     externalId: string,
   ): Promise<PendingExternalReviewIntent[]> {
     assertSafeIntentKey(productSlug, externalId);
-    const specialists = [undefined, 'spec-draft-reviewer', 'plan-draft-reviewer'] as const;
     const intents: PendingExternalReviewIntent[] = [];
-    for (const specialistId of specialists) {
+    for (const specialistId of REVIEW_DISPATCH_SPECIALIST_SLOTS) {
       const intent = await this.get(
         productSlug,
         externalId,
@@ -240,10 +268,9 @@ export class ReviewDispatchOutbox {
     const intents = await this.list();
     let removed = 0;
     for (const intent of intents) {
-      if (intent.kind !== 'pending_external_review') continue;
       if (!intent.expiresAt || Date.parse(intent.expiresAt) > nowMs) continue;
       const didRemove = await this.removeIfMatches(intent.productSlug, intent.externalId, {
-        kind: 'pending_external_review',
+        kind: normalizeKind(intent.kind),
         updatedAt: intent.updatedAt,
         targetRevision: intent.targetRevision,
         specialistId: intent.specialistId,

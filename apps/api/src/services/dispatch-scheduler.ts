@@ -6,6 +6,7 @@ import {
   type DeferredExternalReviewIntent,
 } from '@helm/orchestrator';
 import type { Product } from '@helm/shared';
+import { WORKFLOW_STAGES, type WorkflowStage } from '@helm/workflow';
 import { createRuntimeForProduct } from './runtime-factory.js';
 import { transitionItem } from './item-service.js';
 import { getIssueTrackerAdapter, getJobStore, getProductRegistry, getItemStore } from './index.js';
@@ -28,23 +29,10 @@ import { createGitHubBugbotReviewLoader } from './bugbot-review-loader.js';
 import { createGitHubCodeRabbitReviewLoader } from './coderabbit-review-loader.js';
 
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
-const DRAFT_REVIEWER_NO_LONGER_APPLICABLE = 'Draft reviewer no longer applicable';
+export const DUPLICATE_TARGET_REVISION = 'Duplicate target revision';
+export const DRAFT_REVIEWER_NO_LONGER_APPLICABLE = 'Draft reviewer no longer applicable';
 /** Parked early-loop intents may be replayed before the item reaches draft stage. */
 const DRAFT_REVIEWER_NOT_YET_APPLICABLE = 'Draft reviewer not yet applicable';
-
-/** Coarse stage rank so we can tell "awaiting draft" from "past draft". */
-const STAGE_RANK: Record<string, number> = {
-  discovery: 0,
-  'spec-draft': 10,
-  'spec-ready': 20,
-  'plan-draft': 30,
-  'plan-ready': 40,
-  'in-development': 50,
-  'code-review': 60,
-  remediation: 65,
-  merged: 70,
-  released: 80,
-};
 
 function draftReviewerSkipReason(input: {
   earlyLoopEnabled: boolean;
@@ -53,9 +41,10 @@ function draftReviewerSkipReason(input: {
 }): typeof DRAFT_REVIEWER_NO_LONGER_APPLICABLE | typeof DRAFT_REVIEWER_NOT_YET_APPLICABLE | null {
   if (!input.earlyLoopEnabled) return DRAFT_REVIEWER_NO_LONGER_APPLICABLE;
   if (input.itemStage === input.draftStage) return null;
-  const itemRank = STAGE_RANK[input.itemStage] ?? Number.POSITIVE_INFINITY;
-  const draftRank = STAGE_RANK[input.draftStage] ?? 0;
+  const itemRank = WORKFLOW_STAGES.indexOf(input.itemStage as WorkflowStage);
+  const draftRank = WORKFLOW_STAGES.indexOf(input.draftStage);
   // Unknown stages are treated as past-draft so we clear rather than strand forever.
+  if (itemRank < 0 || draftRank < 0) return DRAFT_REVIEWER_NO_LONGER_APPLICABLE;
   if (itemRank < draftRank) return DRAFT_REVIEWER_NOT_YET_APPLICABLE;
   return DRAFT_REVIEWER_NO_LONGER_APPLICABLE;
 }
@@ -173,6 +162,7 @@ async function persistPendingReviewDispatch(input: {
   specialistId?: string;
   prNumber?: number;
   targetRevision?: string;
+  expiresAt?: string;
   triggeredBy: string;
 }): Promise<void> {
   const outbox = await getReviewDispatchOutbox(input.dataRoot);
@@ -183,6 +173,7 @@ async function persistPendingReviewDispatch(input: {
     specialistId: input.specialistId,
     prNumber: input.prNumber,
     targetRevision: input.targetRevision,
+    expiresAt: input.expiresAt,
     triggeredBy: input.triggeredBy,
   });
 }
@@ -219,6 +210,7 @@ export async function persistReviewDispatchIntent(input: {
   specialistId?: string;
   prNumber?: number;
   targetRevision?: string;
+  expiresAt?: string;
   triggeredBy: string;
 }): Promise<void> {
   await persistPendingReviewDispatch({
@@ -353,7 +345,7 @@ async function finalizePendingExternalReviewResume(
     prNumber: intent.prNumber,
     triggeredBy,
   });
-  if (outcome.scheduled || outcome.reason === 'Duplicate target revision') {
+  if (outcome.scheduled || outcome.reason === DUPLICATE_TARGET_REVISION) {
     await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
     return outcome;
   }
@@ -468,7 +460,7 @@ async function replayOnePendingReviewDispatch(input: {
   ) => {
     if (
       outcome.scheduled ||
-      outcome.reason === 'Duplicate target revision' ||
+      outcome.reason === DUPLICATE_TARGET_REVISION ||
       outcome.reason === DRAFT_REVIEWER_NO_LONGER_APPLICABLE
     ) {
       await removeIntent();
@@ -555,11 +547,23 @@ async function replayOnePendingReviewDispatch(input: {
       }
     }
     if (replaySpecialist === 'reviewer-fanout') {
-      const pr = await resolveOpenPrMetadata({
-        product: input.product,
-        prNumber: intent.prNumber,
-        githubToken: input.githubToken,
-      });
+      let pr: Awaited<ReturnType<typeof resolveOpenPrMetadata>>;
+      try {
+        pr = await resolveOpenPrMetadata({
+          product: input.product,
+          prNumber: intent.prNumber,
+          githubToken: input.githubToken,
+        });
+      } catch (err) {
+        if (isTerminalPullRequestLookupError(err)) {
+          console.info(
+            `[dispatch-scheduler] pending replay skipped — implementation PR #${intent.prNumber} is no longer open`,
+          );
+          await removeIntent();
+          return;
+        }
+        throw err;
+      }
       const expectedHeadRef = `helm/impl/${intent.externalId}`;
       if (pr.headRef !== expectedHeadRef) {
         console.info(
@@ -656,7 +660,7 @@ async function scheduleReviewAfterImplementerCompletion(input: {
       prNumber,
       triggeredBy: 'agent:implementer:code-review',
     });
-    if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+    if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
       await persistPendingReviewDispatch({
         dataRoot: input.dataRoot,
         productSlug: input.item.productSlug,
@@ -937,7 +941,7 @@ export async function scheduleItemDispatch(input: {
     );
     return {
       scheduled: false,
-      reason: 'Duplicate target revision',
+      reason: DUPLICATE_TARGET_REVISION,
     };
   }
   if ('conflict' in outcome) {

@@ -82,11 +82,12 @@ export function buildReviewAdjudicatorParams(
   );
   const hintsSection = buildExtraHintsSection(specialistCfg.extra_hints);
   const artifactPath = artifactFileFor(workspacePath, 'review-adjudicator');
+  const prLabel = options.draftArtifact ? 'draft artifact PR' : 'implementation PR';
 
   const prompt = [
     `You are Helm's review adjudicator specialist. Your task is to synthesize conflicting reviewer verdicts for item \`${externalId}\` before remediation runs.`,
     '',
-    `The implementation PR is available at: ${prUrl} (for context only — do not merge or close it).`,
+    `The ${prLabel} is available at: ${prUrl} (for context only — do not merge or close it).`,
     '',
     `The working directory is a shallow clone of the \`${branchName}\` review branch.`,
     '',

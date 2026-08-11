@@ -18,7 +18,7 @@
  * orchestrator owns git/gh, mirroring the reviewer fan-out design.
  */
 import { readFile } from 'node:fs/promises';
-import type { CodeRepo, Product } from '@helm/shared';
+import { implBranchName, type CodeRepo, type Product } from '@helm/shared';
 import type { AgentResult, SpawnParams } from '../runtime.js';
 import type { ReviewerKind } from './reviewer-fanout.js';
 import { pushReviewerPatches, artifactFileFor } from './code-workspace.js';
@@ -75,7 +75,7 @@ export function buildRemediationParams(
   findingsByKind: Map<ReviewerKind, string>,
   adjudicationPlan?: string,
   codeRepo?: CodeRepo,
-  branchName = `helm/impl/${externalId}`,
+  branchName = implBranchName(externalId),
 ): SpawnParams {
   const specialistCfg = product.specialists['code-remediator'];
   const defaultBranch = codeRepo?.default_branch ?? product.code_repos[0]?.default_branch ?? 'main';

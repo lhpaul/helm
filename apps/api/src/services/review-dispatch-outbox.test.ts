@@ -227,6 +227,38 @@ describe('ReviewDispatchOutbox', () => {
     ).resolves.toEqual(plan);
   });
 
+  it('removes expired review dispatch intents', async () => {
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await outbox.put({
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      specialistId: 'spec-draft-reviewer',
+      prNumber: 41,
+      targetRevision: 'sha-spec',
+      expiresAt: '2026-07-22T10:15:00.000Z',
+      triggeredBy: 'test:expired-review-dispatch',
+    });
+    const fresh = await outbox.put({
+      productSlug: 'helm',
+      externalId: 'issue_78',
+      specialistId: 'plan-draft-reviewer',
+      prNumber: 42,
+      targetRevision: 'sha-plan',
+      expiresAt: '2026-07-22T10:45:00.000Z',
+      triggeredBy: 'test:fresh-review-dispatch',
+    });
+
+    await expect(
+      outbox.removeExpiredPendingExternalReviews(new Date('2026-07-22T10:30:00.000Z')),
+    ).resolves.toBe(1);
+    await expect(
+      outbox.get('helm', 'issue_78', 'review_dispatch', 'spec-draft-reviewer'),
+    ).resolves.toBeNull();
+    await expect(
+      outbox.get('helm', 'issue_78', 'review_dispatch', 'plan-draft-reviewer'),
+    ).resolves.toEqual(fresh);
+  });
+
   it('prefers specialist-scoped pending external review when legacy and specialist slots match', async () => {
     const outbox = await getReviewDispatchOutbox(dataRoot);
     const legacy = await outbox.put({
@@ -270,7 +302,11 @@ describe('ReviewDispatchOutbox', () => {
         targetRevision: 'sha-dup',
       }),
     ).resolves.toEqual(specialist);
-    expect(legacy.kind).toBe('pending_external_review');
+    await expect(outbox.get('helm', 'issue_78', 'pending_external_review')).resolves.toMatchObject({
+      kind: 'pending_external_review',
+      triggeredBy: legacy.triggeredBy,
+      targetRevision: legacy.targetRevision,
+    });
   });
 
   it('does not match pending external review readiness for the wrong revision', async () => {

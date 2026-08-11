@@ -28,6 +28,8 @@ import {
   clearPendingExternalReview,
   resumePendingExternalReview,
   resumePendingExternalReviewByRevision,
+  DUPLICATE_TARGET_REVISION,
+  DRAFT_REVIEWER_NO_LONGER_APPLICABLE,
 } from '../services/dispatch-scheduler.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
 import {
@@ -42,9 +44,14 @@ import { reconcileMergedArtifactPullRequest } from '../services/merge-reconcilia
 
 /** GitHub logins that push via Helm orchestration — ignore their PR synchronize webhooks. */
 const ORCHESTRATOR_SENDER_LOGINS = new Set(['helm-bot']);
+const ORPHAN_REVIEW_DISPATCH_TTL_MS = 30 * 60 * 1000;
 
 function isOrchestratorSender(login: string | null): boolean {
   return login !== null && ORCHESTRATOR_SENDER_LOGINS.has(login);
+}
+
+function orphanReviewDispatchExpiresAt(): string {
+  return new Date(Date.now() + ORPHAN_REVIEW_DISPATCH_TTL_MS).toISOString();
 }
 
 type ReviewReadinessArtifactKind = 'impl' | 'spec' | 'plan';
@@ -380,7 +387,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           prNumber: pr.number,
           triggeredBy: 'webhook:pr-decision-comment',
         });
-        if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+        if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
           await persistReviewDispatchIntent({
             productSlug: config.product.slug,
             externalId: parsed.externalId,
@@ -422,7 +429,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
               prNumber: event.prNumber,
               triggeredBy: 'webhook:impl-pr-sync',
             });
-            if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+            if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
               if (event.headSha || event.prNumber !== undefined) {
                 await persistReviewDispatchIntent({
                   productSlug: config.product.slug,
@@ -486,9 +493,9 @@ webhooksRouter.post('/webhooks/github', async (c) => {
               prNumber: event.prNumber,
               triggeredBy: `webhook:${parsed.kind}-pr-sync`,
             });
-            if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+            if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
               if (
-                outcome.reason !== 'Draft reviewer no longer applicable' &&
+                outcome.reason !== DRAFT_REVIEWER_NO_LONGER_APPLICABLE &&
                 (event.headSha || event.prNumber !== undefined)
               ) {
                 await persistReviewDispatchIntent({
@@ -529,6 +536,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
                 specialistId,
                 prNumber: event.prNumber,
                 targetRevision: event.headSha,
+                expiresAt: orphanReviewDispatchExpiresAt(),
                 triggeredBy: `webhook:${parsed.kind}-pr-sync:awaiting-item-created`,
               });
             }
@@ -717,7 +725,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             targetRevision: event.targetRevision,
             triggeredBy: 'webhook:external-review-ready',
           });
-      if (!outcome.scheduled && outcome.reason !== 'Duplicate target revision') {
+      if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
         console.info(
           `[webhooks/github] external review readiness did not resume ${externalId}: ${outcome.reason}`,
         );

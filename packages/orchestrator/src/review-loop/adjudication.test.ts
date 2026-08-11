@@ -121,6 +121,31 @@ Chosen option: Option A`);
     ).toBe(true);
   });
 
+  it('does not treat prose one-letter prefixes as declared options', () => {
+    const body = `# Review Adjudication: LEA-1
+
+## Conflicts
+- **product_decision** · Fork PRs and early-loop triggering
+  x: see the note above before deciding.
+  - A: require canonical head repo
+
+## Status
+HUMAN_REQUIRED`;
+    const decision = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
+Conflict kind: product_decision
+Conflict title: Fork PRs and early-loop triggering
+Chosen option: Option X`);
+
+    expect(decision).not.toBeNull();
+    expect(
+      decisionMatchesLatestAdjudication({
+        externalId: 'LEA-1',
+        decision: decision!,
+        adjudicationBodies: [body],
+      }),
+    ).toBe(false);
+  });
+
   it('normalizes structured and checklist inputs to the same fingerprint', () => {
     const structured = parseHumanProductDecisionComment(`<!-- helm:product-decision -->
 Conflict kind: product_decision

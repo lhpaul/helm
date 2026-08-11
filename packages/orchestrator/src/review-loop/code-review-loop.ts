@@ -191,24 +191,20 @@ async function postReviewLoopSummaryBestEffort(
     cyclesCompleted: number;
     advisories: NormalizedFinding[];
     stage: WorkflowStage;
+    catalog: FalsePositiveEntry[];
     externalProvider?: string;
   },
 ): Promise<void> {
   if (input.advisories.length === 0) return;
 
   try {
-    const catalog = await fetchFalsePositivesCatalog(
-      params.product,
-      params.githubToken,
-      params.fetchFn,
-    );
     await upsertReviewLoopSummaryComment({
       prUrl: params.prUrl,
       githubToken: params.githubToken,
       cyclesCompleted: input.cyclesCompleted,
       externalProvider: input.externalProvider,
       advisories: input.advisories,
-      catalog,
+      catalog: input.catalog,
       stage: input.stage,
       runGh: params.runGh,
     });
@@ -237,15 +233,11 @@ function findFalsePositiveMatch(
 async function suppressFalsePositiveExternalFindings(
   params: RunCodeReviewLoopParams,
   findings: NormalizedFinding[],
+  catalog: FalsePositiveEntry[],
 ): Promise<{ blockers: NormalizedFinding[]; suppressed: NormalizedFinding[] }> {
   if (findings.length === 0) return { blockers: [], suppressed: [] };
 
   const stage = stageForLoopParams(params);
-  const catalog = await fetchFalsePositivesCatalog(
-    params.product,
-    params.githubToken,
-    params.fetchFn,
-  );
   const blockers: NormalizedFinding[] = [];
   const suppressed: NormalizedFinding[] = [];
 
@@ -311,15 +303,11 @@ function rewriteReviewStatus(reviewContent: string, status: 'APPROVED' | 'CHANGE
 
 async function buildFalsePositiveReviewerCommentTransform(
   params: RunCodeReviewLoopParams,
+  catalog: FalsePositiveEntry[],
 ): Promise<ReviewCommentTransform | undefined> {
   if (params.mode !== 'early-artifact') return undefined;
 
   const stage = stageForLoopParams(params);
-  const catalog = await fetchFalsePositivesCatalog(
-    params.product,
-    params.githubToken,
-    params.fetchFn,
-  );
   if (catalog.length === 0) return undefined;
 
   return (input) => suppressFalsePositiveReviewerComment(input, catalog, stage);
@@ -328,15 +316,11 @@ async function buildFalsePositiveReviewerCommentTransform(
 async function suppressFalsePositiveReviewerResults(
   params: RunCodeReviewLoopParams,
   results: ReviewerResult[],
+  catalog: FalsePositiveEntry[],
 ): Promise<ReviewerResult[]> {
   if (params.mode !== 'early-artifact' || results.length === 0) return results;
 
   const stage = stageForLoopParams(params);
-  const catalog = await fetchFalsePositivesCatalog(
-    params.product,
-    params.githubToken,
-    params.fetchFn,
-  );
   if (catalog.length === 0) return results;
 
   return results.map((result) => {
@@ -468,10 +452,18 @@ export async function runCodeReviewLoop(
   const externalSticky = createStickyLane();
   let lastFanout: ReviewerFanoutResult | null = null;
   let ranRemediation = false;
+  const falsePositiveCatalog = await fetchFalsePositivesCatalog(
+    params.product,
+    params.githubToken,
+    params.fetchFn,
+  );
 
   while (true) {
     while (true) {
-      const transformReviewComment = await buildFalsePositiveReviewerCommentTransform(params);
+      const transformReviewComment = await buildFalsePositiveReviewerCommentTransform(
+        params,
+        falsePositiveCatalog,
+      );
       const fanoutResult = await fanoutReviewers(
         params.externalId,
         params.product,
@@ -503,6 +495,7 @@ export async function runCodeReviewLoop(
       const reviewerResults = await suppressFalsePositiveReviewerResults(
         params,
         fanoutResult.reviewerResults,
+        falsePositiveCatalog,
       );
       const gateFanoutResult =
         reviewerResults === fanoutResult.reviewerResults
@@ -688,6 +681,7 @@ export async function runCodeReviewLoop(
       const { blockers, suppressed } = await suppressFalsePositiveExternalFindings(
         params,
         external.blockers,
+        falsePositiveCatalog,
       );
       if (blockers.length === 0) {
         if (suppressed.length > 0 || external.advisories.length > 0) {
@@ -695,6 +689,7 @@ export async function runCodeReviewLoop(
             cyclesCompleted: cycle,
             advisories: [...suppressed, ...external.advisories],
             stage: stageForLoopParams(params),
+            catalog: falsePositiveCatalog,
             externalProvider: params.product.review?.external?.provider,
           });
         }
@@ -808,12 +803,8 @@ export async function runCodeReviewLoop(
       await postReviewLoopSummaryBestEffort(params, {
         cyclesCompleted: cycle,
         advisories: external.advisories,
-        stage:
-          params.mode === 'early-artifact'
-            ? params.kind === 'spec'
-              ? 'spec-draft'
-              : 'plan-draft'
-            : 'code-review',
+        stage: stageForLoopParams(params),
+        catalog: falsePositiveCatalog,
         externalProvider: params.product.review?.external?.provider,
       });
     }

@@ -503,6 +503,38 @@ describe('handleReviewerResult', () => {
     expect(postedBodies[0]!).not.toContain('**HIGH** · pair-spec-and-plan-files sequencing');
   });
 
+  it('returns error without posting when transformReviewComment rejects', async () => {
+    await writeReviewArtifact(
+      workspacePath,
+      'security',
+      '# Security Review: HLM-42\n\n## Findings\n- **HIGH** · finding\n\n## Status\nCHANGES_REQUESTED',
+    );
+
+    const runGh: RunGh = vi.fn();
+    const runGit: RunGit = vi.fn().mockResolvedValue({ stdout: '' });
+
+    const result = await handleReviewerResult(
+      'security',
+      'HLM-42',
+      makeAgentResult(),
+      workspacePath,
+      PR_URL,
+      'test-token',
+      makeCodeRepo(),
+      runGh,
+      runGit,
+      undefined,
+      async () => {
+        throw new Error('catalog unavailable');
+      },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.commentPosted).toBe(false);
+    expect(result.error).toContain('Failed to transform review comment: catalog unavailable');
+    expect(runGh).not.toHaveBeenCalled();
+  });
+
   it('code + push fails after comment: status:error, commentPosted:true, error contains push failed', async () => {
     await writeReviewArtifact(
       workspacePath,

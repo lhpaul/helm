@@ -975,7 +975,7 @@ describe('pending external review readiness cleanup', () => {
       targetRevision: 'sha-1',
     });
     await expect(
-      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+      outbox.get('test-product', 'LEA-1', 'pending_external_review', 'spec-draft-reviewer'),
     ).resolves.toBeNull();
   });
 
@@ -1024,7 +1024,7 @@ describe('pending external review readiness cleanup', () => {
       targetRevision: 'sha-1',
     });
     await expect(
-      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+      outbox.get('test-product', 'LEA-1', 'pending_external_review', 'spec-draft-reviewer'),
     ).resolves.toBeNull();
   });
 
@@ -1193,7 +1193,7 @@ describe('pending external review readiness cleanup', () => {
       targetRevision: 'sha-1',
     });
     await expect(
-      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+      outbox.get('test-product', 'LEA-1', 'pending_external_review', 'spec-draft-reviewer'),
     ).resolves.toBeNull();
   });
 
@@ -1246,7 +1246,7 @@ describe('pending external review readiness cleanup', () => {
       targetRevision: 'sha-1',
     });
     await expect(
-      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+      outbox.get('test-product', 'LEA-1', 'pending_external_review', 'plan-draft-reviewer'),
     ).resolves.toBeNull();
   });
 

@@ -1,11 +1,23 @@
 import { readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type {
+  ReviewLoopLane,
+  ReviewLoopLedgerEntry,
+  ReviewLoopLedgerUpdate,
+} from '@helm/orchestrator';
 import { readJson, writeJsonAtomic } from '@helm/storage';
 import { INITIAL_STAGE, validateTransition } from '@helm/workflow';
 import type { WorkflowStage } from '@helm/workflow';
 import { ItemAlreadyExistsError, ItemNotFoundError, StageMismatchError } from './errors.js';
 import { EXTERNAL_ID_REGEX } from './types.js';
 import type { ItemState, ResolvedProductDecision, WorkflowEvent } from './types.js';
+
+/** Lowest of two optional counters — undefined only when both are absent. */
+function minDefined(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.min(a, b);
+}
 
 /**
  * File-based persistence for item workflow state.
@@ -233,6 +245,81 @@ export class ItemStore {
 
       await writeJsonAtomic(this.itemPath(current.externalId), updated);
       return { state: structuredClone(updated), inserted: true };
+    });
+  }
+
+  /**
+   * Records one review-loop lane's cross-dispatch counters (ADR-042).
+   *
+   * `cyclesTotal` is clamped monotonically and `bestBlockerCount` to its lowest
+   * seen value: a stale or concurrent writer must never hand budget back, which
+   * is the reset this ledger exists to prevent. `noProgressStreak` is
+   * last-writer-wins because a legitimate reset to 0 (real progress) has to be
+   * able to lower it.
+   *
+   * Escalations append a history event; ordinary cycle ticks do not, so a long
+   * loop does not bloat the item's history.
+   *
+   * Throws ItemNotFoundError if the item does not exist.
+   */
+  async updateReviewLoopLedger(input: {
+    externalId: string;
+    lane: ReviewLoopLane;
+    update: ReviewLoopLedgerUpdate;
+    triggeredBy: string;
+  }): Promise<ItemState> {
+    return this.withItemLock(input.externalId, async () => {
+      const current = await readJson<ItemState>(this.itemPath(input.externalId));
+      if (current === null) {
+        throw new ItemNotFoundError(input.externalId);
+      }
+
+      const existing = current.reviewLoopLedger?.[input.lane];
+      const now = new Date().toISOString();
+      const bestBlockerCount = minDefined(
+        existing?.bestBlockerCount,
+        input.update.bestBlockerCount,
+      );
+      const entry: ReviewLoopLedgerEntry = {
+        ...existing,
+        cyclesTotal: Math.max(existing?.cyclesTotal ?? 0, input.update.cyclesTotal),
+        noProgressStreak: input.update.noProgressStreak,
+        ...(bestBlockerCount !== undefined ? { bestBlockerCount } : {}),
+        ...(input.update.escalatedAt !== undefined
+          ? {
+              escalatedAt: input.update.escalatedAt,
+              ...(input.update.escalationReason !== undefined
+                ? { escalationReason: input.update.escalationReason }
+                : {}),
+            }
+          : {}),
+        updatedAt: now,
+      };
+
+      const history = input.update.escalatedAt
+        ? [
+            ...current.history,
+            {
+              fromStage: current.currentStage,
+              toStage: current.currentStage,
+              triggeredBy: input.triggeredBy,
+              at: now,
+              note: `review_loop_escalated:${input.lane}: ${
+                input.update.escalationReason ?? 'stop_rule'
+              } after ${entry.cyclesTotal} cumulative cycle(s)`,
+            } satisfies WorkflowEvent,
+          ]
+        : current.history;
+
+      const updated: ItemState = {
+        ...current,
+        reviewLoopLedger: { ...current.reviewLoopLedger, [input.lane]: entry },
+        history,
+        updatedAt: now,
+      };
+
+      await writeJsonAtomic(this.itemPath(current.externalId), updated);
+      return structuredClone(updated);
     });
   }
 

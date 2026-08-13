@@ -50,11 +50,30 @@ describe('resolveReviewLoopConfig', () => {
   it('returns ADR-036 defaults when review is omitted', () => {
     expect(resolveReviewLoopConfig(baseProduct)).toEqual({
       maxCycles: 5,
+      maxCyclesCumulative: 15,
       noProgressCycles: 2,
       adjudicationEnabled: false,
       remediateSeverity: 'critical_high',
       earlyLoopEnabled: false,
     });
+  });
+
+  it('derives the cumulative budget from max_cycles when unset (ADR-042)', () => {
+    const product: Product = {
+      ...baseProduct,
+      review: { loop: { max_cycles: 4, remediate_severity: 'critical_high' } },
+    };
+    expect(resolveReviewLoopConfig(product).maxCyclesCumulative).toBe(12);
+  });
+
+  it('reads an explicit max_cycles_cumulative override', () => {
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        loop: { max_cycles: 4, max_cycles_cumulative: 6, remediate_severity: 'critical_high' },
+      },
+    };
+    expect(resolveReviewLoopConfig(product).maxCyclesCumulative).toBe(6);
   });
 
   it('enables adjudication when review-adjudicator specialist is configured', () => {
@@ -86,6 +105,7 @@ describe('resolveReviewLoopConfig', () => {
     };
     expect(resolveReviewLoopConfig(product)).toEqual({
       maxCycles: 3,
+      maxCyclesCumulative: 9,
       noProgressCycles: 4,
       adjudicationEnabled: false,
       remediateSeverity: 'critical_high',
@@ -109,6 +129,51 @@ describe('stop rule helpers', () => {
     expect(
       evaluateStopRule({ cycle: 5, maxCycles: 5, noProgressCycles: 2, noProgressStreak: 0 }),
     ).toEqual({ escalate: true, reason: 'max_cycles' });
+  });
+
+  it('escalates when the cumulative budget is exhausted, even on cycle 1 (ADR-042)', () => {
+    expect(
+      evaluateStopRule({
+        cycle: 1,
+        maxCycles: 5,
+        noProgressCycles: 2,
+        noProgressStreak: 0,
+        cumulativeCycle: 15,
+        maxCyclesCumulative: 15,
+      }),
+    ).toEqual({ escalate: true, reason: 'max_cycles_cumulative' });
+  });
+
+  it('prefers the cumulative reason when both budgets are exhausted', () => {
+    expect(
+      evaluateStopRule({
+        cycle: 5,
+        maxCycles: 5,
+        noProgressCycles: 2,
+        noProgressStreak: 0,
+        cumulativeCycle: 20,
+        maxCyclesCumulative: 15,
+      }),
+    ).toEqual({ escalate: true, reason: 'max_cycles_cumulative' });
+  });
+
+  it('does not escalate while the cumulative budget has room', () => {
+    expect(
+      evaluateStopRule({
+        cycle: 1,
+        maxCycles: 5,
+        noProgressCycles: 2,
+        noProgressStreak: 0,
+        cumulativeCycle: 14,
+        maxCyclesCumulative: 15,
+      }),
+    ).toEqual({ escalate: false });
+  });
+
+  it('ignores the cumulative rule when the caller does not track it', () => {
+    expect(
+      evaluateStopRule({ cycle: 1, maxCycles: 5, noProgressCycles: 2, noProgressStreak: 0 }),
+    ).toEqual({ escalate: false });
   });
 
   it('escalates on no_progress streak', () => {

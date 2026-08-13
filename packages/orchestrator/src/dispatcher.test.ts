@@ -1796,6 +1796,71 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     expect(transition).not.toHaveBeenCalled();
   });
 
+  it('spends the code-review lane of the cumulative ledger, not a draft lane (ADR-042)', async () => {
+    const product: Product = {
+      ...makeProduct(),
+      review: {
+        loop: { max_cycles: 5, max_cycles_cumulative: 5, remediate_severity: 'critical_high' },
+      },
+    };
+    vi.mocked(fanoutReviewers).mockResolvedValue({
+      reviewerResults: [
+        {
+          kind: 'code',
+          status: 'done',
+          costUsd: 0.01,
+          durationMs: 50,
+          commentPosted: true,
+          findings: { critical: 1, high: 0, medium: 0, low: 0, info: 0 },
+          commentBody: 'fix this',
+        },
+      ],
+      prUrl: 'https://github.com/test-org/test-repo/pull/42',
+      status: 'done',
+      costUsd: 0.03,
+      durationMs: 100,
+    });
+    vi.mocked(shouldRemediate).mockReturnValue(true);
+    const persistReviewLoopLedger = vi.fn();
+
+    const spent = { cyclesTotal: 4, noProgressStreak: 0, updatedAt: '2026-08-13T00:00:00.000Z' };
+
+    const drafted = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      product,
+      new MockAgentRuntime({ messages: [] }),
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        githubToken: 'test-token',
+        runGit: makeProvisionRunGit(),
+        // Budget spent on a different lane must not block code review.
+        reviewLoopLedger: { 'spec-draft': spent },
+        persistReviewLoopLedger,
+      },
+    );
+    expect(drafted.escalationReason).not.toBe('max_cycles_cumulative');
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      product,
+      new MockAgentRuntime({ messages: [] }),
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        githubToken: 'test-token',
+        runGit: makeProvisionRunGit(),
+        reviewLoopLedger: { 'code-review': spent },
+        persistReviewLoopLedger,
+      },
+    );
+
+    expect(result).toMatchObject({ escalated: true, escalationReason: 'max_cycles_cumulative' });
+    expect(persistReviewLoopLedger).toHaveBeenCalledWith(
+      expect.objectContaining({ lane: 'code-review' }),
+    );
+  });
+
   it('forwards review-loop escalation fields when external review escalates', async () => {
     const runtime = new MockAgentRuntime({ messages: [] });
     const product: Product = {

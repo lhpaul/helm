@@ -506,3 +506,141 @@ describe('externalId validation', () => {
     }
   });
 });
+
+describe('updateReviewLoopLedger', () => {
+  it('creates the lane entry on the first recorded cycle', async () => {
+    await store.create(BASE_INPUT);
+
+    const state = await store.updateReviewLoopLedger({
+      externalId: 'HLM-1',
+      lane: 'code-review',
+      update: { cyclesTotal: 1, noProgressStreak: 0, bestBlockerCount: 3 },
+      triggeredBy: 'review-loop:cumulative-budget',
+    });
+
+    expect(state.reviewLoopLedger?.['code-review']).toMatchObject({
+      cyclesTotal: 1,
+      noProgressStreak: 0,
+      bestBlockerCount: 3,
+    });
+    // Ordinary ticks stay out of history — only escalations are audit-worthy.
+    expect(state.history).toHaveLength(1);
+  });
+
+  it('survives a restart-style re-read', async () => {
+    await store.create(BASE_INPUT);
+    await store.updateReviewLoopLedger({
+      externalId: 'HLM-1',
+      lane: 'code-review',
+      update: { cyclesTotal: 6, noProgressStreak: 1 },
+      triggeredBy: 'review-loop:cumulative-budget',
+    });
+
+    const restartedStore = new ItemStore(itemsDir);
+    const state = await restartedStore.get('HLM-1');
+
+    expect(state?.reviewLoopLedger?.['code-review']?.cyclesTotal).toBe(6);
+  });
+
+  it('never hands cumulative budget back to a stale writer', async () => {
+    await store.create(BASE_INPUT);
+    await store.updateReviewLoopLedger({
+      externalId: 'HLM-1',
+      lane: 'code-review',
+      update: { cyclesTotal: 9, noProgressStreak: 2, bestBlockerCount: 1 },
+      triggeredBy: 'review-loop:cumulative-budget',
+    });
+
+    const state = await store.updateReviewLoopLedger({
+      externalId: 'HLM-1',
+      lane: 'code-review',
+      update: { cyclesTotal: 2, noProgressStreak: 0, bestBlockerCount: 4 },
+      triggeredBy: 'review-loop:cumulative-budget',
+    });
+
+    expect(state.reviewLoopLedger?.['code-review']?.cyclesTotal).toBe(9);
+    expect(state.reviewLoopLedger?.['code-review']?.bestBlockerCount).toBe(1);
+    // Streak is last-writer-wins: real progress has to be able to reset it.
+    expect(state.reviewLoopLedger?.['code-review']?.noProgressStreak).toBe(0);
+  });
+
+  it('records an escalation in the item history', async () => {
+    await store.create(BASE_INPUT);
+
+    const state = await store.updateReviewLoopLedger({
+      externalId: 'HLM-1',
+      lane: 'code-review',
+      update: {
+        cyclesTotal: 15,
+        noProgressStreak: 2,
+        escalatedAt: '2026-08-13T12:00:00.000Z',
+        escalationReason: 'max_cycles_cumulative',
+      },
+      triggeredBy: 'review-loop:cumulative-budget',
+    });
+
+    expect(state.reviewLoopLedger?.['code-review']).toMatchObject({
+      escalatedAt: '2026-08-13T12:00:00.000Z',
+      escalationReason: 'max_cycles_cumulative',
+    });
+    expect(state.history.at(-1)).toMatchObject({
+      fromStage: 'discovery',
+      toStage: 'discovery',
+      triggeredBy: 'review-loop:cumulative-budget',
+    });
+    expect(state.history.at(-1)?.note).toContain('max_cycles_cumulative');
+  });
+
+  it('keeps lanes independent so a draft loop cannot spend the code-review budget', async () => {
+    await store.create(BASE_INPUT);
+    await store.updateReviewLoopLedger({
+      externalId: 'HLM-1',
+      lane: 'spec-draft',
+      update: { cyclesTotal: 4, noProgressStreak: 0 },
+      triggeredBy: 'review-loop:cumulative-budget',
+    });
+
+    const state = await store.updateReviewLoopLedger({
+      externalId: 'HLM-1',
+      lane: 'code-review',
+      update: { cyclesTotal: 1, noProgressStreak: 0 },
+      triggeredBy: 'review-loop:cumulative-budget',
+    });
+
+    expect(state.reviewLoopLedger?.['spec-draft']?.cyclesTotal).toBe(4);
+    expect(state.reviewLoopLedger?.['code-review']?.cyclesTotal).toBe(1);
+  });
+
+  it('preserves the ledger across a concurrent transition', async () => {
+    await store.create(BASE_INPUT);
+
+    await Promise.all([
+      store.transition({
+        externalId: 'HLM-1',
+        toStage: 'spec-draft',
+        triggeredBy: 'agent:spec-writer',
+      }),
+      store.updateReviewLoopLedger({
+        externalId: 'HLM-1',
+        lane: 'spec-draft',
+        update: { cyclesTotal: 1, noProgressStreak: 0 },
+        triggeredBy: 'review-loop:cumulative-budget',
+      }),
+    ]);
+
+    const finalState = await store.get('HLM-1');
+    expect(finalState?.currentStage).toBe('spec-draft');
+    expect(finalState?.reviewLoopLedger?.['spec-draft']?.cyclesTotal).toBe(1);
+  });
+
+  it('throws ItemNotFoundError for an unknown item', async () => {
+    await expect(
+      store.updateReviewLoopLedger({
+        externalId: 'HLM-404',
+        lane: 'code-review',
+        update: { cyclesTotal: 1, noProgressStreak: 0 },
+        triggeredBy: 'review-loop:cumulative-budget',
+      }),
+    ).rejects.toThrow(ItemNotFoundError);
+  });
+});

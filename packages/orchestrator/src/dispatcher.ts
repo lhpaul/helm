@@ -20,6 +20,10 @@ import {
 import { resolveReviewLoopConfig } from './review-loop/config.js';
 import type { RunExternalReviewDeps } from './external-review/run.js';
 import type { StopRuleEscalationReason } from './review-loop/stop-rule.js';
+import type {
+  PersistReviewLoopLedgerFn,
+  ReviewLoopLedger,
+} from './review-loop/cumulative-ledger.js';
 import type { StoredResolvedProductDecision } from './review-loop/adjudication.js';
 import { provisionCodeWorkspace, artifactsDirFor } from './specialists/code-workspace.js';
 import {
@@ -139,6 +143,13 @@ export type DispatchOptions = {
   targetRevision?: string;
   onExternalReviewDeferred?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
   externalReviewDeps?: RunExternalReviewDeps;
+  /**
+   * Durable per-item review-loop counters, keyed by lane (ADR-042). The
+   * dispatcher hands the review loop only the lane it is about to run.
+   */
+  reviewLoopLedger?: ReviewLoopLedger;
+  /** Persists a lane's counters after each remediation pass and on escalation. */
+  persistReviewLoopLedger?: PersistReviewLoopLedgerFn;
 };
 
 // ── Status resolution ─────────────────────────────────────────────────────────
@@ -639,6 +650,8 @@ export async function dispatchStageHandler(
       targetRevision: options.targetRevision,
       onExternalReviewDeferred: options.onExternalReviewDeferred,
       externalReviewDeps: options.externalReviewDeps,
+      reviewLoopLedgerEntry: options.reviewLoopLedger?.['code-review'],
+      persistReviewLoopLedger: options.persistReviewLoopLedger,
     });
 
     return {
@@ -722,6 +735,8 @@ export async function dispatchStageHandler(
       targetRevision: options.targetRevision,
       onExternalReviewDeferred: options.onExternalReviewDeferred,
       externalReviewDeps: options.externalReviewDeps,
+      reviewLoopLedgerEntry: options.reviewLoopLedger?.[`${kind}-draft`],
+      persistReviewLoopLedger: options.persistReviewLoopLedger,
     });
 
     return {

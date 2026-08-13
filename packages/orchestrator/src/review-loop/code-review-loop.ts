@@ -51,6 +51,13 @@ import {
   type StopRuleEscalationReason,
 } from './stop-rule.js';
 import {
+  seedFromReviewLoopLedger,
+  type PersistReviewLoopLedgerFn,
+  type ReviewLoopLane,
+  type ReviewLoopLedgerEntry,
+  type ReviewLoopLedgerUpdate,
+} from './cumulative-ledger.js';
+import {
   collectGateFindingFingerprints,
   createStickyLane,
   observeStickyLane,
@@ -110,19 +117,36 @@ export type RunCodeReviewLoopParams = {
   targetRevision?: string;
   onExternalReviewDeferred?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
   mode?: 'code' | 'early-artifact';
+  /**
+   * Durable cross-dispatch counters for this item's lane (ADR-042). Seeds the
+   * lifetime budget so a manual re-dispatch does not restart it at zero.
+   */
+  reviewLoopLedgerEntry?: ReviewLoopLedgerEntry;
+  /** Writes the lane's counters back after each pass and on escalation (ADR-042). */
+  persistReviewLoopLedger?: PersistReviewLoopLedgerFn;
 };
 
 function escalationMessage(
   reason: StopRuleEscalationReason,
   cyclesCompleted: number,
   noProgressCycles?: number,
+  cumulative?: { cycles: number; budget: number },
 ): string {
   if (reason === 'max_cycles') {
     return `Review loop escalated: reached max_cycles (${cyclesCompleted}) with CRITICAL/HIGH findings still open`;
   }
+  if (reason === 'max_cycles_cumulative') {
+    const cycles = cumulative?.cycles ?? cyclesCompleted;
+    const budget = cumulative?.budget ?? cycles;
+    return `Review loop escalated: lifetime review budget exhausted — the next remediation pass would be cumulative cycle ${cycles} of max_cycles_cumulative=${budget} for this item, with CRITICAL/HIGH findings still open (${cyclesCompleted} cycle(s) in this dispatch)`;
+  }
   if (reason === 'no_progress') {
     const threshold = noProgressCycles === undefined ? cyclesCompleted : noProgressCycles;
-    return `Review loop escalated: no progress on blocking findings for ${threshold} consecutive remediation cycle(s) (${cyclesCompleted} cycle(s) completed)`;
+    const carried =
+      cumulative && cumulative.cycles > cyclesCompleted
+        ? ` — the streak spans dispatches (${cumulative.cycles} cumulative cycle(s))`
+        : '';
+    return `Review loop escalated: no progress on blocking findings for ${threshold} consecutive remediation cycle(s) (${cyclesCompleted} cycle(s) completed)${carried}`;
   }
   if (reason === 'adjudication_conflict') {
     return `Review loop escalated: review-adjudicator requires human product or documentation decisions (${cyclesCompleted} cycle(s) completed)`;
@@ -188,9 +212,32 @@ async function postReviewLoopSummaryBestEffort(
   }
 }
 
-function stageForLoopParams(params: RunCodeReviewLoopParams): WorkflowStage {
+/** The lane this run belongs to — also the false-positive catalog stage key. */
+function stageForLoopParams(params: RunCodeReviewLoopParams): ReviewLoopLane {
   if (params.mode !== 'early-artifact') return 'code-review';
   return params.kind === 'spec' ? 'spec-draft' : 'plan-draft';
+}
+
+/**
+ * Writes the lane's cross-dispatch counters back (ADR-042).
+ *
+ * Best-effort: a failed ledger write must not abort a run that has already
+ * pushed remediation commits and moved the item's stage. The cost of the
+ * failure is a budget that under-counts, which the next pass re-reports.
+ */
+async function persistLedgerBestEffort(
+  params: RunCodeReviewLoopParams,
+  update: ReviewLoopLedgerUpdate,
+): Promise<void> {
+  if (!params.persistReviewLoopLedger) return;
+  try {
+    await params.persistReviewLoopLedger({ lane: stageForLoopParams(params), update });
+  } catch (err) {
+    console.error(
+      '[code-review-loop] Failed to persist review-loop ledger:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 function findFalsePositiveMatch(
@@ -376,6 +423,59 @@ async function runExternalReviewWithStopRule(
   }
 }
 
+/**
+ * Terminal stop-rule escalation: records it on the durable ledger, tells the
+ * human on the PR, and returns the loop result. Shared by the internal and
+ * external branches so every stop-rule exit is visible on the PR — a
+ * cumulative-budget escalation is worthless if only the job result carries it.
+ */
+async function escalateFromStopRule(
+  params: RunCodeReviewLoopParams,
+  input: {
+    prUrl: string;
+    reason: StopRuleEscalationReason;
+    cycle: number;
+    cyclesTotal: number;
+    noProgressStreak: number;
+    bestBlockerCount: number | null;
+    loopConfig: ReviewLoopConfig;
+    totalCost: number;
+    maxDuration: number;
+  },
+): Promise<CodeReviewLoopResult> {
+  const message = escalationMessage(input.reason, input.cycle, input.loopConfig.noProgressCycles, {
+    // The pass the stop rule just refused — it never ran, so `cyclesTotal`
+    // (completed passes) stays where it is and only the message counts it.
+    cycles: input.cyclesTotal + 1,
+    budget: input.loopConfig.maxCyclesCumulative,
+  });
+
+  await persistLedgerBestEffort(params, {
+    cyclesTotal: input.cyclesTotal,
+    noProgressStreak: input.noProgressStreak,
+    bestBlockerCount: input.bestBlockerCount ?? undefined,
+    escalatedAt: new Date().toISOString(),
+    escalationReason: input.reason,
+  });
+
+  await postEscalationCommentBestEffort(params, {
+    reason: input.reason,
+    message,
+    cyclesCompleted: input.cycle,
+  });
+
+  return {
+    status: 'error',
+    prUrl: input.prUrl,
+    costUsd: input.totalCost,
+    durationMs: input.maxDuration,
+    cyclesCompleted: input.cycle,
+    escalated: true,
+    escalationReason: input.reason,
+    error: message,
+  };
+}
+
 /** Formats external adapter blockers for the code-remediator prompt. */
 export function formatExternalBlockersForRemediation(blockers: NormalizedFinding[]): string {
   return blockers
@@ -397,11 +497,16 @@ export async function runCodeReviewLoop(
   params: RunCodeReviewLoopParams,
 ): Promise<CodeReviewLoopResult> {
   const loopConfig = resolveReviewLoopConfig(params.product);
+  // Cross-dispatch seed (ADR-042): a manual re-dispatch resumes the lifetime
+  // budget and the no-progress streak instead of restarting them at zero.
+  const ledgerSeed = seedFromReviewLoopLedger(params.reviewLoopLedgerEntry);
   let totalCost = 0;
   let maxDuration = 0;
   let cycle = 1;
-  let noProgressStreak = 0;
-  let bestBlockerCount: number | null = null;
+  /** Remediation passes completed for this lane across every dispatch. */
+  let cyclesTotal = ledgerSeed.priorCycles;
+  let noProgressStreak = ledgerSeed.noProgressStreak;
+  let bestBlockerCount: number | null = ledgerSeed.bestBlockerCount;
   // Separate lanes: internal title fingerprints ≠ external NormalizedFinding.id.
   const internalSticky = createStickyLane();
   const externalSticky = createStickyLane();
@@ -495,18 +600,23 @@ export async function runCodeReviewLoop(
         maxCycles: loopConfig.maxCycles,
         noProgressCycles: loopConfig.noProgressCycles,
         noProgressStreak,
+        // The pass this cycle would run is the (cyclesTotal + 1)-th of the
+        // item's life; if the rule escalates, it never runs and never counts.
+        cumulativeCycle: cyclesTotal + 1,
+        maxCyclesCumulative: loopConfig.maxCyclesCumulative,
       });
       if (stop.escalate) {
-        return {
-          status: 'error',
+        return escalateFromStopRule(params, {
           prUrl: fanoutResult.prUrl,
-          costUsd: totalCost,
-          durationMs: maxDuration,
-          cyclesCompleted: cycle,
-          escalated: true,
-          escalationReason: stop.reason,
-          error: escalationMessage(stop.reason, cycle, loopConfig.noProgressCycles),
-        };
+          reason: stop.reason,
+          cycle,
+          cyclesTotal,
+          noProgressStreak,
+          bestBlockerCount,
+          loopConfig,
+          totalCost,
+          maxDuration,
+        });
       }
 
       const remediationOutcome = await runRemediationPass({
@@ -544,6 +654,12 @@ export async function runCodeReviewLoop(
       }
 
       cycle += 1;
+      cyclesTotal += 1;
+      await persistLedgerBestEffort(params, {
+        cyclesTotal,
+        noProgressStreak,
+        bestBlockerCount: bestBlockerCount ?? undefined,
+      });
     }
 
     const fanout = lastFanout!;
@@ -698,18 +814,21 @@ export async function runCodeReviewLoop(
         maxCycles: loopConfig.maxCycles,
         noProgressCycles: loopConfig.noProgressCycles,
         noProgressStreak,
+        cumulativeCycle: cyclesTotal + 1,
+        maxCyclesCumulative: loopConfig.maxCyclesCumulative,
       });
       if (stop.escalate) {
-        return {
-          status: 'error',
+        return escalateFromStopRule(params, {
           prUrl: fanout.prUrl,
-          costUsd: totalCost,
-          durationMs: maxDuration,
-          cyclesCompleted: cycle,
-          escalated: true,
-          escalationReason: stop.reason,
-          error: escalationMessage(stop.reason, cycle, loopConfig.noProgressCycles),
-        };
+          reason: stop.reason,
+          cycle,
+          cyclesTotal,
+          noProgressStreak,
+          bestBlockerCount,
+          loopConfig,
+          totalCost,
+          maxDuration,
+        });
       }
 
       const remediationOutcome = await runRemediationPass({
@@ -748,6 +867,12 @@ export async function runCodeReviewLoop(
       }
 
       cycle += 1;
+      cyclesTotal += 1;
+      await persistLedgerBestEffort(params, {
+        cyclesTotal,
+        noProgressStreak,
+        bestBlockerCount: bestBlockerCount ?? undefined,
+      });
       continue;
     }
 

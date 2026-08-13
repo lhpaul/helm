@@ -65,7 +65,7 @@ describe('runExternalReviewIfConfigured', () => {
     const product: Product = {
       ...baseProduct,
       code_repos: [],
-      review: { external: { provider: 'haystack' } },
+      review: { external: { provider: 'coderabbit' } },
     };
     await expect(runExternalReviewIfConfigured(product, PR_URL)).resolves.toEqual({
       status: 'skipped',
@@ -76,42 +76,12 @@ describe('runExternalReviewIfConfigured', () => {
   it('skips when the PR URL cannot be parsed', async () => {
     const product: Product = {
       ...baseProduct,
-      review: { external: { provider: 'haystack' } },
+      review: { external: { provider: 'coderabbit' } },
     };
     await expect(runExternalReviewIfConfigured(product, 'not-a-url')).resolves.toEqual({
       status: 'skipped',
       reason: 'unavailable',
     });
-  });
-
-  it('delegates to Haystack adapter when provider is haystack', async () => {
-    const product: Product = {
-      ...baseProduct,
-      review: { external: { provider: 'haystack' } },
-    };
-    const triage = {
-      owner: 'o',
-      repo: 'r',
-      prNumber: 42,
-      findings: [],
-    };
-    const runHaystack = vi.fn(async (args: string[]) => {
-      if (args[0] === 'triage') {
-        return { stdout: JSON.stringify(triage), stderr: '', exitCode: 0 };
-      }
-      return { stdout: '', stderr: '', exitCode: 1 };
-    });
-
-    await expect(runExternalReviewIfConfigured(product, PR_URL, { runHaystack })).resolves.toEqual({
-      status: 'clean',
-      blockers: [],
-      advisories: [],
-      policy: undefined,
-    });
-    expect(runHaystack).toHaveBeenCalledWith(
-      ['triage', 'o/r#42', '--json', '--no-wait'],
-      expect.objectContaining({ timeoutMs: expect.any(Number) }),
-    );
   });
 
   it('delegates to Bugbot adapter when provider is bugbot', async () => {

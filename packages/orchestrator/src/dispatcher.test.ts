@@ -60,9 +60,6 @@ vi.mock('./external-review/run.js', () => ({
     return { owner: match[1], repo: match[2], prNumber: Number(match[3]) };
   }),
 }));
-vi.mock('./external-review/haystack/skip-evidence.js', () => ({
-  fetchHaystackSkipEvidence: vi.fn().mockResolvedValue(null),
-}));
 
 // Lazy imports for the mocked modules (imported after vi.mock hoisting).
 // We use type-safe lazy accessors so we can manipulate mock return values per test.
@@ -1424,7 +1421,7 @@ describe('dispatchStageHandler > early-stage remediators', () => {
     product.review = { early_loop: { enabled: true } };
     vi.mocked(shouldRemediate).mockReturnValue(false);
     const runtime = new MockAgentRuntime({ messages: [] });
-    const externalReviewDeps = { runHaystack: vi.fn() };
+    const externalReviewDeps = { loadCodeRabbitReview: vi.fn() };
 
     const result = await dispatchStageHandler(
       { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'spec-draft' },
@@ -1475,7 +1472,7 @@ describe('dispatchStageHandler > early-stage remediators', () => {
     product.review = { early_loop: { enabled: true } };
     vi.mocked(shouldRemediate).mockReturnValue(false);
     const runtime = new MockAgentRuntime({ messages: [] });
-    const externalReviewDeps = { runHaystack: vi.fn() };
+    const externalReviewDeps = { loadCodeRabbitReview: vi.fn() };
 
     const result = await dispatchStageHandler(
       { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'plan-draft' },
@@ -1805,14 +1802,13 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
       ...makeProduct(),
       review: {
         external: {
-          provider: 'haystack',
-          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+          provider: 'coderabbit',
         },
       },
     };
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'escalate',
-      reason: 'haystack pending_timeout',
+      reason: 'coderabbit pending_timeout',
     });
 
     const result = await dispatchStageHandler(
@@ -1827,7 +1823,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     expect(result.escalated).toBe(true);
     expect(result.escalationReason).toBe('external_escalate');
     expect(result.cyclesCompleted).toBe(1);
-    expect(result.error).toContain('haystack pending_timeout');
+    expect(result.error).toContain('coderabbit pending_timeout');
   });
 
   it('gate inactive: no transition, status from fan-out (item stays in code-review)', async () => {

@@ -10,7 +10,7 @@ describe('formatReviewLoopSummaryComment', () => {
   it('includes marker, disposition table, and ADR-036 note', () => {
     const body = formatReviewLoopSummaryComment({
       cyclesCompleted: 2,
-      externalProvider: 'haystack',
+      externalProvider: 'coderabbit',
       advisories: [
         {
           finding: {
@@ -20,13 +20,13 @@ describe('formatReviewLoopSummaryComment', () => {
             summary: 'Rules violation on CHANGELOG',
           },
           disposition: 'Rejected',
-          rationale: 'Known Haystack false positive.',
+          rationale: 'Known external-reviewer false positive.',
         },
       ],
     });
 
     expect(body).toContain(REVIEW_LOOP_SUMMARY_MARKER);
-    expect(body).toContain('**External review:** haystack');
+    expect(body).toContain('**External review:** coderabbit');
     expect(body).toContain('**Rejected**');
     expect(body).toContain('Do not re-run external review solely to clear advisories');
   });
@@ -34,7 +34,7 @@ describe('formatReviewLoopSummaryComment', () => {
   it('escapes pipe characters in table cells', () => {
     const body = formatReviewLoopSummaryComment({
       cyclesCompleted: 1,
-      externalProvider: 'haystack',
+      externalProvider: 'coderabbit',
       advisories: [
         {
           finding: {

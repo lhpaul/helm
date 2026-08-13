@@ -31,7 +31,7 @@ AUTO_REMEDIATE`;
 
 ## Conflicts
 - **product_decision** · Vacancy on empty Core search
-  Code reviewer: vacate all. Haystack: add guard.
+  Code reviewer: vacate all. External reviewer: add guard.
 
 ## Unified remediation plan
 - **DEFERRED** · Vacancy semantics — awaiting human decision

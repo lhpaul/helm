@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Haystack external review provider (#85, ADR-036):** Haystack is retired end-to-end. `review.external.provider` no longer accepts `haystack` and the `review.external.haystack` config block is rejected — products must use `bugbot` or `coderabbit`. Deletes `packages/orchestrator/src/external-review/haystack/**` (adapter, CLI wrapper, triage polling, category/finding-id normalization, skip-evidence probe, fixtures), the Haystack branch in `runExternalReviewIfConfigured`, and the Haystack check-run allowlist and trusted app identities in the GitHub Projects webhook parser (a `Haystack / Review` check run no longer emits `external_review_ready`). The `external_skip_evidence` stop-rule escalation reason is removed with it: only the Haystack `pr-status` probe ever produced that evidence, so behavior for the remaining providers is unchanged (`external_escalate` and `external_repeated_skip` still apply). The post-skip retry backoff, previously read from `review.external.haystack.poll_interval_sec`, is now a fixed 15s. Shared `defaultSleep` moved to `packages/orchestrator/src/lib/sleep.ts`.
+
 ### Added
 
 - **Reviewer disagreement policy (#64):** the knowledge repo's `false-positives.md` is now the tie-breaker surface for opposing reviewer CRITICAL/HIGH findings. Catalogued adjudications that apply to the current stage are injected into the review-adjudicator and code-remediator prompts as a data-only block (JSON inside opaque delimiters, backticks neutralized). The adjudicator must defer the catalogued side of an opposing pair — keeping the non-catalogued fix as **AUTO** instead of re-opening it as a `product_decision` — and the remediator must never revert code the other side of a catalogued entry depends on. This closes the LEA-109 EP#8/EP#9 oscillation, where remediation flipped a least-privilege connection split back and forth across cycles.

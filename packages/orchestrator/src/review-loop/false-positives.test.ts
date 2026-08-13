@@ -27,7 +27,9 @@ describe('parseFalsePositivesCatalog', () => {
     const entries = parseFalsePositivesCatalog(SAMPLE);
     expect(entries).toHaveLength(1);
     expect(entries[0]!.title).toContain('Health endpoint');
-    expect(entries[0]!.matchesSummary('Haystack flags /health endpoint extra data')).toBe(true);
+    expect(entries[0]!.matchesSummary('External reviewer flags /health endpoint extra data')).toBe(
+      true,
+    );
   });
 
   it('returns empty array for header-only content', () => {

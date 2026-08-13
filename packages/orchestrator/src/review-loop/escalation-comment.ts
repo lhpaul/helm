@@ -1,4 +1,3 @@
-import type { HaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
 import type { StopRuleEscalationReason } from './stop-rule.js';
 
 export const REVIEW_LOOP_ESCALATION_MARKER = '<!-- helm:review-loop-escalation -->';
@@ -7,7 +6,6 @@ export function formatReviewLoopEscalationComment(input: {
   reason: StopRuleEscalationReason;
   message: string;
   cyclesCompleted: number;
-  evidence?: HaystackSkipEvidence;
   externalReason?: string;
 }): string {
   const lines = [
@@ -23,9 +21,6 @@ export function formatReviewLoopEscalationComment(input: {
 
   if (input.externalReason) {
     lines.push(`- External signal: \`${input.externalReason}\``);
-  }
-  if (input.evidence) {
-    lines.push(`- Evidence: ${input.evidence.detail}`);
   }
 
   lines.push('', '_Human review required before merge._');

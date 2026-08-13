@@ -31,16 +31,8 @@ import {
 import type { RunGit, RunGh } from '../specialists/git-helpers.js';
 import { runExternalReviewIfConfigured, parsePullRequestRef } from '../external-review/run.js';
 import type { RunExternalReviewDeps } from '../external-review/run.js';
-import type {
-  ExternalReviewContext,
-  ExternalReviewResult,
-  NormalizedFinding,
-} from '../external-review/types.js';
-import { defaultSleep } from '../external-review/haystack/triage-poll.js';
-import {
-  fetchHaystackSkipEvidence,
-  type HaystackSkipEvidence,
-} from '../external-review/haystack/skip-evidence.js';
+import type { ExternalReviewResult, NormalizedFinding } from '../external-review/types.js';
+import { defaultSleep } from '../lib/sleep.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
 import { resolveReviewLoopConfig, type ReviewLoopConfig } from './config.js';
 import { formatReviewLoopEscalationComment } from './escalation-comment.js';
@@ -138,28 +130,11 @@ function escalationMessage(
   if (reason === 'external_escalate') {
     return `Review loop escalated: external review returned escalate (${cyclesCompleted} cycle(s) completed)`;
   }
-  if (reason === 'external_skip_evidence') {
-    return `Review loop escalated: external review skipped with evidence findings may exist (${cyclesCompleted} cycle(s) completed)`;
-  }
   return `Review loop escalated: external review skipped repeatedly (${cyclesCompleted} cycle(s) completed)`;
 }
 
-function buildExternalReviewContext(params: RunCodeReviewLoopParams): ExternalReviewContext | null {
-  const prRef = parsePullRequestRef(params.prUrl);
-  if (!prRef) return null;
-  return {
-    owner: prRef.owner,
-    repo: prRef.repo,
-    prNumber: prRef.prNumber,
-    prUrl: params.prUrl,
-    defaultBranch: params.codeRepo.default_branch,
-  };
-}
-
-function externalRetryDelayMs(product: Product): number {
-  const pollSec = product.review?.external?.haystack?.poll_interval_sec ?? 15;
-  return pollSec * 1000;
-}
+/** Backoff between external-review retries after a skipped result (ADR-036 §6). */
+const EXTERNAL_REVIEW_RETRY_DELAY_MS = 15_000;
 
 function externalMaxDeferSec(product: Product): number {
   return product.review?.external?.max_defer_sec ?? 30 * 60;
@@ -171,7 +146,6 @@ async function postEscalationCommentBestEffort(
     reason: StopRuleEscalationReason;
     message: string;
     cyclesCompleted: number;
-    evidence?: HaystackSkipEvidence;
     externalReason?: string;
   },
 ): Promise<void> {
@@ -353,7 +327,6 @@ type ExternalReviewLoopOutcome =
       reason: StopRuleEscalationReason;
       message: string;
       externalReason?: string;
-      evidence?: HaystackSkipEvidence;
     };
 
 async function runExternalReviewWithStopRule(
@@ -361,8 +334,6 @@ async function runExternalReviewWithStopRule(
   loopConfig: ReturnType<typeof resolveReviewLoopConfig>,
 ): Promise<ExternalReviewLoopOutcome> {
   const sleepFn = params.sleep ?? defaultSleep;
-  const provider = params.product.review?.external?.provider;
-  const externalCtx = buildExternalReviewContext(params);
   let skipAttempt = 0;
 
   while (true) {
@@ -374,24 +345,10 @@ async function runExternalReviewWithStopRule(
       params.targetRevision,
     );
 
-    let evidence: HaystackSkipEvidence | null = null;
-    if (provider === 'haystack' && externalCtx) {
-      const shouldCheckEvidence =
-        external.status === 'escalate' ||
-        (external.status === 'skipped' && external.reason !== 'not_configured');
-      if (shouldCheckEvidence) {
-        evidence = await fetchHaystackSkipEvidence(
-          externalCtx,
-          params.externalReviewDeps?.runHaystack,
-        );
-      }
-    }
-
     const decision = evaluateExternalReviewStopRule({
       result: external,
       skipAttempt,
       maxSkipAttempts: loopConfig.noProgressCycles,
-      evidence,
     });
 
     if (decision.action === 'continue') {
@@ -412,11 +369,10 @@ async function runExternalReviewWithStopRule(
         reason: decision.reason,
         message: decision.message,
         externalReason: decision.externalReason,
-        evidence: decision.evidence,
       };
     }
 
-    await sleepFn(externalRetryDelayMs(params.product));
+    await sleepFn(EXTERNAL_REVIEW_RETRY_DELAY_MS);
   }
 }
 
@@ -435,7 +391,7 @@ export function formatExternalBlockersForRemediation(blockers: NormalizedFinding
 
 /**
  * Bounded internal fanout ↔ remediate loop (ADR-036), then optional external review
- * when configured (Haystack via HaystackExternalReviewAdapter).
+ * when configured (`review.external.provider`: Bugbot or CodeRabbit).
  */
 export async function runCodeReviewLoop(
   params: RunCodeReviewLoopParams,
@@ -668,7 +624,6 @@ export async function runCodeReviewLoop(
         reason: externalOutcome.reason,
         message: externalOutcome.message,
         cyclesCompleted: cycle,
-        evidence: externalOutcome.evidence,
         externalReason: externalOutcome.externalReason,
       });
       return {

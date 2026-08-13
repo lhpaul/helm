@@ -5,21 +5,17 @@ import {
 } from './escalation-comment.js';
 
 describe('formatReviewLoopEscalationComment', () => {
-  it('includes marker, reason, and evidence', () => {
+  it('includes marker, reason, and external signal', () => {
     const body = formatReviewLoopEscalationComment({
-      reason: 'external_skip_evidence',
-      message: 'External review skipped (unavailable) with evidence: ready',
+      reason: 'external_repeated_skip',
+      message: 'External review skipped 2 time(s) (unavailable); escalating per stop-rule',
       cyclesCompleted: 2,
       externalReason: 'unavailable',
-      evidence: {
-        kind: 'analysis_ready',
-        detail: 'Haystack analysisStatus=ready while triage was unavailable',
-      },
     });
 
     expect(body).toContain(REVIEW_LOOP_ESCALATION_MARKER);
-    expect(body).toContain('`external_skip_evidence`');
-    expect(body).toContain('analysisStatus=ready');
+    expect(body).toContain('`external_repeated_skip`');
+    expect(body).toContain('External signal: `unavailable`');
     expect(body).toContain('Cycles completed: 2');
   });
 });

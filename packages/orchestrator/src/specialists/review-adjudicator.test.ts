@@ -98,6 +98,58 @@ describe('buildReviewAdjudicatorParams', () => {
     expect(params.prompt).toContain('missing doctrine as **product_decision**');
   });
 
+  it('injects catalogued adjudications as the opposing-HIGH tie-breaker (#64)', () => {
+    const findings = new Map([
+      [
+        'code',
+        '# Code Review\n\n- **HIGH** · BETTER_AUTH_DATABASE_URL violates the shared-client spec.',
+      ] as const,
+      [
+        'security',
+        '# Security Review\n\n- **HIGH** · Shared client runs the API on an RLS-bypassing role.',
+      ] as const,
+    ]);
+
+    const params = buildReviewAdjudicatorParams(
+      'LEA-109',
+      product,
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      findings,
+      {
+        catalogEntries: [
+          {
+            title: 'Connection-scope split read as separate auth database',
+            pattern: 'BETTER_AUTH_DATABASE_URL flagged as separate auth database violation',
+            rationale: 'Connection-scope separation (least privilege), not data separation.',
+            matchesSummary: () => false,
+          },
+        ],
+      },
+    );
+
+    expect(params.prompt).toContain('## Catalogued adjudications (reviewer disagreement policy)');
+    expect(params.prompt).toContain('BETTER_AUTH_DATABASE_URL');
+    expect(params.prompt).toContain('the catalogued side loses');
+    expect(params.prompt).toContain('Apply the reviewer disagreement policy');
+    // Catalogued text is data, not markdown that could steer the agent.
+    expect(params.prompt).toContain('---BEGIN_CATALOGUED_ADJUDICATIONS---');
+  });
+
+  it('omits the catalogued-adjudication block when the catalog is empty for this stage', () => {
+    const params = buildReviewAdjudicatorParams(
+      'LEA-109',
+      product,
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      new Map([['code', '# Code Review'] as const]),
+      { catalogEntries: [] },
+    );
+
+    expect(params.prompt).not.toContain('## Catalogued adjudications');
+    expect(params.prompt).toContain('Apply the reviewer disagreement policy');
+  });
+
   it('does not duplicate external blockers when they are embedded in code findings', () => {
     const externalBody = '- **HIGH**: Missing guard';
     const findings = new Map([

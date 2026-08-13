@@ -165,6 +165,41 @@ describe('buildRemediationParams', () => {
     expect(params.prompt).toContain('- Prefer parameterized queries over string interpolation.');
   });
 
+  it('injects catalogued adjudications and forbids reverting the opposing fix (#64)', () => {
+    const params = buildRemediationParams(
+      'HLM-42',
+      product,
+      '/tmp/ws',
+      PR_URL,
+      findingsByKind(),
+      undefined,
+      undefined,
+      undefined,
+      {
+        catalogEntries: [
+          {
+            title: 'Connection-scope split read as separate auth database',
+            pattern: 'BETTER_AUTH_DATABASE_URL flagged as separate auth database violation',
+            rationale: 'Connection-scope separation (least privilege), not data separation.',
+            matchesSummary: () => false,
+          },
+        ],
+      },
+    );
+
+    expect(params.prompt).toContain('## Catalogued adjudications (reviewer disagreement policy)');
+    expect(params.prompt).toContain('BETTER_AUTH_DATABASE_URL');
+    expect(params.prompt).toContain('Never revert or weaken code');
+    expect(params.prompt).toContain(
+      'never revert the code the other side of that entry depends on',
+    );
+  });
+
+  it('omits the catalogued-adjudication section when nothing is catalogued', () => {
+    const params = buildRemediationParams('HLM-42', product, '/tmp/ws', PR_URL, findingsByKind());
+    expect(params.prompt).not.toContain('## Catalogued adjudications');
+  });
+
   it('omits the ## Hints section when extra_hints is not configured', () => {
     const params = buildRemediationParams(
       'HLM-42',

@@ -19,6 +19,8 @@ import {
   type StoredResolvedProductDecision,
   type ParsedAdjudication,
 } from '../review-loop/adjudication.js';
+import { formatCataloguedAdjudicationSection } from '../review-loop/catalog-prompt.js';
+import type { FalsePositiveEntry } from '../review-loop/false-positives.js';
 
 export const REVIEW_ADJUDICATOR_TIMEOUT_MS = 10 * 60 * 1_000;
 
@@ -44,6 +46,8 @@ export function buildReviewAdjudicatorParams(
       content: string;
     };
     resolvedProductDecisions?: StoredResolvedProductDecision[];
+    /** Catalogued adjudications for this stage (issue #64 tie-breaker surface). */
+    catalogEntries?: readonly FalsePositiveEntry[];
     codeRepo?: CodeRepo;
     branchName?: string;
   } = {},
@@ -80,6 +84,10 @@ export function buildReviewAdjudicatorParams(
   const settledDecisionSection = formatSettledDecisionSection(
     options.resolvedProductDecisions ?? [],
   );
+  const cataloguedSection = formatCataloguedAdjudicationSection(
+    options.catalogEntries ?? [],
+    'adjudicator',
+  );
   const hintsSection = buildExtraHintsSection(specialistCfg.extra_hints);
   const artifactPath = artifactFileFor(workspacePath, 'review-adjudicator');
   const prLabel = options.draftArtifact ? 'draft artifact PR' : 'implementation PR';
@@ -106,8 +114,10 @@ export function buildReviewAdjudicatorParams(
     '- Keep Helm product-agnostic: do not invent or hardcode product-specific origins, URLs, roles, or allowlists. If the safe option requires product doctrine that is absent from the spec/knowledge repo, mark the missing doctrine as **product_decision** for a human.',
     '- Identify **doc_conflict** (ADR vs spec vs CLAUDE.md vs reviewer) — resolve using hierarchy ADR > spec > CLAUDE.md, or mark HUMAN_REQUIRED.',
     '- Mark findings as **DEFERRED** when they need design judgment and are not safe to auto-fix.',
+    '- Apply the reviewer disagreement policy: a finding already adjudicated in the catalogued-adjudication block (when present) is settled — defer it rather than re-opening it, and when reviewers oppose each other on the same code keep the fix that is NOT catalogued.',
     '- Do NOT modify source files. Do NOT commit or push.',
     settledDecisionSection,
+    cataloguedSection,
     '',
     '## Output format',
     '',

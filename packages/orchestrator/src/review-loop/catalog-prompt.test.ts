@@ -47,6 +47,7 @@ describe('formatCataloguedAdjudicationSection', () => {
   it('escalates instead of guessing when the catalogue cannot pick a unique winner', () => {
     const section = formatCataloguedAdjudicationSection([entry()], 'adjudicator');
 
+    expect(section).toContain('only when no opposing finding is also catalogued');
     expect(section).toContain('exactly one side matches a catalogued entry');
     expect(section).toContain('both sides match entries, or one entry matches both sides');
     expect(section).toContain('**product_decision** conflict (HUMAN_REQUIRED)');

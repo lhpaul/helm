@@ -63,7 +63,7 @@ function policyLines(role: CataloguePromptRole): string[] {
   if (role === 'adjudicator') {
     return [
       'Policy for these entries:',
-      '- A finding that matches a catalogued entry is already settled. Mark it **DEFERRED** in the unified plan, citing the catalogue title as the reason — do not put it in the Conflicts section and do not ask a human to decide it again.',
+      '- A finding that matches a catalogued entry is settled **only when no opposing finding is also catalogued**. In that case mark it **DEFERRED** in the unified plan, citing the catalogue title as the reason — do not put it in the Conflicts section and do not ask a human to decide it again.',
       '- When two reviewers hold opposing CRITICAL/HIGH findings and exactly one side matches a catalogued entry, the catalogued side loses: defer it and keep the opposing fix as **AUTO**.',
       '- Never plan a fix whose effect is to revert code that exists to satisfy the other side of a catalogued entry.',
       '- When the catalogue cannot pick a unique winner — both sides match entries, or one entry matches both sides — it does not break the tie: record the pair once as a **product_decision** conflict (HUMAN_REQUIRED), citing the entries as context, and put neither side in the plan.',

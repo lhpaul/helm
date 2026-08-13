@@ -106,7 +106,11 @@ import {
   parseFalsePositivesCatalog,
 } from './false-positives.js';
 import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
-import type { ReviewLoopLedgerEntry, ReviewLoopLedgerUpdate } from './cumulative-ledger.js';
+import type {
+  PersistReviewLoopLedgerFn,
+  ReviewLoopLedgerEntry,
+  ReviewLoopLedgerUpdate,
+} from './cumulative-ledger.js';
 
 const PR_URL = 'https://github.com/o/r/pull/42';
 
@@ -549,12 +553,8 @@ describe('runCodeReviewLoop', () => {
       expect(store.calls.map((call) => call.lane)).toEqual(['plan-draft']);
     });
 
-    it('survives a ledger write failure without failing the loop', async () => {
-      vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValue(false);
-      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
-      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-      const result = await runCodeReviewLoop({
+    const runWithLedgerWriter = (persistReviewLoopLedger: PersistReviewLoopLedgerFn) =>
+      runCodeReviewLoop({
         externalId: 'issue_1',
         product: budgetedProduct({ max_cycles: 5 }),
         prUrl: PR_URL,
@@ -563,12 +563,51 @@ describe('runCodeReviewLoop', () => {
         runtime: new MockAgentRuntime({ messages: [] }),
         transition: transition as ItemTransitionFn,
         runGit,
-        persistReviewLoopLedger: vi.fn().mockRejectedValue(new Error('disk full')),
+        persistReviewLoopLedger,
       });
 
+    it('retries a failed ledger write once before giving up', async () => {
+      vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValue(false);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+      const persist = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('transient'))
+        .mockResolvedValueOnce(undefined);
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const result = await runWithLedgerWriter(persist);
+
       expect(result.status).toBe('done');
+      expect(persist).toHaveBeenCalledTimes(2);
+      // Second attempt succeeded — nothing to warn about.
+      expect(consoleError).not.toHaveBeenCalled();
+      consoleError.mockRestore();
+    });
+
+    it('survives a ledger write failure without failing the loop', async () => {
+      vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValue(false);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const persist = vi.fn().mockRejectedValue(new Error('disk full'));
+
+      const result = await runWithLedgerWriter(persist);
+
+      expect(result.status).toBe('done');
+      expect(persist).toHaveBeenCalledTimes(2);
       expect(consoleError).toHaveBeenCalled();
       consoleError.mockRestore();
+    });
+
+    it('does not reject when the escalation comment cannot be rendered or posted', async () => {
+      // postEscalationCommentBestEffort must never throw — a rendering slip
+      // would otherwise swallow the escalation result itself.
+      vi.mocked(shouldRemediate).mockReturnValue(true);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+      vi.mocked(postPRComment).mockRejectedValueOnce(new Error('GitHub 500'));
+
+      const result = await runBudgetedLoop(budgetedProduct({ max_cycles: 1 }), makeLedgerStore());
+
+      expect(result).toMatchObject({ escalated: true, escalationReason: 'max_cycles' });
     });
   });
 

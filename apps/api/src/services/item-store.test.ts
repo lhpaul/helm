@@ -591,6 +591,58 @@ describe('updateReviewLoopLedger', () => {
     expect(state.history.at(-1)?.note).toContain('max_cycles_cumulative');
   });
 
+  it('does not duplicate the escalation event when the same budget state re-escalates', async () => {
+    await store.create(BASE_INPUT);
+    const escalation = {
+      cyclesTotal: 15,
+      noProgressStreak: 2,
+      escalatedAt: '2026-08-13T12:00:00.000Z',
+      escalationReason: 'max_cycles_cumulative' as const,
+    };
+    await store.updateReviewLoopLedger({
+      externalId: 'HLM-1',
+      lane: 'code-review',
+      update: escalation,
+      triggeredBy: 'review-loop:cumulative-budget',
+    });
+
+    // A still-blocked item re-escalates on every re-dispatch.
+    const replay = await store.updateReviewLoopLedger({
+      externalId: 'HLM-1',
+      lane: 'code-review',
+      update: { ...escalation, escalatedAt: '2026-08-13T13:00:00.000Z' },
+      triggeredBy: 'review-loop:cumulative-budget',
+    });
+
+    expect(
+      replay.history.filter((event) => event.note?.includes('review_loop_escalated')),
+    ).toHaveLength(1);
+    // The ledger still tracks the latest escalation timestamp.
+    expect(replay.reviewLoopLedger?.['code-review']?.escalatedAt).toBe('2026-08-13T13:00:00.000Z');
+  });
+
+  it('records a second escalation once more cycles have been consumed', async () => {
+    await store.create(BASE_INPUT);
+    for (const cyclesTotal of [15, 18]) {
+      await store.updateReviewLoopLedger({
+        externalId: 'HLM-1',
+        lane: 'code-review',
+        update: {
+          cyclesTotal,
+          noProgressStreak: 2,
+          escalatedAt: '2026-08-13T12:00:00.000Z',
+          escalationReason: 'max_cycles_cumulative',
+        },
+        triggeredBy: 'review-loop:cumulative-budget',
+      });
+    }
+
+    const state = await store.get('HLM-1');
+    expect(
+      state?.history.filter((event) => event.note?.includes('review_loop_escalated')),
+    ).toHaveLength(2);
+  });
+
   it('keeps lanes independent so a draft loop cannot spend the code-review budget', async () => {
     await store.create(BASE_INPUT);
     await store.updateReviewLoopLedger({

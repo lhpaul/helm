@@ -173,8 +173,10 @@ async function postEscalationCommentBestEffort(
     externalReason?: string;
   },
 ): Promise<void> {
-  const body = formatReviewLoopEscalationComment(input);
   try {
+    // Formatting inside the try too: this helper must never reject, or a
+    // rendering slip would swallow the escalation result itself.
+    const body = formatReviewLoopEscalationComment(input);
     await postPRComment(
       { prUrl: params.prUrl, body, githubToken: params.githubToken },
       params.runGh,
@@ -221,22 +223,28 @@ function stageForLoopParams(params: RunCodeReviewLoopParams): ReviewLoopLane {
 /**
  * Writes the lane's cross-dispatch counters back (ADR-042).
  *
- * Best-effort: a failed ledger write must not abort a run that has already
- * pushed remediation commits and moved the item's stage. The cost of the
- * failure is a budget that under-counts, which the next pass re-reports.
+ * Retried once, then best-effort: a failed ledger write must not abort a run
+ * that has already pushed remediation commits and moved the item's stage. The
+ * cost of giving up is a budget that under-counts — the monotonic clamp in
+ * ItemStore means the next successful write still carries the higher total.
  */
 async function persistLedgerBestEffort(
   params: RunCodeReviewLoopParams,
   update: ReviewLoopLedgerUpdate,
 ): Promise<void> {
   if (!params.persistReviewLoopLedger) return;
-  try {
-    await params.persistReviewLoopLedger({ lane: stageForLoopParams(params), update });
-  } catch (err) {
-    console.error(
-      '[code-review-loop] Failed to persist review-loop ledger:',
-      err instanceof Error ? err.message : String(err),
-    );
+  const lane = stageForLoopParams(params);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await params.persistReviewLoopLedger({ lane, update });
+      return;
+    } catch (err) {
+      if (attempt === 0) continue;
+      console.error(
+        '[code-review-loop] Failed to persist review-loop ledger:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 }
 

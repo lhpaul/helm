@@ -30,8 +30,35 @@ re-dispatch can no longer launder a stalled remediation loop.
 
 When either budget is exhausted with blockers still open, the loop escalates:
 the job reports `escalated: true` with `escalationReason`, and Helm posts the
-review-loop escalation comment on the PR. Raising `max_cycles_cumulative` is the
-way to grant an escalated item more budget — that is a human decision by design.
+review-loop escalation comment on the PR.
+
+### Clearing an exhausted lifetime budget
+
+Nothing resets the ledger automatically. A re-dispatch after the budget is spent
+still runs one reviewer fan-out — that is how Helm learns whether the blockers
+are gone. If they are, the loop exits clean and never reaches the stop rule; the
+fan-out is not a remediation pass and does not consume budget. If they are not,
+it escalates again immediately instead of burning another remediation pass.
+
+Granting an escalated item more budget is a human decision, by design. Two ways:
+
+1. **Raise the budget** — increase `review.loop.max_cycles_cumulative` in the
+   product's `.helm/product.yaml`. Applies to every item of that product.
+2. **Clear one item's lane** — delete the lane key from `reviewLoopLedger` in
+   `$HELM_DATA_DIR/items/<externalId>.json` (stop the API server first, since
+   item writes are serialized in-process):
+
+   ```jsonc
+   {
+     "reviewLoopLedger": {
+       "code-review": { "cyclesTotal": 15, ... } // ← delete this lane
+     }
+   }
+   ```
+
+   The lane is recreated on the next completed remediation pass, starting from
+   zero. Other lanes and the rest of the item state are untouched. The escalation
+   stays in the item's `history` either way.
 
 ## Early Draft Review Loop
 

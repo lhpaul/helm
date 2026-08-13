@@ -296,20 +296,29 @@ export class ItemStore {
         updatedAt: now,
       };
 
-      const history = input.update.escalatedAt
-        ? [
-            ...current.history,
-            {
-              fromStage: current.currentStage,
-              toStage: current.currentStage,
-              triggeredBy: input.triggeredBy,
-              at: now,
-              note: `review_loop_escalated:${input.lane}: ${
-                input.update.escalationReason ?? 'stop_rule'
-              } after ${entry.cyclesTotal} cumulative cycle(s)`,
-            } satisfies WorkflowEvent,
-          ]
-        : current.history;
+      // An item that stays blocked re-escalates on every re-dispatch. Key the
+      // event on the budget state that produced it so a retry or duplicate
+      // webhook at the same state is a no-op, while a later escalation after
+      // more cycles is still recorded.
+      const reason = input.update.escalationReason ?? 'stop_rule';
+      const idempotencyKey = `review-loop-escalation:${input.lane}:${reason}:${entry.cyclesTotal}`;
+      const alreadyRecorded = current.history.some(
+        (event) => event.idempotencyKey === idempotencyKey,
+      );
+      const history =
+        input.update.escalatedAt && !alreadyRecorded
+          ? [
+              ...current.history,
+              {
+                fromStage: current.currentStage,
+                toStage: current.currentStage,
+                triggeredBy: input.triggeredBy,
+                at: now,
+                note: `review_loop_escalated:${input.lane}: ${reason} after ${entry.cyclesTotal} cumulative cycle(s)`,
+                idempotencyKey,
+              } satisfies WorkflowEvent,
+            ]
+          : current.history;
 
       const updated: ItemState = {
         ...current,

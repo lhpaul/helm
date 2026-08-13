@@ -381,7 +381,8 @@ describe('parseGitHubWebhook', () => {
   });
 
   describe('external review readiness events', () => {
-    it('check_run.completed success for Haystack emits external_review_ready', () => {
+    // Issue #85: Haystack was retired as an external review provider.
+    it('ignores check_run events from the retired Haystack app', () => {
       const result = parseGitHubWebhook(
         ctx('check_run', {
           action: 'completed',
@@ -397,16 +398,7 @@ describe('parseGitHubWebhook', () => {
         }),
       );
 
-      expect(result).toEqual({
-        type: 'external_review_ready',
-        provider: 'haystack',
-        owner: 'owner',
-        repo: 'repo',
-        prNumber: 42,
-        targetRevision: 'abc123',
-        headRef: 'helm/impl/issue_42',
-        timestamp: expect.any(String),
-      });
+      expect(result.type).toBe('unknown');
     });
 
     it('check_run.completed success without pull_requests still emits readiness by SHA', () => {
@@ -414,13 +406,13 @@ describe('parseGitHubWebhook', () => {
         ctx('check_run', {
           action: 'completed',
           check_run: {
-            name: 'Haystack / Review',
+            name: 'Bugbot / Review',
             status: 'completed',
             conclusion: 'success',
             head_sha: 'abc123',
             app: {
-              slug: 'haystack-code-reviewer-pr-hook',
-              name: 'Haystack Code Reviewer - PR Hook',
+              slug: 'cursor',
+              name: 'Cursor Bugbot',
             },
             pull_requests: [],
           },
@@ -430,7 +422,7 @@ describe('parseGitHubWebhook', () => {
 
       expect(result).toEqual({
         type: 'external_review_ready',
-        provider: 'haystack',
+        provider: 'bugbot',
         owner: 'owner',
         repo: 'repo',
         targetRevision: 'abc123',
@@ -438,34 +430,16 @@ describe('parseGitHubWebhook', () => {
       });
     });
 
-    it('rejects check names that only substring-match haystack', () => {
+    it('rejects check names that only substring-match a trusted provider', () => {
       const result = parseGitHubWebhook(
         ctx('check_run', {
           action: 'completed',
           check_run: {
-            name: 'my-haystack-helper',
+            name: 'my-bugbot-helper',
             status: 'completed',
             conclusion: 'success',
             head_sha: 'abc123',
-            app: { slug: 'haystack-code-reviewer-pr-hook' },
-            pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
-          },
-          repository: { name: 'repo', owner: { login: 'owner' } },
-        }),
-      );
-      expect(result.type).toBe('unknown');
-    });
-
-    it('rejects matching check name without a trusted GitHub App identity', () => {
-      const result = parseGitHubWebhook(
-        ctx('check_run', {
-          action: 'completed',
-          check_run: {
-            name: 'Haystack / Review',
-            status: 'completed',
-            conclusion: 'success',
-            head_sha: 'abc123',
-            app: { slug: 'spoofed-haystack' },
+            app: { slug: 'cursor' },
             pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
           },
           repository: { name: 'repo', owner: { login: 'owner' } },
@@ -479,11 +453,11 @@ describe('parseGitHubWebhook', () => {
         ctx('check_run', {
           action: 'completed',
           check_run: {
-            name: 'Haystack / Review',
+            name: 'Bugbot / Review',
             status: 'completed',
             conclusion: 'action_required',
             head_sha: 'abc123',
-            app: { slug: 'haystack-code-reviewer-pr-hook' },
+            app: { slug: 'cursor' },
             pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
           },
         }),

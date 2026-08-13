@@ -67,9 +67,6 @@ vi.mock('../external-review/run.js', () => ({
     return { owner: match[1], repo: match[2], prNumber: Number(match[3]) };
   }),
 }));
-vi.mock('../external-review/haystack/skip-evidence.js', () => ({
-  fetchHaystackSkipEvidence: vi.fn().mockResolvedValue(null),
-}));
 vi.mock('../specialists/pr-helpers.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../specialists/pr-helpers.js')>();
   return {
@@ -101,7 +98,6 @@ import {
 import { provisionReviewerWorkspace } from '../specialists/code-workspace.js';
 import { fetchSpecForPlan } from '../specialists/fetch-product-context.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
-import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
 import { buildAdvisorySummaryRows, upsertReviewLoopSummaryComment } from './summary.js';
 import {
@@ -191,7 +187,6 @@ describe('runCodeReviewLoop', () => {
       reason: 'not_configured',
     });
     vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue([]);
-    vi.mocked(fetchHaystackSkipEvidence).mockResolvedValue(null);
     vi.mocked(handleRemediationResult).mockResolvedValue({
       status: 'done',
       costUsd: 0.02,
@@ -608,7 +603,7 @@ describe('runCodeReviewLoop', () => {
   it('escalates when external review reports escalate', async () => {
     vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
       status: 'escalate',
-      reason: 'haystack pending_timeout',
+      reason: 'coderabbit pending_timeout',
     });
 
     const result = await runLoop();
@@ -619,7 +614,7 @@ describe('runCodeReviewLoop', () => {
       escalationReason: 'external_escalate',
       cyclesCompleted: 1,
     });
-    expect(result.error).toContain('haystack pending_timeout');
+    expect(result.error).toContain('coderabbit pending_timeout');
     expect(postPRComment).toHaveBeenCalledTimes(1);
   });
 
@@ -628,9 +623,8 @@ describe('runCodeReviewLoop', () => {
       ...baseProduct,
       review: {
         external: {
-          provider: 'haystack',
+          provider: 'coderabbit',
           max_defer_sec: 600,
-          haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 5 },
         },
       },
     } as Product;
@@ -661,7 +655,7 @@ describe('runCodeReviewLoop', () => {
         productSlug: 'test',
         externalId: 'issue_1',
         specialistId: 'reviewer-fanout',
-        provider: 'haystack',
+        provider: 'coderabbit',
         reason: 'analysis_pending',
         providerReason: 'pending_timeout',
         prNumber: 42,
@@ -678,9 +672,8 @@ describe('runCodeReviewLoop', () => {
       ...baseProduct,
       review: {
         external: {
-          provider: 'haystack',
+          provider: 'coderabbit',
           max_defer_sec: 600,
-          haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 5 },
         },
       },
     } as Product;
@@ -715,9 +708,8 @@ describe('runCodeReviewLoop', () => {
       ...baseProduct,
       review: {
         external: {
-          provider: 'haystack',
+          provider: 'coderabbit',
           max_defer_sec: 600,
-          haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 5 },
         },
       },
     } as Product;
@@ -754,9 +746,8 @@ describe('runCodeReviewLoop', () => {
       review: {
         early_loop: { enabled: true },
         external: {
-          provider: 'haystack',
+          provider: 'coderabbit',
           max_defer_sec: 600,
-          haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 5 },
         },
       },
     } as Product;
@@ -786,7 +777,7 @@ describe('runCodeReviewLoop', () => {
         productSlug: 'test',
         externalId: 'issue_1',
         specialistId: 'plan-draft-reviewer',
-        provider: 'haystack',
+        provider: 'coderabbit',
         reason: 'analysis_pending',
         prNumber: 7,
         targetRevision: 'sha-42',
@@ -795,42 +786,12 @@ describe('runCodeReviewLoop', () => {
     expect(onExternalReviewDeferred).toHaveBeenCalledWith(result.deferredExternalReview);
   });
 
-  it('escalates when external review skips with Haystack evidence', async () => {
+  it('escalates after repeated external skips', async () => {
     const product: Product = {
       ...baseProduct,
       review: {
         external: {
-          provider: 'haystack',
-          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
-        },
-      },
-    };
-    vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
-      status: 'skipped',
-      reason: 'unavailable',
-    });
-    vi.mocked(fetchHaystackSkipEvidence).mockResolvedValue({
-      kind: 'analysis_ready',
-      detail: 'Haystack analysisStatus=ready while triage was unavailable',
-    });
-
-    const result = await runLoop(product);
-
-    expect(result).toMatchObject({
-      status: 'error',
-      escalated: true,
-      escalationReason: 'external_skip_evidence',
-    });
-    expect(runExternalReviewIfConfigured).toHaveBeenCalledTimes(1);
-  });
-
-  it('escalates after repeated external skips without evidence', async () => {
-    const product: Product = {
-      ...baseProduct,
-      review: {
-        external: {
-          provider: 'haystack',
-          haystack: { major_is_blocking: false, poll_interval_sec: 1, timeout_sec: 120 },
+          provider: 'coderabbit',
         },
         loop: {
           max_cycles: 5,
@@ -843,8 +804,6 @@ describe('runCodeReviewLoop', () => {
       status: 'skipped',
       reason: 'unavailable',
     });
-    vi.mocked(fetchHaystackSkipEvidence).mockResolvedValue(null);
-
     const result = await runCodeReviewLoop({
       externalId: 'issue_1',
       product,
@@ -965,8 +924,7 @@ describe('runCodeReviewLoop', () => {
       ...baseProduct,
       review: {
         external: {
-          provider: 'haystack',
-          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+          provider: 'coderabbit',
         },
       },
     };
@@ -990,7 +948,7 @@ describe('runCodeReviewLoop', () => {
       expect.objectContaining({
         prUrl: PR_URL,
         cyclesCompleted: 1,
-        externalProvider: 'haystack',
+        externalProvider: 'coderabbit',
         stage: 'code-review',
         advisories: expect.arrayContaining([
           expect.objectContaining({ id: 'adv-1', summary: 'Weak test coverage on summary module' }),
@@ -1006,8 +964,7 @@ describe('runCodeReviewLoop', () => {
       review: {
         early_loop: { enabled: true },
         external: {
-          provider: 'haystack',
-          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+          provider: 'coderabbit',
         },
       },
     };
@@ -1069,7 +1026,7 @@ describe('runCodeReviewLoop', () => {
     expect(summaryInput).toEqual(
       expect.objectContaining({
         cyclesCompleted: 1,
-        externalProvider: 'haystack',
+        externalProvider: 'coderabbit',
         stage: 'spec-draft',
         advisories: [
           expect.objectContaining({
@@ -1107,8 +1064,7 @@ describe('runCodeReviewLoop', () => {
       review: {
         early_loop: { enabled: true },
         external: {
-          provider: 'haystack',
-          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+          provider: 'coderabbit',
         },
       },
     };
@@ -1188,8 +1144,7 @@ describe('runCodeReviewLoop', () => {
         review: {
           early_loop: { enabled: true },
           external: {
-            provider: 'haystack',
-            haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+            provider: 'coderabbit',
           },
         },
       };
@@ -1534,8 +1489,7 @@ describe('runCodeReviewLoop', () => {
         review: {
           early_loop: { enabled: true },
           external: {
-            provider: 'haystack',
-            haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+            provider: 'coderabbit',
           },
         },
       };
@@ -1591,8 +1545,7 @@ describe('runCodeReviewLoop', () => {
       review: {
         early_loop: { enabled: true },
         external: {
-          provider: 'haystack',
-          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+          provider: 'coderabbit',
         },
       },
     };
@@ -1640,8 +1593,7 @@ describe('runCodeReviewLoop', () => {
       review: {
         early_loop: { enabled: true },
         external: {
-          provider: 'haystack',
-          haystack: { major_is_blocking: false, poll_interval_sec: 15, timeout_sec: 120 },
+          provider: 'coderabbit',
         },
       },
     };
@@ -2413,10 +2365,10 @@ describe('buildFindingsByKind', () => {
       ],
     });
 
-    const findingsByKind = buildFindingsByKind(fanout, 'haystack blocker');
+    const findingsByKind = buildFindingsByKind(fanout, 'external blocker');
 
     expect(findingsByKind.get('security')).toBe('security only');
-    expect(findingsByKind.get('code')).toBe('## External review blockers\n\nhaystack blocker');
+    expect(findingsByKind.get('code')).toBe('## External review blockers\n\nexternal blocker');
   });
 });
 

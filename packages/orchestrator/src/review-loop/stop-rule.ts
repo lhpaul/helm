@@ -21,7 +21,6 @@ export type StopRuleEscalationReason =
   | 'no_progress'
   | 'adjudication_conflict'
   | 'external_escalate'
-  | 'external_skip_evidence'
   | 'external_repeated_skip';
 
 export type StopRuleEvaluation =

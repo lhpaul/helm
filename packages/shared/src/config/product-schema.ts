@@ -210,18 +210,10 @@ export const ProductSchema = z
           .optional(),
         external: z
           .object({
-            provider: z.enum(['haystack', 'bugbot', 'coderabbit']).optional(),
+            provider: z.enum(['bugbot', 'coderabbit']).optional(),
             defer_when_pending: z.boolean().optional(),
             resume_on_check_run: z.boolean().optional(),
             max_defer_sec: z.number().int().positive().optional(),
-            haystack: z
-              .object({
-                major_is_blocking: z.boolean().default(false),
-                poll_interval_sec: z.number().int().positive().default(15),
-                timeout_sec: z.number().int().positive().default(120),
-              })
-              .strict()
-              .optional(),
             bugbot: z
               .object({
                 check_names: z

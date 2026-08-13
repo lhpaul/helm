@@ -271,7 +271,7 @@ function prCommentPayload(
   });
 }
 
-function haystackCheckRunPayload(
+function readyCheckRunPayload(
   opts: {
     conclusion?: string;
     prNumber?: number;
@@ -285,11 +285,11 @@ function haystackCheckRunPayload(
   return JSON.stringify({
     action: 'completed',
     check_run: {
-      name: 'Haystack / Review',
+      name: 'Bugbot / Review',
       status: 'completed',
       conclusion: opts.conclusion ?? 'success',
       head_sha: opts.headSha ?? 'sha-42',
-      app: { slug: 'haystack-code-reviewer-pr-hook' },
+      app: { slug: 'bugbot' },
       pull_requests: opts.noPullRequests
         ? []
         : [
@@ -303,6 +303,22 @@ function haystackCheckRunPayload(
       name: opts.repo ?? 'test-repo',
       owner: { login: opts.owner ?? 'test-org' },
     },
+  });
+}
+
+/** Retired Haystack identity — must never be trusted as readiness (issue #85). */
+function retiredHaystackCheckRunPayload(): string {
+  return JSON.stringify({
+    action: 'completed',
+    check_run: {
+      name: 'Haystack / Review',
+      status: 'completed',
+      conclusion: 'success',
+      head_sha: 'sha-42',
+      app: { slug: 'haystack-code-reviewer-pr-hook' },
+      pull_requests: [{ number: 42, head: { ref: 'helm/impl/issue_42' } }],
+    },
+    repository: { name: 'test-repo', owner: { login: 'test-org' } },
   });
 }
 
@@ -343,7 +359,7 @@ function bugbotCheckRunPayload(
   });
 }
 
-function haystackStatusPayload(
+function genericStatusPayload(
   opts: {
     targetRevision?: string;
     prNumber?: number;
@@ -354,7 +370,7 @@ function haystackStatusPayload(
 ): string {
   const prNumber = opts.prNumber ?? 42;
   return JSON.stringify({
-    context: 'Haystack / Review',
+    context: 'Bugbot / Review',
     state: 'success',
     sha: opts.targetRevision ?? 'sha-42',
     target_url: `https://github.com/${opts.owner ?? 'test-org'}/${opts.repo ?? 'test-repo'}/pull/${prNumber}/checks`,
@@ -2360,7 +2376,8 @@ describe('POST /api/webhooks/github', () => {
       expect(res.status).toBe(200);
     });
 
-    it('resumes deferred external review from a matching Haystack check run', async () => {
+    // Issue #85: Haystack was retired as an external review provider.
+    it('ignores check runs from the retired Haystack app', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({
         product: { slug: 'test-app', name: 'Test' },
         issue_tracker: {
@@ -2372,7 +2389,7 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockGet.mockResolvedValue({
         externalId: 'issue_42',
@@ -2381,18 +2398,11 @@ describe('POST /api/webhooks/github', () => {
         history: [],
       });
 
-      const res = await post(haystackCheckRunPayload(), 'check_run');
+      const res = await post(retiredHaystackCheckRunPayload(), 'check_run');
 
       expect(res.status).toBe(200);
-      expect(mockResumePendingExternalReview).toHaveBeenCalledWith({
-        productSlug: 'test-app',
-        externalId: 'issue_42',
-        specialistId: 'reviewer-fanout',
-        provider: 'haystack',
-        prNumber: 42,
-        targetRevision: 'sha-42',
-        triggeredBy: 'webhook:external-review-ready',
-      });
+      expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+      expect(mockResumePendingExternalReviewByRevision).not.toHaveBeenCalled();
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
     });
 
@@ -2455,7 +2465,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
     });
 
-    it('does not resume a Haystack-configured product from a Bugbot readiness event', async () => {
+    it('does not resume a CodeRabbit-configured product from a Bugbot readiness event', async () => {
       vi.mocked(getProductConfig).mockResolvedValue({
         product: { slug: 'test-app', name: 'Test' },
         issue_tracker: {
@@ -2467,7 +2477,7 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'coderabbit', resume_on_check_run: true } },
       } as never);
 
       const res = await post(bugbotCheckRunPayload(), 'check_run');
@@ -2547,7 +2557,7 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockGet.mockResolvedValue({
         externalId: 'issue_42',
@@ -2556,7 +2566,7 @@ describe('POST /api/webhooks/github', () => {
         history: [],
       });
 
-      const res = await post(haystackStatusPayload(), 'status');
+      const res = await post(genericStatusPayload(), 'status');
 
       expect(res.status).toBe(200);
       expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
@@ -2637,13 +2647,13 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockPeekPendingExternalReviewByRevision.mockResolvedValue({
         kind: 'pending_external_review',
         productSlug: 'test-app',
         externalId: 'issue_42',
-        provider: 'haystack',
+        provider: 'bugbot',
         reason: 'analysis_pending',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -2659,12 +2669,12 @@ describe('POST /api/webhooks/github', () => {
         history: [],
       });
 
-      const res = await post(haystackCheckRunPayload(), 'check_run');
+      const res = await post(readyCheckRunPayload(), 'check_run');
 
       expect(res.status).toBe(200);
       expect(mockResumePendingExternalReviewByRevision).toHaveBeenCalledWith({
         productSlug: 'test-app',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-42',
         triggeredBy: 'webhook:external-review-ready',
       });
@@ -2683,13 +2693,13 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockPeekPendingExternalReviewByRevision.mockResolvedValue({
         kind: 'pending_external_review',
         productSlug: 'test-app',
         externalId: 'issue_42',
-        provider: 'haystack',
+        provider: 'bugbot',
         reason: 'analysis_pending',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -2705,17 +2715,17 @@ describe('POST /api/webhooks/github', () => {
         history: [],
       });
 
-      const res = await post(haystackCheckRunPayload({ noPullRequests: true }), 'check_run');
+      const res = await post(readyCheckRunPayload({ noPullRequests: true }), 'check_run');
 
       expect(res.status).toBe(200);
       expect(mockPeekPendingExternalReviewByRevision).toHaveBeenCalledWith({
         productSlug: 'test-app',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-42',
       });
       expect(mockResumePendingExternalReviewByRevision).toHaveBeenCalledWith({
         productSlug: 'test-app',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-42',
         triggeredBy: 'webhook:external-review-ready',
       });
@@ -2735,7 +2745,7 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/knowledge-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockGet.mockResolvedValue({
         externalId: 'issue_42',
@@ -2745,7 +2755,7 @@ describe('POST /api/webhooks/github', () => {
       });
 
       const res = await post(
-        haystackCheckRunPayload({
+        readyCheckRunPayload({
           headRef: 'helm/spec/issue_42',
           repo: 'knowledge-repo',
         }),
@@ -2757,7 +2767,7 @@ describe('POST /api/webhooks/github', () => {
         productSlug: 'test-app',
         externalId: 'issue_42',
         specialistId: 'spec-draft-reviewer',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-42',
         triggeredBy: 'webhook:external-review-ready',
@@ -2778,14 +2788,14 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/knowledge-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockPeekPendingExternalReviewByRevision.mockResolvedValue({
         kind: 'pending_external_review',
         productSlug: 'test-app',
         externalId: 'issue_42',
         specialistId: 'plan-draft-reviewer',
-        provider: 'haystack',
+        provider: 'bugbot',
         reason: 'analysis_pending',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -2802,14 +2812,14 @@ describe('POST /api/webhooks/github', () => {
       });
 
       const res = await post(
-        haystackCheckRunPayload({ noPullRequests: true, repo: 'knowledge-repo' }),
+        readyCheckRunPayload({ noPullRequests: true, repo: 'knowledge-repo' }),
         'check_run',
       );
 
       expect(res.status).toBe(200);
       expect(mockResumePendingExternalReviewByRevision).toHaveBeenCalledWith({
         productSlug: 'test-app',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-42',
         triggeredBy: 'webhook:external-review-ready',
       });
@@ -2828,13 +2838,13 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/knowledge-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockPeekPendingExternalReviewByRevision.mockResolvedValue({
         kind: 'pending_external_review',
         productSlug: 'test-app',
         externalId: 'issue_42',
-        provider: 'haystack',
+        provider: 'bugbot',
         reason: 'analysis_pending',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -2851,14 +2861,14 @@ describe('POST /api/webhooks/github', () => {
       });
 
       const res = await post(
-        haystackCheckRunPayload({ noPullRequests: true, repo: 'knowledge-repo' }),
+        readyCheckRunPayload({ noPullRequests: true, repo: 'knowledge-repo' }),
         'check_run',
       );
 
       expect(res.status).toBe(200);
       expect(mockResumePendingExternalReviewByRevision).toHaveBeenCalledWith({
         productSlug: 'test-app',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-42',
         triggeredBy: 'webhook:external-review-ready',
       });
@@ -2877,14 +2887,14 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/knowledge-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockPeekPendingExternalReviewByRevision.mockResolvedValue({
         kind: 'pending_external_review',
         productSlug: 'test-app',
         externalId: 'issue_42',
         specialistId: 'spec-draft-reviewer',
-        provider: 'haystack',
+        provider: 'bugbot',
         reason: 'analysis_pending',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -2901,7 +2911,7 @@ describe('POST /api/webhooks/github', () => {
       });
 
       const res = await post(
-        haystackCheckRunPayload({
+        readyCheckRunPayload({
           headRef: 'helm/spec/issue_42',
           repo: 'knowledge-repo',
         }),
@@ -2921,7 +2931,7 @@ describe('POST /api/webhooks/github', () => {
         productSlug: 'test-app',
         externalId: 'issue_42',
         specialistId: 'spec-draft-reviewer',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-42',
       });
@@ -2929,7 +2939,7 @@ describe('POST /api/webhooks/github', () => {
       expect(mockClearPendingExternalReview).toHaveBeenNthCalledWith(2, {
         productSlug: 'test-app',
         externalId: 'issue_42',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-42',
       });
@@ -2950,14 +2960,14 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/knowledge-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockPeekPendingExternalReviewByRevision.mockResolvedValue({
         kind: 'pending_external_review',
         productSlug: 'test-app',
         externalId: 'issue_42',
         specialistId: 'reviewer-fanout',
-        provider: 'haystack',
+        provider: 'bugbot',
         reason: 'analysis_pending',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -2974,7 +2984,7 @@ describe('POST /api/webhooks/github', () => {
       });
 
       const res = await post(
-        haystackCheckRunPayload({
+        readyCheckRunPayload({
           headRef: 'helm/impl/issue_42',
           repo: 'test-repo',
         }),
@@ -2989,7 +2999,7 @@ describe('POST /api/webhooks/github', () => {
         productSlug: 'test-app',
         externalId: 'issue_42',
         specialistId: 'reviewer-fanout',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-42',
       });
@@ -3009,13 +3019,13 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/knowledge-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockPeekPendingExternalReviewByRevision.mockResolvedValue({
         kind: 'pending_external_review',
         productSlug: 'test-app',
         externalId: 'issue_42',
-        provider: 'haystack',
+        provider: 'bugbot',
         reason: 'analysis_pending',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -3032,7 +3042,7 @@ describe('POST /api/webhooks/github', () => {
       });
 
       const res = await post(
-        haystackCheckRunPayload({
+        readyCheckRunPayload({
           headRef: 'helm/plan/issue_42',
           repo: 'knowledge-repo',
         }),
@@ -3057,7 +3067,7 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockGet.mockResolvedValue({
         externalId: 'issue_42',
@@ -3066,14 +3076,14 @@ describe('POST /api/webhooks/github', () => {
         history: [],
       });
 
-      const res = await post(haystackCheckRunPayload(), 'check_run');
+      const res = await post(readyCheckRunPayload(), 'check_run');
 
       expect(res.status).toBe(200);
       expect(mockClearPendingExternalReview).toHaveBeenCalledWith({
         productSlug: 'test-app',
         externalId: 'issue_42',
         specialistId: 'reviewer-fanout',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-42',
       });
@@ -3092,7 +3102,7 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockGet.mockResolvedValue({
         externalId: 'issue_42',
@@ -3101,7 +3111,7 @@ describe('POST /api/webhooks/github', () => {
         history: [],
       });
 
-      const res = await post(haystackStatusPayload(), 'status');
+      const res = await post(genericStatusPayload(), 'status');
 
       expect(res.status).toBe(200);
       expect(mockClearPendingExternalReview).not.toHaveBeenCalled();
@@ -3120,13 +3130,13 @@ describe('POST /api/webhooks/github', () => {
         code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
         knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
-        review: { external: { provider: 'haystack', resume_on_check_run: true } },
+        review: { external: { provider: 'bugbot', resume_on_check_run: true } },
       } as never);
       mockPeekPendingExternalReviewByRevision.mockResolvedValue({
         kind: 'pending_external_review',
         productSlug: 'test-app',
         externalId: 'issue_42',
-        provider: 'haystack',
+        provider: 'bugbot',
         reason: 'analysis_pending',
         prNumber: 42,
         targetRevision: 'sha-42',
@@ -3136,10 +3146,7 @@ describe('POST /api/webhooks/github', () => {
         updatedAt: '2026-07-22T10:00:00.000Z',
       });
 
-      const res = await post(
-        haystackCheckRunPayload({ headRef: 'helm/impl/issue_99' }),
-        'check_run',
-      );
+      const res = await post(readyCheckRunPayload({ headRef: 'helm/impl/issue_99' }), 'check_run');
 
       expect(res.status).toBe(200);
       expect(mockResumePendingExternalReview).not.toHaveBeenCalled();

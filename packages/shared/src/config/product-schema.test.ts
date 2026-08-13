@@ -369,15 +369,14 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     }
   });
 
-  it('parses external haystack provider, loop overrides, and adjudication config', () => {
+  it('parses external provider, loop overrides, and adjudication config', () => {
     const result = ProductSchema.safeParse(
       withReview({
         external: {
-          provider: 'haystack',
+          provider: 'coderabbit',
           defer_when_pending: false,
           resume_on_check_run: false,
           max_defer_sec: 900,
-          haystack: { major_is_blocking: true },
         },
         loop: {
           max_cycles: 3,
@@ -388,7 +387,7 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     );
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.review?.external?.provider).toBe('haystack');
+      expect(result.data.review?.external?.provider).toBe('coderabbit');
       expect(result.data.review?.external?.defer_when_pending).toBe(false);
       expect(result.data.review?.external?.resume_on_check_run).toBe(false);
       expect(result.data.review?.external?.max_defer_sec).toBe(900);
@@ -530,20 +529,15 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     expect(result.success).toBe(false);
   });
 
-  it('applies ADR-036 defaults for haystack and stop_rule when fields are omitted', () => {
+  it('applies ADR-036 defaults for external and stop_rule when fields are omitted', () => {
     const result = ProductSchema.safeParse(
       withReview({
-        external: { provider: 'haystack', haystack: {} },
+        external: { provider: 'coderabbit' },
         loop: { stop_rule: {} },
       }),
     );
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.review?.external?.haystack).toEqual({
-        major_is_blocking: false,
-        poll_interval_sec: 15,
-        timeout_sec: 120,
-      });
       expect(result.data.review?.external?.defer_when_pending).toBeUndefined();
       expect(result.data.review?.external?.resume_on_check_run).toBeUndefined();
       expect(result.data.review?.external?.max_defer_sec).toBeUndefined();
@@ -552,10 +546,16 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     }
   });
 
-  it('rejects unknown keys in review.external.haystack', () => {
+  // Issue #85: Haystack was retired as an external review provider.
+  it('rejects the retired haystack provider', () => {
+    const result = ProductSchema.safeParse(withReview({ external: { provider: 'haystack' } }));
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects the retired review.external.haystack block', () => {
     const result = ProductSchema.safeParse(
       withReview({
-        external: { provider: 'haystack', haystack: { unknown_flag: true } },
+        external: { provider: 'coderabbit', haystack: { major_is_blocking: true } },
       }),
     );
     expect(result.success).toBe(false);

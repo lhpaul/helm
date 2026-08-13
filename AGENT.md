@@ -138,7 +138,7 @@ Para reducir round-trips humanos en cada bloque de sesión, Claude Code tiene au
 - Ejecutar `pnpm turbo run test`, `build`, `lint` y reportar resultado en el PR description.
 - Aplicar fixes de CodeRabbit que caen en categorías ya catched antes (path traversal en inputs externos, info leak de paths/tokens en error responses, race conditions en singletons o init, validación estricta con Zod `.strict()`, sanitización de inputs). Si el fix es claramente uno de estos patrones, aplicalo y commitea con `fix(...)` + "Addresses CodeRabbit review comment on PR #N".
 - Cuando LH aprueba un hito de limpieza de PR/reviewer-loop, esa aprobación autoriza el ciclo completo sobre ese PR: inspeccionar threads accionables, aplicar fixes puntuales, commitear, pushear a la misma branch, pedir re-review, esperar checks, volver a leer threads y repetir hasta estado terminal.
-- Resolver manualmente threads de CodeRabbit/Haystack/PR-Agent si el fix está presente en el `headRefOid` actual y existe evidencia local o CI. Si el finding es stale o false positive, dejar un comentario breve con la evidencia antes de resolverlo.
+- Resolver manualmente threads de CodeRabbit/Bugbot/PR-Agent si el fix está presente en el `headRefOid` actual y existe evidencia local o CI. Si el finding es stale o false positive, dejar un comentario breve con la evidencia antes de resolverlo.
 - Esperar a CodeRabbit después de cada push usando polling (ver sección "Reviewer loop básico" abajo).
 - Mergear el PR con `gh pr merge N --merge --delete-branch` después de:
   1. Confirmar que tests, build y lint están verdes localmente.

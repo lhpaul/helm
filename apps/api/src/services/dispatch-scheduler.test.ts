@@ -863,7 +863,7 @@ describe('pending external review readiness cleanup', () => {
       productSlug: 'test-product',
       externalId: 'LEA-1',
       ...(options.omitSpecialistId ? {} : { specialistId }),
-      provider: 'haystack',
+      provider: 'bugbot',
       reason: 'analysis_pending',
       prNumber: 42,
       targetRevision: 'sha-1',
@@ -880,7 +880,7 @@ describe('pending external review readiness cleanup', () => {
       clearPendingExternalReview({
         productSlug: 'test-product',
         externalId: 'LEA-1',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-1',
       }),
@@ -899,7 +899,7 @@ describe('pending external review readiness cleanup', () => {
       clearPendingExternalReview({
         productSlug: 'test-product',
         externalId: 'LEA-1',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-2',
       }),
@@ -917,7 +917,7 @@ describe('pending external review readiness cleanup', () => {
       resumePendingExternalReview({
         productSlug: 'test-product',
         externalId: 'LEA-1',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-1',
         triggeredBy: 'test:ready',
@@ -958,7 +958,7 @@ describe('pending external review readiness cleanup', () => {
     await expect(
       resumePendingExternalReviewByRevision({
         productSlug: 'test-product',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-1',
         triggeredBy: 'test:ready',
       }),
@@ -1007,7 +1007,7 @@ describe('pending external review readiness cleanup', () => {
     await expect(
       resumePendingExternalReviewByRevision({
         productSlug: 'test-product',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-1',
         triggeredBy: 'test:ready',
       }),
@@ -1035,7 +1035,7 @@ describe('pending external review readiness cleanup', () => {
       productSlug: 'test-product',
       externalId: 'LEA-1',
       specialistId: 'spec-draft-reviewer',
-      provider: 'haystack',
+      provider: 'bugbot',
       reason: 'analysis_pending',
       prNumber: 41,
       targetRevision: 'sha-spec',
@@ -1047,7 +1047,7 @@ describe('pending external review readiness cleanup', () => {
       productSlug: 'test-product',
       externalId: 'LEA-1',
       specialistId: 'plan-draft-reviewer',
-      provider: 'haystack',
+      provider: 'bugbot',
       reason: 'analysis_pending',
       prNumber: 42,
       targetRevision: 'sha-plan',
@@ -1094,7 +1094,7 @@ describe('pending external review readiness cleanup', () => {
     await expect(
       resumePendingExternalReviewByRevision({
         productSlug: 'test-product',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-spec',
         triggeredBy: 'test:spec-ready',
       }),
@@ -1116,7 +1116,7 @@ describe('pending external review readiness cleanup', () => {
     await expect(
       resumePendingExternalReviewByRevision({
         productSlug: 'test-product',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-plan',
         triggeredBy: 'test:plan-ready',
       }),
@@ -1176,7 +1176,7 @@ describe('pending external review readiness cleanup', () => {
     await expect(
       resumePendingExternalReviewByRevision({
         productSlug: 'test-product',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-1',
         triggeredBy: 'test:ready',
       }),
@@ -1229,7 +1229,7 @@ describe('pending external review readiness cleanup', () => {
     await expect(
       resumePendingExternalReviewByRevision({
         productSlug: 'test-product',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-1',
         triggeredBy: 'test:ready',
       }),
@@ -1265,7 +1265,7 @@ describe('pending external review readiness cleanup', () => {
       resumePendingExternalReview({
         productSlug: 'test-product',
         externalId: 'LEA-1',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-1',
         triggeredBy: 'test:ready',
@@ -1296,7 +1296,7 @@ describe('pending external review readiness cleanup', () => {
       resumePendingExternalReview({
         productSlug: 'test-product',
         externalId: 'LEA-1',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-1',
         triggeredBy: 'test:ready',
@@ -1336,7 +1336,7 @@ describe('pending external review readiness cleanup', () => {
     await expect(
       resumePendingExternalReviewByRevision({
         productSlug: 'test-product',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-1',
         triggeredBy: 'test:ready',
       }),
@@ -1363,7 +1363,7 @@ describe('pending external review readiness cleanup', () => {
       resumePendingExternalReview({
         productSlug: 'test-product',
         externalId: 'LEA-1',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-1',
         triggeredBy: 'test:ready',
@@ -1385,7 +1385,7 @@ describe('pending external review readiness cleanup', () => {
     await expect(
       resumePendingExternalReviewByRevision({
         productSlug: 'test-product',
-        provider: 'haystack',
+        provider: 'bugbot',
         targetRevision: 'sha-1',
         triggeredBy: 'test:ready',
       }),
@@ -1412,7 +1412,7 @@ describe('pending external review readiness cleanup', () => {
       resumePendingExternalReview({
         productSlug: 'test-product',
         externalId: 'LEA-1',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-1',
         triggeredBy: 'test:ready',
@@ -1462,7 +1462,7 @@ describe('pending external review readiness cleanup', () => {
       resumePendingExternalReview({
         productSlug: 'test-product',
         externalId: 'LEA-1',
-        provider: 'haystack',
+        provider: 'bugbot',
         prNumber: 42,
         targetRevision: 'sha-1',
         triggeredBy: 'test:ready',

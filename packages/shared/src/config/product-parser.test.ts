@@ -126,7 +126,7 @@ workflow:
   stages_enabled: [spec-draft, plan-draft, code-review, released]
 review:
   external:
-    provider: haystack
+    provider: coderabbit
     defer_when_pending: true
 specialists:
   spec-writer: { runtime: claude_code, model: claude-sonnet-4-6 }
@@ -273,7 +273,7 @@ describe('parseProductConfig', () => {
     it('materializes review.early_loop.enabled=false when populated review omits early_loop', () => {
       const config = parseProductConfig(REVIEW_WITH_EXTERNAL_ONLY);
 
-      expect(config.review?.external?.provider).toBe('haystack');
+      expect(config.review?.external?.provider).toBe('coderabbit');
       expect(config.review?.early_loop?.enabled).toBe(false);
     });
   });

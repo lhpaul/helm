@@ -27,6 +27,8 @@ import { sanitizeToken } from './git-helpers.js';
 import type { RunGit, RunGh } from './git-helpers.js';
 import { buildExtraHintsSection } from './extra-hints.js';
 import { resolveReviewLoopConfig } from '../review-loop/config.js';
+import { formatCataloguedAdjudicationSection } from '../review-loop/catalog-prompt.js';
+import type { FalsePositiveEntry } from '../review-loop/false-positives.js';
 
 // ── Timeout ───────────────────────────────────────────────────────────────────
 
@@ -76,6 +78,10 @@ export function buildRemediationParams(
   adjudicationPlan?: string,
   codeRepo?: CodeRepo,
   branchName = implBranchName(externalId),
+  options: {
+    /** Catalogued adjudications for this stage (issue #64 tie-breaker surface). */
+    catalogEntries?: readonly FalsePositiveEntry[];
+  } = {},
 ): SpawnParams {
   const specialistCfg = product.specialists['code-remediator'];
   const defaultBranch = codeRepo?.default_branch ?? product.code_repos[0]?.default_branch ?? 'main';
@@ -99,6 +105,10 @@ export function buildRemediationParams(
   }
 
   const hintsSection = buildExtraHintsSection(specialistCfg.extra_hints);
+  const cataloguedSection = formatCataloguedAdjudicationSection(
+    options.catalogEntries ?? [],
+    'remediator',
+  );
   const remediateSeverity = resolveReviewLoopConfig(product).remediateSeverity;
   const taskSeverityLabel =
     remediateSeverity === 'medium_and_above' ? 'CRITICAL, HIGH, and MEDIUM' : 'CRITICAL and HIGH';
@@ -120,6 +130,7 @@ export function buildRemediationParams(
     'A finding may already be fixed if the code-reviewer self-applied it — inspect the current state of the files before changing anything, and treat an already-satisfied finding as a no-op rather than re-applying it.',
     ...reviewSections,
     '',
+    ...(cataloguedSection ? [cataloguedSection, ''] : []),
     ...(hintsSection ? [hintsSection] : []),
     `**Your task — remediate ${taskSeverityLabel} findings:**`,
     `- Apply mechanical, low-risk fixes to the files in the working directory that resolve the ${taskSeverityLabel} findings.`,
@@ -127,6 +138,7 @@ export function buildRemediationParams(
       ? '- MEDIUM findings in the plan are in scope — do not defer them unless they require a product decision or ambiguous spec change.'
       : '- You MAY also address MEDIUM findings if the fix is mechanical and low-risk; the gate fired on CRITICAL/HIGH only.',
     '- For findings that require design changes or human judgment (non-mechanical), DO NOT modify files. Document them as "deferred" in your summary so a human can decide.',
+    '- For findings already settled by the catalogued-adjudication block (when present), DO NOT modify files and never revert the code the other side of that entry depends on — document them as "deferred" citing the catalogue title.',
     '- Prefer sticky/repeated findings from earlier cycles (same path + theme) before inventing fixes for newly worded LOW/MEDIUM nits.',
     '',
     '## Checklist (required)',

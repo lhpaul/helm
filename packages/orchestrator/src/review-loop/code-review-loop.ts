@@ -50,6 +50,7 @@ import {
   matchesFalsePositiveFinding,
   type FalsePositiveEntry,
 } from './false-positives.js';
+import { catalogEntriesForStage } from './catalog-prompt.js';
 import { upsertReviewLoopSummaryComment } from './summary.js';
 import {
   countBlockingFindings,
@@ -223,10 +224,8 @@ function findFalsePositiveMatch(
   catalog: FalsePositiveEntry[],
   stage: WorkflowStage,
 ): FalsePositiveEntry | undefined {
-  return catalog.find(
-    (entry) =>
-      (entry.appliesTo === undefined || entry.appliesTo.includes(stage)) &&
-      matchesFalsePositiveFinding(entry, finding),
+  return catalogEntriesForStage(catalog, stage).find((entry) =>
+    matchesFalsePositiveFinding(entry, finding),
   );
 }
 
@@ -457,6 +456,12 @@ export async function runCodeReviewLoop(
     params.githubToken,
     params.fetchFn,
   );
+  // Catalogued adjudications for this stage — the tie-breaker surface the
+  // adjudicator and remediator read when reviewers hold opposing blockers.
+  const stageCatalogEntries = catalogEntriesForStage(
+    falsePositiveCatalog,
+    stageForLoopParams(params),
+  );
 
   while (true) {
     while (true) {
@@ -553,6 +558,7 @@ export async function runCodeReviewLoop(
         fanoutResult: gateFanoutResult,
         totalCost,
         maxDuration,
+        catalogEntries: stageCatalogEntries,
         loopConfig,
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,
@@ -757,6 +763,7 @@ export async function runCodeReviewLoop(
         totalCost,
         maxDuration,
         externalFindingsBody: formatExternalBlockersForRemediation(blockers),
+        catalogEntries: stageCatalogEntries,
         loopConfig,
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,
@@ -916,6 +923,7 @@ async function runAdjudicationPass(input: {
   externalFindingsBody?: string;
   fetchFn?: FetchFn;
   resolvedProductDecisions?: StoredResolvedProductDecision[];
+  catalogEntries?: readonly FalsePositiveEntry[];
 }): Promise<AdjudicationPassOutcome> {
   let workspacePath = '';
   try {
@@ -980,6 +988,7 @@ async function runAdjudicationPass(input: {
         spec,
         draftArtifact,
         resolvedProductDecisions: input.resolvedProductDecisions,
+        catalogEntries: input.catalogEntries,
         codeRepo: input.codeRepo,
         branchName: input.branchName,
       },
@@ -1112,6 +1121,7 @@ async function runAdjudicationIfEnabled(input: {
   loopConfig: ReviewLoopConfig;
   resolvedProductDecisions?: StoredResolvedProductDecision[];
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
+  catalogEntries?: readonly FalsePositiveEntry[];
 }): Promise<AdjudicationPassOutcome> {
   if (!input.loopConfig.adjudicationEnabled) {
     return { status: 'skipped' };
@@ -1177,6 +1187,7 @@ async function runRemediationPass(input: {
   fetchFn?: FetchFn;
   resolvedProductDecisions?: StoredResolvedProductDecision[];
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
+  catalogEntries?: readonly FalsePositiveEntry[];
   stageTransitions?: 'code-review' | 'none';
 }): Promise<RemediationPassOutcome> {
   let totalCost = input.totalCost;
@@ -1202,6 +1213,7 @@ async function runRemediationPass(input: {
     loopConfig: input.loopConfig,
     resolvedProductDecisions: input.resolvedProductDecisions,
     loadResolvedProductDecisions: input.loadResolvedProductDecisions,
+    catalogEntries: input.catalogEntries,
   });
 
   if (adjudication.status === 'human_required') {
@@ -1284,6 +1296,7 @@ async function runRemediationPass(input: {
       adjudicationPlan,
       input.codeRepo,
       input.branchName,
+      { catalogEntries: input.catalogEntries },
     );
 
     let remediationResult: RemediationResult | undefined;

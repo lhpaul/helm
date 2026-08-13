@@ -104,7 +104,11 @@ import { runExternalReviewIfConfigured } from '../external-review/run.js';
 import { fetchHaystackSkipEvidence } from '../external-review/haystack/skip-evidence.js';
 import { postPRComment } from '../specialists/pr-helpers.js';
 import { buildAdvisorySummaryRows, upsertReviewLoopSummaryComment } from './summary.js';
-import { builtInFalsePositiveEntries, fetchFalsePositivesCatalog } from './false-positives.js';
+import {
+  builtInFalsePositiveEntries,
+  fetchFalsePositivesCatalog,
+  parseFalsePositivesCatalog,
+} from './false-positives.js';
 import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
 
 const PR_URL = 'https://github.com/o/r/pull/42';
@@ -276,6 +280,7 @@ describe('runCodeReviewLoop', () => {
       undefined,
       { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
       'helm/spec/issue_1',
+      { catalogEntries: [] },
     );
   });
 
@@ -918,6 +923,7 @@ describe('runCodeReviewLoop', () => {
       undefined,
       baseProduct.code_repos[0],
       undefined,
+      { catalogEntries: [] },
     );
     const findingsByKind = vi.mocked(buildRemediationParams).mock.calls.at(-1)![4] as Map<
       string,
@@ -1810,6 +1816,7 @@ describe('runCodeReviewLoop', () => {
       expect.stringContaining('SETTLED'),
       expect.any(Object),
       undefined,
+      { catalogEntries: [] },
     );
   });
 
@@ -1976,6 +1983,7 @@ describe('runCodeReviewLoop', () => {
       '- **AUTO** · Add CSRF guard on POST /api/sync',
       product.code_repos[0],
       undefined,
+      { catalogEntries: [] },
     );
   });
 
@@ -2068,10 +2076,143 @@ describe('runCodeReviewLoop', () => {
       {
         spec: undefined,
         resolvedProductDecisions: [],
+        catalogEntries: [],
         codeRepo: productWithAdjudicator().code_repos[0],
         branchName: undefined,
       },
     );
+  });
+
+  describe('reviewer disagreement policy (#64)', () => {
+    const CATALOGUE_MD = `# Code-review false positives
+
+---
+
+### Code-reviewer flags \`BETTER_AUTH_DATABASE_URL\` split as "separate auth database" violation
+
+**Pattern:** Code-reviewer reads "do not introduce a separate auth database" in the spec literally and flags BETTER_AUTH_DATABASE_URL as a spec violation when it points at the SAME database.
+
+**Why it's a false positive:** The split is a connection-scope separation (least privilege), not a data separation.
+`;
+
+    /** LEA-109 EP#8: security wants the split, code-review calls it a violation. */
+    const opposingHighsFanout = (): ReviewerFanoutResult =>
+      makeFanout({
+        reviewerResults: [
+          {
+            kind: 'code',
+            status: 'done',
+            costUsd: 0.01,
+            durationMs: 50,
+            commentPosted: true,
+            findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+            commentBody:
+              '# Code Review\n\n- **HIGH** · BETTER_AUTH_DATABASE_URL violates the shared-client spec — revert the split.',
+          },
+          {
+            kind: 'security',
+            status: 'done',
+            costUsd: 0.01,
+            durationMs: 50,
+            commentPosted: true,
+            findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+            commentBody:
+              '# Security Review\n\n- **HIGH** · Shared client runs the whole API on an RLS-bypassing role — split the connection.',
+          },
+        ],
+      });
+
+    beforeEach(() => {
+      vi.mocked(buildReviewAdjudicatorParams).mockReturnValue({
+        specialistId: 'review-adjudicator',
+        prompt: 'adjudicate',
+        workdir: '/tmp/ws',
+        productSlug: 'test',
+        externalId: 'issue_1',
+        permissionMode: 'acceptEdits',
+        timeoutMs: 1000,
+      });
+      vi.mocked(handleReviewAdjudicatorResult).mockResolvedValue({
+        status: 'done',
+        costUsd: 0.01,
+        durationMs: 100,
+        commentPosted: true,
+        parsed: {
+          status: 'AUTO_REMEDIATE',
+          unifiedPlan: [
+            '- **AUTO** · Keep the least-privilege connection split',
+            '- **DEFERRED** · Shared-client spec violation — catalogued adjudication',
+          ].join('\n'),
+          body: '# Review Adjudication\n\n## Status\nAUTO_REMEDIATE',
+          conflictsSection: '',
+          conflicts: [],
+        },
+      });
+    });
+
+    it('passes the catalogued side of opposing HIGHs to the adjudicator and remediator', async () => {
+      vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(
+        parseFalsePositivesCatalog(CATALOGUE_MD),
+      );
+      vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+      vi.mocked(fanoutReviewers)
+        .mockResolvedValueOnce(opposingHighsFanout())
+        .mockResolvedValueOnce(
+          makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }),
+        );
+
+      const result = await runLoop(productWithAdjudicator());
+
+      expect(result.status).toBe('done');
+
+      const catalogued = [
+        expect.objectContaining({
+          pattern: expect.stringContaining('BETTER_AUTH_DATABASE_URL'),
+        }),
+      ];
+      expect(buildReviewAdjudicatorParams).toHaveBeenCalledWith(
+        'issue_1',
+        expect.anything(),
+        '/tmp/ws',
+        PR_URL,
+        expect.any(Map),
+        expect.objectContaining({ catalogEntries: catalogued }),
+      );
+      expect(buildRemediationParams).toHaveBeenCalledWith(
+        'issue_1',
+        expect.anything(),
+        '/tmp/ws',
+        PR_URL,
+        expect.any(Map),
+        expect.stringContaining('DEFERRED'),
+        expect.anything(),
+        undefined,
+        { catalogEntries: catalogued },
+      );
+    });
+
+    it('excludes catalogue entries scoped to other stages', async () => {
+      // Built-ins apply to spec-draft/plan-draft only — never to a code PR.
+      vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(builtInFalsePositiveEntries());
+      vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+      vi.mocked(fanoutReviewers)
+        .mockResolvedValueOnce(opposingHighsFanout())
+        .mockResolvedValueOnce(
+          makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }),
+        );
+
+      const result = await runLoop(productWithAdjudicator());
+
+      expect(result.status).toBe('done');
+      expect(buildReviewAdjudicatorParams).toHaveBeenCalledWith(
+        'issue_1',
+        expect.anything(),
+        '/tmp/ws',
+        PR_URL,
+        expect.any(Map),
+        expect.objectContaining({ catalogEntries: [] }),
+      );
+    });
   });
 
   it.each([

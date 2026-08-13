@@ -176,6 +176,11 @@ function normalizedSet(values: string[] | undefined, fallback: Set<string>): Set
   return normalized.length > 0 ? new Set(normalized) : fallback;
 }
 
+/**
+ * Maps a check run to an external review provider, or `null` when untrusted.
+ * Requires both an exact check-name match and a provider-owned app identity —
+ * a matching name from any other app is ignored (ADR-036 Option B).
+ */
 function providerFromTrustedCheckRun(
   name: string,
   appSlug?: string,

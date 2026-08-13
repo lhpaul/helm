@@ -64,9 +64,11 @@ function policyLines(role: CataloguePromptRole): string[] {
     return [
       'Policy for these entries:',
       '- A finding that matches a catalogued entry is already settled. Mark it **DEFERRED** in the unified plan, citing the catalogue title as the reason — do not put it in the Conflicts section and do not ask a human to decide it again.',
-      '- When two reviewers hold opposing CRITICAL/HIGH findings and one side matches a catalogued entry, the catalogued side loses: defer it and keep the opposing fix as **AUTO**.',
+      '- When two reviewers hold opposing CRITICAL/HIGH findings and exactly one side matches a catalogued entry, the catalogued side loses: defer it and keep the opposing fix as **AUTO**.',
       '- Never plan a fix whose effect is to revert code that exists to satisfy the other side of a catalogued entry.',
-      '- When neither side of an opposing pair is catalogued and no secure default applies, record it once as a **product_decision** conflict (HUMAN_REQUIRED) instead of alternating implementations across cycles.',
+      '- When the catalogue cannot pick a unique winner — both sides match entries, or one entry matches both sides — it does not break the tie: record the pair once as a **product_decision** conflict (HUMAN_REQUIRED), citing the entries as context, and put neither side in the plan.',
+      '- Same outcome when neither side is catalogued and no secure default applies: record it once as a **product_decision** conflict (HUMAN_REQUIRED) instead of alternating implementations across cycles.',
+      '- Each finding appears exactly once: as **AUTO**, as **DEFERRED**, or inside a single Conflicts entry — never in two places.',
     ];
   }
   return [

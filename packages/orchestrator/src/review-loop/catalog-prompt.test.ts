@@ -44,6 +44,15 @@ describe('formatCataloguedAdjudicationSection', () => {
     expect(section).toContain('do not ask a human to decide it again');
   });
 
+  it('escalates instead of guessing when the catalogue cannot pick a unique winner', () => {
+    const section = formatCataloguedAdjudicationSection([entry()], 'adjudicator');
+
+    expect(section).toContain('exactly one side matches a catalogued entry');
+    expect(section).toContain('both sides match entries, or one entry matches both sides');
+    expect(section).toContain('**product_decision** conflict (HUMAN_REQUIRED)');
+    expect(section).toContain('Each finding appears exactly once');
+  });
+
   it('tells the remediator not to touch files or revert the opposing fix', () => {
     const section = formatCataloguedAdjudicationSection([entry()], 'remediator');
 

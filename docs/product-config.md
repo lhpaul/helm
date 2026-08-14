@@ -29,8 +29,9 @@ a chatty draft review never spends the implementation PR's budget. The
 re-dispatch can no longer launder a stalled remediation loop.
 
 When either budget is exhausted with blockers still open, the loop escalates:
-the job reports `escalated: true` with `escalationReason`, and Helm posts the
-review-loop escalation comment on the PR.
+the job reports `escalated: true` with `escalationReason`, and Helm attempts
+to post the review-loop escalation comment on the PR. Comment delivery is best
+effort; operators should use the escalation result as the canonical signal.
 
 ### Clearing an exhausted lifetime budget
 

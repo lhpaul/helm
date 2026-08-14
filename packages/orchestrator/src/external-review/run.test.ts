@@ -152,6 +152,45 @@ describe('runExternalReviewIfConfigured', () => {
     });
   });
 
+  it('delegates to the Codex GitHub adapter when provider is codex-github', async () => {
+    const product: Product = {
+      ...baseProduct,
+      review: {
+        external: {
+          provider: 'codex-github',
+          codex_github: {
+            trusted_identities: ['chatgpt-codex-connector[bot]'],
+            check_names: ['Codex'],
+            blocking_severities: ['critical', 'high'],
+          },
+        },
+      },
+    };
+    const loadCodexGitHubReview = vi.fn(() => ({
+      review: {
+        state: 'COMMENTED',
+        commit_id: 'abc1234',
+        body: "Codex Review: didn't find any major issues.",
+        user: { login: 'chatgpt-codex-connector[bot]' },
+      },
+    }));
+
+    await expect(
+      runExternalReviewIfConfigured(product, PR_URL, { loadCodexGitHubReview }),
+    ).resolves.toEqual({
+      status: 'clean',
+      blockers: [],
+      advisories: [],
+    });
+    expect(loadCodexGitHubReview).toHaveBeenCalledWith({
+      owner: 'o',
+      repo: 'r',
+      prNumber: 42,
+      prUrl: PR_URL,
+      defaultBranch: 'main',
+    });
+  });
+
   it('passes the locked target revision to the external review context', async () => {
     const product: Product = {
       ...baseProduct,

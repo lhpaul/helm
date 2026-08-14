@@ -5,5 +5,12 @@ reviews:
   poem: false # apaga el "poema" cómico al final de cada review
   review_status: true
   auto_review:
+    # Encendido: CodeRabbit vuelve a ser el external reviewer por defecto del
+    # dogfood (review.external.provider: coderabbit en
+    # helm-knowledge/.helm/product.yaml). Se apagó el 2026-08-14 al pasar a
+    # Codex GitHub y se revirtió el mismo día: Codex no tiene señal terminal
+    # para un run limpio (ni check run ni status; sólo una reacción 👍 que Helm
+    # no lee), así que un PR sin findings quedaba deferred hasta expirar. El
+    # rate limit de CodeRabbit sí normaliza a `skipped`, que es terminal.
     enabled: true
     drafts: false # no revise PRs en draft

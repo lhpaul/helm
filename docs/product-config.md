@@ -64,6 +64,79 @@ Granting an escalated item more budget is a human decision, by design. Two ways:
    zero. Other lanes and the rest of the item state are untouched. The escalation
    stays in the item's `history` either way.
 
+## External Review Providers
+
+A product runs at most one external reviewer, selected by
+`review.external.provider` (ADR-036). Omitting the block disables external
+review entirely — the loop then runs on Helm's own reviewer fan-out.
+
+| Provider       | Completion signal Helm trusts                          | Trust anchor                   |
+| -------------- | ------------------------------------------------------ | ------------------------------ |
+| `bugbot`       | check run with an allowlisted name                     | publishing GitHub App identity |
+| `coderabbit`   | commit status with an allowlisted context              | status sender login            |
+| `codex-github` | **submitted PR review** pinned to the exact commit SHA | review author login            |
+
+Every provider is a name **and** identity check: a matching name from any other
+app, or a matching identity on any other name, is ignored.
+
+### `codex-github`
+
+```yaml
+review:
+  external:
+    provider: codex-github
+    defer_when_pending: true
+    resume_on_check_run: true
+    codex_github:
+      trusted_identities:
+        # The `[bot]` login only — see the exact-matching note below.
+        - 'chatgpt-codex-connector[bot]'
+      check_names: # optional — only used to name an in-flight analysis
+        - Codex
+        - Codex Review
+      blocking_severities:
+        - critical
+        - high
+```
+
+Codex publishes no commit status. It signals completion by **submitting a PR
+review**, so Helm treats "a review authored by a trusted identity exists for the
+target revision" as the readiness test, and resumes a deferred review from the
+`pull_request_review` (`submitted`) webhook. A review for an older revision does
+not resume anything — the SHA must match exactly.
+
+Findings map from Codex's own P-scale: `P0 → critical`, `P1 → high`,
+`P2 → medium`, `P3 → low`. An **unlabeled** comment is treated as `high`, not
+`medium` — Codex only posts what it considers high-priority, so an unparsed
+label must never silently demote a real blocker. A `CHANGES_REQUESTED` review
+blocks even when every inline thread has been resolved.
+
+Trusted-identity matching is exact for review authors: list the `[bot]` login,
+since a human could register the un-suffixed one. Check-run **app** identities
+are matched with the `[bot]` suffix ignored, because GitHub's app record carries
+the bare slug and that value is not user-settable.
+
+Only a **submitted** review counts. A draft (`PENDING`, `submitted_at` null) is
+visible on the reviews endpoint before its author submits it and carries no
+inline comments, so treating it as the verdict would forge a `clean` result;
+Helm keeps deferring until the review is submitted.
+
+**Operator prerequisite:** Codex reviews are not automatic by default. Either
+enable _Automatic reviews_ in Codex's GitHub settings for the repo, or comment
+`@codex review` on the PR. Without one of the two, no review is ever submitted:
+Helm defers, and the pending intent expires after `review.external.max_defer_sec`
+(default 30 minutes).
+
+> **Known gap — no terminal signal on a clean run.** Codex publishes no check
+> run and no commit status, and a run that finds nothing may end as a 👍
+> reaction rather than a submitted review. Helm reads neither reactions nor a
+> Codex check run (there is none to read), so a genuinely clean PR can stay
+> deferred until its intent expires — and re-triggering does not help, because
+> the rerun is clean too. Until Codex exposes a terminal signal Helm can trust,
+> `codex-github` is **supported but not recommended as a product's default
+> provider**; use `coderabbit` or `bugbot` as the default and select
+> `codex-github` where an operator is watching the loop.
+
 ## Early Draft Review Loop
 
 Products can opt in to external review before spec and plan artifacts are ready

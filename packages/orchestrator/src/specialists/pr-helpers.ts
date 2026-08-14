@@ -173,7 +173,35 @@ export type UpsertPRCommentByMarkerOpts = PostPRCommentOpts & {
 };
 
 /**
+ * Resolves the login that `githubToken` posts as, so an upsert can tell Helm's
+ * own comment from a third party's. `viewer` covers both auth shapes: a user
+ * token resolves to the user, a GitHub App installation token to the app's
+ * `<slug>[bot]` account — the same login that authors its comments. Returns
+ * null when the identity cannot be determined.
+ */
+async function resolveViewerLogin(githubToken: string, runGh: RunGh): Promise<string | null> {
+  try {
+    const result = await runGh(
+      ['api', 'graphql', '-f', 'query={ viewer { login } }', '--jq', '.data.viewer.login'],
+      { env: { GITHUB_TOKEN: githubToken } },
+    );
+    const login = result.stdout.trim();
+    return login.length > 0 ? login : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Creates or updates a PR comment identified by a stable HTML marker (ADR-036 summary).
+ *
+ * The marker is public — it ships in the rendered body of every comment Helm
+ * posts, so any participant can paste it into a comment of their own. Matching
+ * on the marker alone would therefore let the upsert PATCH a stranger's comment
+ * (destroying their content, or failing on a permission error that the
+ * best-effort callers swallow) while Helm's real comment stays stale. Ownership
+ * is checked first: only a comment authored by the token's own identity is
+ * patched, and anything else falls through to creating a Helm-owned comment.
  */
 export async function upsertPRCommentByMarker(
   opts: UpsertPRCommentByMarkerOpts,
@@ -187,14 +215,33 @@ export async function upsertPRCommentByMarker(
   const { owner, repo, prNumber } = parsed;
   const repoSlug = `${owner}/${repo}`;
 
+  const viewerLogin = await resolveViewerLogin(opts.githubToken, runGh);
+  if (!viewerLogin) {
+    // Without an identity there is no way to prove a marker comment is Helm's.
+    // Posting a duplicate is noisy; clobbering someone else's comment is not
+    // recoverable — so degrade to create-only and say so.
+    console.warn(
+      '[pr-helpers] Could not resolve the token identity; creating a new marker comment instead of upserting',
+    );
+    await postPRComment(opts, runGh);
+    return;
+  }
+
   const listResult = await runGh(
     ['api', `repos/${repoSlug}/issues/${prNumber}/comments`, '--paginate'],
     { env: { GITHUB_TOKEN: opts.githubToken } },
   );
 
+  // Exact login match, no `[bot]` relaxation: `foo` and `foo[bot]` are
+  // different accounts and the un-suffixed one is registrable by a human.
+  const owned = viewerLogin.trim().toLowerCase();
   const comments = parseGhIssueComments(listResult.stdout);
   const existing = comments
-    .filter((comment) => (comment.body ?? '').includes(opts.marker))
+    .filter(
+      (comment) =>
+        (comment.body ?? '').includes(opts.marker) &&
+        (comment.user?.login ?? '').trim().toLowerCase() === owned,
+    )
     .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
     .at(-1);
 
@@ -227,8 +274,14 @@ function parseGhIssueComments(stdout: string): Array<{
   id: number;
   body?: string;
   created_at?: string;
+  user?: { login?: string };
 }> {
-  type GhComment = { id: number; body?: string; created_at?: string };
+  type GhComment = {
+    id: number;
+    body?: string;
+    created_at?: string;
+    user?: { login?: string };
+  };
 
   const normalize = (value: unknown): GhComment[] => {
     if (!Array.isArray(value)) return [];

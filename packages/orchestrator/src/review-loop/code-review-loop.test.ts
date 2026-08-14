@@ -72,6 +72,7 @@ vi.mock('../specialists/pr-helpers.js', async (importOriginal) => {
   return {
     ...actual,
     postPRComment: vi.fn().mockResolvedValue(undefined),
+    upsertPRCommentByMarker: vi.fn().mockResolvedValue(undefined),
   };
 });
 vi.mock('./false-positives.js', async (importOriginal) => {
@@ -98,7 +99,8 @@ import {
 import { provisionReviewerWorkspace } from '../specialists/code-workspace.js';
 import { fetchSpecForPlan } from '../specialists/fetch-product-context.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
-import { postPRComment } from '../specialists/pr-helpers.js';
+import { postPRComment, upsertPRCommentByMarker } from '../specialists/pr-helpers.js';
+import { REVIEW_LOOP_ESCALATION_MARKER } from './escalation-comment.js';
 import { buildAdvisorySummaryRows, upsertReviewLoopSummaryComment } from './summary.js';
 import {
   builtInFalsePositiveEntries,
@@ -524,13 +526,40 @@ describe('runCodeReviewLoop', () => {
 
       await runBudgetedLoop(budgetedProduct({ max_cycles: 1 }), store);
 
-      expect(postPRComment).toHaveBeenCalledWith(
+      expect(upsertPRCommentByMarker).toHaveBeenCalledWith(
         expect.objectContaining({
           prUrl: PR_URL,
+          marker: REVIEW_LOOP_ESCALATION_MARKER,
           body: expect.stringContaining('`max_cycles`'),
         }),
         undefined,
       );
+      // Upsert, not append (#93) — the loop must not reach `gh pr comment` itself.
+      expect(postPRComment).not.toHaveBeenCalled();
+    });
+
+    it('updates a single escalation comment when a re-dispatch escalates again', async () => {
+      const product = budgetedProduct({
+        max_cycles: 2,
+        max_cycles_cumulative: 3,
+        no_progress_cycles: 10,
+      });
+      const store = makeLedgerStore();
+      vi.mocked(shouldRemediate).mockReturnValue(true);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+
+      await runBudgetedLoop(product, store);
+      await runBudgetedLoop(product, store, store.entry);
+
+      // Two escalations, two upserts by the same marker — GitHub keeps one
+      // comment, and the second call carries the newer budget state.
+      const calls = vi.mocked(upsertPRCommentByMarker).mock.calls;
+      expect(calls).toHaveLength(2);
+      expect(calls.every(([opts]) => opts.marker === REVIEW_LOOP_ESCALATION_MARKER)).toBe(true);
+      expect(calls[0]![0].body).toContain('Lifetime cycles for this lane: 1 completed');
+      expect(calls[1]![0].body).toContain('Lifetime cycles for this lane: 2 completed');
+      expect(calls[1]![0].body).toContain('`max_cycles_cumulative`');
+      expect(postPRComment).not.toHaveBeenCalled();
     });
 
     it('keeps draft-artifact loops on their own lane', async () => {
@@ -603,7 +632,7 @@ describe('runCodeReviewLoop', () => {
       // would otherwise swallow the escalation result itself.
       vi.mocked(shouldRemediate).mockReturnValue(true);
       vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
-      vi.mocked(postPRComment).mockRejectedValueOnce(new Error('GitHub 500'));
+      vi.mocked(upsertPRCommentByMarker).mockRejectedValueOnce(new Error('GitHub 500'));
 
       const result = await runBudgetedLoop(budgetedProduct({ max_cycles: 1 }), makeLedgerStore());
 
@@ -866,7 +895,10 @@ describe('runCodeReviewLoop', () => {
       cyclesCompleted: 1,
     });
     expect(result.error).toContain('coderabbit pending_timeout');
-    expect(postPRComment).toHaveBeenCalledTimes(1);
+    expect(upsertPRCommentByMarker).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(upsertPRCommentByMarker).mock.calls[0]![0].marker).toBe(
+      REVIEW_LOOP_ESCALATION_MARKER,
+    );
   });
 
   it('defers analysis-pending external review without posting escalation', async () => {
@@ -915,6 +947,7 @@ describe('runCodeReviewLoop', () => {
       },
     });
     expect(onExternalReviewDeferred).toHaveBeenCalledWith(result.deferredExternalReview);
+    expect(upsertPRCommentByMarker).not.toHaveBeenCalled();
     expect(postPRComment).not.toHaveBeenCalled();
   });
 
@@ -1936,7 +1969,10 @@ describe('runCodeReviewLoop', () => {
       escalationReason: 'adjudication_conflict',
     });
     expect(buildRemediationParams).not.toHaveBeenCalled();
-    expect(postPRComment).toHaveBeenCalled();
+    expect(upsertPRCommentByMarker).toHaveBeenCalledWith(
+      expect.objectContaining({ marker: REVIEW_LOOP_ESCALATION_MARKER }),
+      undefined,
+    );
   });
 
   it('uses stored product decisions instead of re-escalating the same conflict', async () => {

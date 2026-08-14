@@ -4,6 +4,7 @@ import {
   dispatchStageHandler,
   resolveSpecialistId,
   type DeferredExternalReviewIntent,
+  type RunExternalReviewDeps,
 } from '@helm/orchestrator';
 import type { Product } from '@helm/shared';
 import { WORKFLOW_STAGES, type WorkflowStage } from '@helm/workflow';
@@ -27,6 +28,7 @@ import {
 } from './github-pr.js';
 import { createGitHubBugbotReviewLoader } from './bugbot-review-loader.js';
 import { createGitHubCodeRabbitReviewLoader } from './coderabbit-review-loader.js';
+import { createGitHubCodexGitHubReviewLoader } from './codex-github-review-loader.js';
 
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
 export const DUPLICATE_TARGET_REVISION = 'Duplicate target revision';
@@ -47,6 +49,33 @@ function draftReviewerSkipReason(input: {
   if (itemRank < 0 || draftRank < 0) return DRAFT_REVIEWER_NO_LONGER_APPLICABLE;
   if (itemRank < draftRank) return DRAFT_REVIEWER_NOT_YET_APPLICABLE;
   return DRAFT_REVIEWER_NO_LONGER_APPLICABLE;
+}
+
+/**
+ * Builds the loader deps for the product's configured external reviewer.
+ *
+ * Exactly one provider is wired per product (ADR-036) — an unset provider, an
+ * unknown one, or a missing GitHub token yields `undefined`, which the adapter
+ * layer reads as `skipped`.
+ */
+export function externalReviewDepsForProduct(
+  product: Product,
+  githubToken: string | undefined,
+): RunExternalReviewDeps | undefined {
+  if (!githubToken) return undefined;
+  const provider = product.review?.external?.provider;
+  if (provider === 'bugbot') {
+    return { loadBugbotReview: createGitHubBugbotReviewLoader({ product, githubToken }) };
+  }
+  if (provider === 'coderabbit') {
+    return { loadCodeRabbitReview: createGitHubCodeRabbitReviewLoader({ product, githubToken }) };
+  }
+  if (provider === 'codex-github') {
+    return {
+      loadCodexGitHubReview: createGitHubCodexGitHubReviewLoader({ product, githubToken }),
+    };
+  }
+  return undefined;
 }
 
 function isSafeWorkdirSegment(value: string): boolean {
@@ -768,22 +797,7 @@ export async function runDispatchJob(
             triggeredBy: 'external-review:analysis-pending',
           });
         },
-        externalReviewDeps:
-          ctx.product.review?.external?.provider === 'bugbot' && ctx.githubToken
-            ? {
-                loadBugbotReview: createGitHubBugbotReviewLoader({
-                  product: ctx.product,
-                  githubToken: ctx.githubToken,
-                }),
-              }
-            : ctx.product.review?.external?.provider === 'coderabbit' && ctx.githubToken
-              ? {
-                  loadCodeRabbitReview: createGitHubCodeRabbitReviewLoader({
-                    product: ctx.product,
-                    githubToken: ctx.githubToken,
-                  }),
-                }
-              : undefined,
+        externalReviewDeps: externalReviewDepsForProduct(ctx.product, ctx.githubToken),
       },
     );
 

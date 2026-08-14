@@ -97,6 +97,28 @@ const CheckRunWebhookSchema = z.object({
     .optional(),
 });
 
+// No .strict() — GitHub adds fields to review objects without notice.
+const PullRequestReviewWebhookSchema = z.object({
+  action: z.string(),
+  review: z.object({
+    state: z.string().optional(),
+    commit_id: z.string().nullable().optional(),
+    user: z.object({ login: z.string() }).optional(),
+  }),
+  pull_request: z
+    .object({
+      number: z.number().int().positive().optional(),
+      head: z.object({ ref: z.string().optional(), sha: z.string().optional() }).optional(),
+    })
+    .optional(),
+  repository: z
+    .object({
+      name: z.string(),
+      owner: z.object({ login: z.string() }),
+    })
+    .optional(),
+});
+
 /** Exact check-run name allowlist — never substring-match provider identity. */
 const BUGBOT_CHECK_NAMES = new Set([
   'bugbot',
@@ -130,6 +152,9 @@ export type ExternalReviewWebhookTrustConfig = {
   };
   coderabbit?: {
     statusContexts?: string[];
+    trustedIdentities?: string[];
+  };
+  codexGithub?: {
     trustedIdentities?: string[];
   };
 };
@@ -168,6 +193,10 @@ const DEFAULT_CODERABBIT_TRUSTED_IDENTITIES = new Set([
   'coderabbitai',
   'coderabbitai-pro[bot]',
 ]);
+
+// `[bot]` only: the bare app slug is a registrable user login, and review-author
+// matching is exact, so trusting it would accept a human-forged readiness signal.
+const DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES = new Set(['chatgpt-codex-connector[bot]']);
 
 function normalizedSet(values: string[] | undefined, fallback: Set<string>): Set<string> {
   const normalized = (values ?? [])
@@ -342,6 +371,36 @@ export function parseGitHubWebhook(
         repo: parsed.data.repository?.name ?? null,
         ...(pr?.number !== undefined ? { prNumber: pr.number } : {}),
         targetRevision: checkRun.head_sha,
+        ...(pr?.head?.ref ? { headRef: pr.head.ref } : {}),
+        timestamp,
+      };
+    }
+
+    if (eventType === 'pull_request_review') {
+      // Codex publishes no status or check run — it signals completion by
+      // submitting a review. Option C trust applies: allowlist the review
+      // author login, and only trust a review pinned to an exact commit.
+      const parsed = PullRequestReviewWebhookSchema.safeParse(payload);
+      if (!parsed.success) return { type: 'unknown', raw: rawEvent };
+      const { action, review, pull_request: pr } = parsed.data;
+      if (action !== 'submitted') return { type: 'unknown', raw: rawEvent };
+      const trustedLogins = normalizedSet(
+        trustConfig?.codexGithub?.trustedIdentities,
+        DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES,
+      );
+      const authorLogin = review.user?.login?.trim().toLowerCase() ?? '';
+      if (!authorLogin || !trustedLogins.has(authorLogin)) {
+        return { type: 'unknown', raw: rawEvent };
+      }
+      const commitId = review.commit_id?.trim();
+      if (!commitId) return { type: 'unknown', raw: rawEvent };
+      return {
+        type: 'external_review_ready',
+        provider: 'codex-github',
+        owner: parsed.data.repository?.owner.login ?? null,
+        repo: parsed.data.repository?.name ?? null,
+        ...(pr?.number !== undefined ? { prNumber: pr.number } : {}),
+        targetRevision: commitId,
         ...(pr?.head?.ref ? { headRef: pr.head.ref } : {}),
         timestamp,
       };

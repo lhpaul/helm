@@ -599,6 +599,92 @@ describe('parseGitHubWebhook', () => {
       expect(result.type).toBe('unknown');
     });
 
+    it('submitted Codex review emits external_review_ready pinned to the reviewed commit', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request_review', {
+          action: 'submitted',
+          review: {
+            state: 'commented',
+            commit_id: 'abc123def',
+            user: { login: 'chatgpt-codex-connector[bot]' },
+          },
+          pull_request: { number: 42, head: { ref: 'helm/impl/issue_42', sha: 'abc123def' } },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result).toEqual({
+        type: 'external_review_ready',
+        provider: 'codex-github',
+        owner: 'owner',
+        repo: 'repo',
+        prNumber: 42,
+        targetRevision: 'abc123def',
+        headRef: 'helm/impl/issue_42',
+        timestamp: expect.any(String),
+      });
+    });
+
+    it('rejects a review from an untrusted author (Option C)', () => {
+      const result = parseGitHubWebhook(
+        ctx('pull_request_review', {
+          action: 'submitted',
+          review: {
+            state: 'changes_requested',
+            commit_id: 'abc123def',
+            user: { login: 'malicious-bot' },
+          },
+          pull_request: { number: 42 },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+      expect(result.type).toBe('unknown');
+    });
+
+    it('honors the configured Codex trusted identities', () => {
+      const payload = {
+        action: 'submitted',
+        review: {
+          state: 'commented',
+          commit_id: 'abc123def',
+          user: { login: 'codex-reviewer[bot]' },
+        },
+        pull_request: { number: 42 },
+        repository: { name: 'repo', owner: { login: 'owner' } },
+      };
+
+      expect(parseGitHubWebhook(ctx('pull_request_review', payload)).type).toBe('unknown');
+      expect(
+        parseGitHubWebhook(ctx('pull_request_review', payload), {
+          codexGithub: { trustedIdentities: ['codex-reviewer[bot]'] },
+        }),
+      ).toMatchObject({ type: 'external_review_ready', provider: 'codex-github' });
+    });
+
+    it('rejects a review that is edited/dismissed or carries no commit id', () => {
+      const trustedUser = { login: 'chatgpt-codex-connector[bot]' };
+
+      expect(
+        parseGitHubWebhook(
+          ctx('pull_request_review', {
+            action: 'edited',
+            review: { state: 'commented', commit_id: 'abc123def', user: trustedUser },
+            repository: { name: 'repo', owner: { login: 'owner' } },
+          }),
+        ).type,
+      ).toBe('unknown');
+
+      expect(
+        parseGitHubWebhook(
+          ctx('pull_request_review', {
+            action: 'submitted',
+            review: { state: 'commented', commit_id: null, user: trustedUser },
+            repository: { name: 'repo', owner: { login: 'owner' } },
+          }),
+        ).type,
+      ).toBe('unknown');
+    });
+
     it('rejects CodeRabbit status payloads with unexpected fields', () => {
       const result = parseGitHubWebhook(
         ctx('status', {

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { ProductSchema } from './product-schema.js';
+import {
+  DEFAULT_CODEX_GITHUB_BLOCKING_SEVERITIES,
+  DEFAULT_CODEX_GITHUB_CHECK_NAMES,
+  ProductSchema,
+} from './product-schema.js';
 import { ProductConfigError, parseProductConfig } from './product-parser.js';
 
 // Raw product object with kebab-case specialist IDs (ADR-022 canonical form).
@@ -514,6 +518,40 @@ describe('ProductSchema — review loop (ADR-036)', () => {
         external: { provider: 'coderabbit', coderabbit: { unknown_flag: true } },
       }),
     );
+    expect(result.success).toBe(false);
+  });
+
+  it('parses external codex-github provider and applies its defaults', () => {
+    const result = ProductSchema.safeParse(
+      withReview({
+        external: {
+          provider: 'codex-github',
+          codex_github: { trusted_identities: ['chatgpt-codex-connector[bot]'] },
+        },
+      }),
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.review?.external?.provider).toBe('codex-github');
+      expect(result.data.review?.external?.codex_github).toEqual({
+        trusted_identities: ['chatgpt-codex-connector[bot]'],
+        check_names: DEFAULT_CODEX_GITHUB_CHECK_NAMES,
+        blocking_severities: [...DEFAULT_CODEX_GITHUB_BLOCKING_SEVERITIES],
+      });
+    }
+  });
+
+  it('rejects unknown keys in review.external.codex_github', () => {
+    const result = ProductSchema.safeParse(
+      withReview({
+        external: { provider: 'codex-github', codex_github: { unknown_flag: true } },
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown external provider', () => {
+    const result = ProductSchema.safeParse(withReview({ external: { provider: 'codex' } }));
     expect(result.success).toBe(false);
   });
 

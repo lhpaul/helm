@@ -124,6 +124,27 @@ export const DEFAULT_CODERABBIT_TRUSTED_IDENTITIES = [
 ];
 export const DEFAULT_CODERABBIT_BLOCKING_SEVERITIES = ['critical', 'high', 'medium'] as const;
 
+/**
+ * GitHub logins trusted to author a Codex GitHub code review.
+ * Codex signals completion by submitting a PR review (not a commit status), so
+ * the review author login is the trust anchor for both readiness and findings.
+ *
+ * Only the `[bot]` account is listed. The bare app slug is a registrable user
+ * login, so trusting it would let anyone who claims that account submit a review
+ * for the pending SHA and have a forged clean verdict accepted. Check-run **app**
+ * identities still match: that comparison strips the `[bot]` suffix from both
+ * sides, so the app record's bare slug matches this entry without the bare login
+ * ever being trusted to author a review.
+ */
+export const DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES = ['chatgpt-codex-connector[bot]'];
+/**
+ * Optional check-run names Codex may publish while a review is running.
+ * Codex readiness comes from the submitted review; a check run, when present,
+ * is only used to defer while the analysis is still in flight.
+ */
+export const DEFAULT_CODEX_GITHUB_CHECK_NAMES = ['Codex', 'Codex Review', 'codex'];
+export const DEFAULT_CODEX_GITHUB_BLOCKING_SEVERITIES = ['critical', 'high'] as const;
+
 // ── Root Product Schema ───────────────────────────────────────────────────────
 
 export const ProductSchema = z
@@ -210,7 +231,7 @@ export const ProductSchema = z
           .optional(),
         external: z
           .object({
-            provider: z.enum(['bugbot', 'coderabbit']).optional(),
+            provider: z.enum(['bugbot', 'coderabbit', 'codex-github']).optional(),
             defer_when_pending: z.boolean().optional(),
             resume_on_check_run: z.boolean().optional(),
             max_defer_sec: z.number().int().positive().optional(),
@@ -245,6 +266,23 @@ export const ProductSchema = z
                   .array(ExternalReviewSeveritySchema)
                   .min(1)
                   .default([...DEFAULT_CODERABBIT_BLOCKING_SEVERITIES]),
+              })
+              .strict()
+              .optional(),
+            codex_github: z
+              .object({
+                trusted_identities: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES),
+                check_names: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(DEFAULT_CODEX_GITHUB_CHECK_NAMES),
+                blocking_severities: z
+                  .array(ExternalReviewSeveritySchema)
+                  .min(1)
+                  .default([...DEFAULT_CODEX_GITHUB_BLOCKING_SEVERITIES]),
               })
               .strict()
               .optional(),

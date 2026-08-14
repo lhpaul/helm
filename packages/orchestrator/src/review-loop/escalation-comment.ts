@@ -1,18 +1,28 @@
 import type { StopRuleEscalationReason } from './stop-rule.js';
+import { upsertPRCommentByMarker } from '../specialists/pr-helpers.js';
+import type { RunGh } from '../specialists/git-helpers.js';
 
 export const REVIEW_LOOP_ESCALATION_MARKER = '<!-- helm:review-loop-escalation -->';
+
+export type ReviewLoopEscalationCommentInput = {
+  reason: StopRuleEscalationReason;
+  message: string;
+  cyclesCompleted: number;
+  externalReason?: string;
+  /** Lifetime lane counters (ADR-042), when the caller knows them. */
+  cumulative?: { cyclesTotal: number; maxCyclesCumulative: number };
+};
 
 /**
  * Renders the marker comment posted on the PR when the review loop escalates.
  * `externalReason` carries the adapter's own wording (e.g. `unavailable`) so an
  * operator can tell an external-provider escalation from an internal stop-rule.
+ *
+ * The comment is updated in place on every escalation (see
+ * `upsertReviewLoopEscalationComment`), so it must render the **current** state
+ * on its own — the reader has no earlier copy to compare it against.
  */
-export function formatReviewLoopEscalationComment(input: {
-  reason: StopRuleEscalationReason;
-  message: string;
-  cyclesCompleted: number;
-  externalReason?: string;
-}): string {
+export function formatReviewLoopEscalationComment(input: ReviewLoopEscalationCommentInput): string {
   const lines = [
     REVIEW_LOOP_ESCALATION_MARKER,
     '## Review loop escalated',
@@ -24,10 +34,57 @@ export function formatReviewLoopEscalationComment(input: {
     `- Cycles completed: ${input.cyclesCompleted}`,
   ];
 
+  if (input.cumulative) {
+    // "completed", not "N of M": the pass the stop rule just refused never ran,
+    // so `cyclesTotal` is one below the cycle the message counts.
+    lines.push(
+      `- Lifetime cycles for this lane: ${input.cumulative.cyclesTotal} completed, budget max_cycles_cumulative=${input.cumulative.maxCyclesCumulative}`,
+    );
+  }
+
   if (input.externalReason) {
     lines.push(`- External signal: \`${input.externalReason}\``);
   }
 
-  lines.push('', '_Human review required before merge._');
+  lines.push(
+    '',
+    '_Human review required before merge._',
+    '',
+    '_Updated in place on each escalation; the full escalation history is on the item._',
+  );
   return lines.join('\n');
+}
+
+/**
+ * Creates or updates the escalation comment on the PR (ADR-036 §6, lhpaul/helm#93).
+ *
+ * Upsert, not append: a still-blocked item re-escalates on every re-dispatch,
+ * and appending buried the PR under identical comments. The escalation history
+ * lives on the item's history events, which are already idempotent per
+ * `(lane, reason, cyclesTotal)` (ADR-042 §5).
+ *
+ * The marker below is public — it ships in every escalation comment Helm posts,
+ * so a participant can quote it. `upsertPRCommentByMarker` only ever updates a
+ * comment authored by Helm's own token identity and creates a Helm-owned one
+ * otherwise, so a quoted marker can neither be overwritten nor suppress the
+ * real escalation.
+ */
+export async function upsertReviewLoopEscalationComment(
+  input: ReviewLoopEscalationCommentInput & {
+    prUrl: string;
+    githubToken: string;
+    runGh?: RunGh;
+  },
+): Promise<void> {
+  const body = formatReviewLoopEscalationComment(input);
+
+  await upsertPRCommentByMarker(
+    {
+      prUrl: input.prUrl,
+      body,
+      githubToken: input.githubToken,
+      marker: REVIEW_LOOP_ESCALATION_MARKER,
+    },
+    input.runGh,
+  );
 }

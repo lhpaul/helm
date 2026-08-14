@@ -35,8 +35,10 @@ export function formatReviewLoopEscalationComment(input: ReviewLoopEscalationCom
   ];
 
   if (input.cumulative) {
+    // "completed", not "N of M": the pass the stop rule just refused never ran,
+    // so `cyclesTotal` is one below the cycle the message counts.
     lines.push(
-      `- Lifetime cycles for this lane: ${input.cumulative.cyclesTotal} of ${input.cumulative.maxCyclesCumulative}`,
+      `- Lifetime cycles for this lane: ${input.cumulative.cyclesTotal} completed, budget max_cycles_cumulative=${input.cumulative.maxCyclesCumulative}`,
     );
   }
 

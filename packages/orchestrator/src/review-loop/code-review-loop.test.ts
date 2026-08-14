@@ -556,8 +556,8 @@ describe('runCodeReviewLoop', () => {
       const calls = vi.mocked(upsertPRCommentByMarker).mock.calls;
       expect(calls).toHaveLength(2);
       expect(calls.every(([opts]) => opts.marker === REVIEW_LOOP_ESCALATION_MARKER)).toBe(true);
-      expect(calls[0]![0].body).toContain('Lifetime cycles for this lane: 1 of 3');
-      expect(calls[1]![0].body).toContain('Lifetime cycles for this lane: 2 of 3');
+      expect(calls[0]![0].body).toContain('Lifetime cycles for this lane: 1 completed');
+      expect(calls[1]![0].body).toContain('Lifetime cycles for this lane: 2 completed');
       expect(calls[1]![0].body).toContain('`max_cycles_cumulative`');
       expect(postPRComment).not.toHaveBeenCalled();
     });

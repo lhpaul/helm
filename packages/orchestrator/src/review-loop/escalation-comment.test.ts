@@ -33,7 +33,9 @@ describe('formatReviewLoopEscalationComment', () => {
       cumulative: { cyclesTotal: 6, maxCyclesCumulative: 6 },
     });
 
-    expect(body).toContain('Lifetime cycles for this lane: 6 of 6');
+    expect(body).toContain(
+      'Lifetime cycles for this lane: 6 completed, budget max_cycles_cumulative=6',
+    );
   });
 
   it('omits the lifetime line when no cumulative counters are given', () => {

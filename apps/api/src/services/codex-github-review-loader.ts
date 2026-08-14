@@ -39,6 +39,8 @@ type GitHubReviewCommentResponse = {
   original_line?: number | null;
   body?: string | null;
   user?: { login?: string | null } | null;
+  /** Which submitted review the comment belongs to — the revision scope anchor. */
+  pull_request_review_id?: number | null;
 };
 
 type LoadedReviewThread = {
@@ -73,6 +75,7 @@ type GitHubReviewThreadsGraphQL = {
               originalLine?: number | null;
               body?: string | null;
               author?: { login?: string | null } | null;
+              pullRequestReview?: { databaseId?: number | null } | null;
             }[];
           } | null;
         }[];
@@ -242,6 +245,9 @@ const REVIEW_THREADS_QUERY = `
                 author {
                   login
                 }
+                pullRequestReview {
+                  databaseId
+                }
               }
             }
           }
@@ -251,12 +257,23 @@ const REVIEW_THREADS_QUERY = `
   }
 `;
 
+/**
+ * Loads the PR's review threads, keeping only the comments that belong to the
+ * **selected** review.
+ *
+ * A thread outlives the revision it was opened on: after a remediation push
+ * Codex reviews the new SHA, but the unresolved threads from the previous SHA
+ * are still returned here. Attributing them to the current verdict would keep a
+ * fixed P0/P1 blocking forever, so a thread with no comment from `reviewId` is
+ * dropped whole.
+ */
 async function fetchCodexReviewThreads(input: {
   owner: string;
   repo: string;
   prNumber: number;
   product: Product;
   githubToken: string;
+  reviewId: number;
 }): Promise<LoadedReviewThread[]> {
   const threads: LoadedReviewThread[] = [];
   let after: string | null | undefined;
@@ -283,9 +300,14 @@ async function fetchCodexReviewThreads(input: {
             original_line: comment.originalLine,
             body: comment.body,
             user: { login: comment.author?.login ?? null },
+            pull_request_review_id: comment.pullRequestReview?.databaseId ?? null,
           }),
         )
-        .filter((comment) => isTrustedCodexIdentity(comment.user?.login, input.product));
+        .filter(
+          (comment) =>
+            isTrustedCodexIdentity(comment.user?.login, input.product) &&
+            comment.pull_request_review_id === input.reviewId,
+        );
       if (comments.length === 0) continue;
       threads.push({
         id: thread.id,
@@ -362,6 +384,20 @@ export function createGitHubCodexGitHubReviewLoader(input: {
         };
       }
 
+      // Every inline comment below is scoped to this review id: the REST list and
+      // the thread query both return the whole PR's history, and a finding from
+      // an earlier revision must not be combined with this revision's verdict.
+      const reviewId = typeof review.id === 'string' ? Number(review.id) : review.id;
+      if (reviewId === undefined || !Number.isFinite(reviewId)) {
+        // Can't happen against real GitHub; without an id there is no way to
+        // scope findings, and guessing risks both false blockers and false
+        // cleans — so report the payload unusable and let the loop retry.
+        console.warn(
+          '[codex-github-review-loader] Review has no usable id; treating as unavailable',
+        );
+        return { unavailable: true };
+      }
+
       const [reviewComments, reviewThreads] = await Promise.all([
         fetchPaginatedGitHubJson<GitHubReviewCommentResponse>(
           `${repoBase}/pulls/${ctx.prNumber}/comments`,
@@ -373,6 +409,7 @@ export function createGitHubCodexGitHubReviewLoader(input: {
           prNumber: ctx.prNumber,
           product: input.product,
           githubToken: input.githubToken,
+          reviewId,
         }),
       ]);
       const trustedResolvedThreadCommentIds = new Set(
@@ -396,6 +433,7 @@ export function createGitHubCodexGitHubReviewLoader(input: {
         reviewComments: reviewComments.filter(
           (comment) =>
             isTrustedCodexIdentity(comment.user?.login, input.product) &&
+            comment.pull_request_review_id === reviewId &&
             !trustedResolvedThreadCommentIds.has(comment.id ?? '') &&
             !trustedResolvedThreadCommentIds.has(comment.node_id ?? ''),
         ),

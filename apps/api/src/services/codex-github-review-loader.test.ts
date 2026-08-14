@@ -67,6 +67,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
                   line: 10,
                   body: '[P1] boom',
                   author: { login: 'chatgpt-codex-connector[bot]' },
+                  pullRequestReview: { databaseId: 3 },
                 },
               ],
             },
@@ -85,6 +86,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
                   line: 20,
                   body: '[P1] already fixed',
                   author: { login: 'chatgpt-codex-connector[bot]' },
+                  pullRequestReview: { databaseId: 3 },
                 },
               ],
             },
@@ -126,6 +128,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
             line: 10,
             body: '[P1] boom',
             user: { login: 'chatgpt-codex-connector[bot]' },
+            pull_request_review_id: 3,
           },
           {
             id: 2,
@@ -134,6 +137,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
             line: 20,
             body: '[P1] already fixed',
             user: { login: 'chatgpt-codex-connector[bot]' },
+            pull_request_review_id: 3,
           },
           {
             id: 3,
@@ -142,6 +146,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
             line: 30,
             body: 'human nit',
             user: { login: 'lhpaul' },
+            pull_request_review_id: 3,
           },
         ]);
       }
@@ -161,6 +166,81 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
     expect(payload?.reviewComments?.map((comment) => comment.id)).toEqual([1]);
     expect(payload?.reviewThreads).toHaveLength(1);
     expect(payload?.reviewThreads?.[0]?.id).toBe('PRRT_1');
+  });
+
+  it('drops inline findings from an earlier review on the same PR', async () => {
+    // After a remediation push Codex reviews the new SHA, but its unresolved
+    // threads from the previous SHA are still returned by both endpoints.
+    // Combining them with this revision's clean verdict would block forever.
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = typeof url === 'string' ? url : url.toString();
+      if (requestUrl === 'https://api.github.com/graphql') {
+        return threadsResponse([
+          {
+            id: 'PRRT_OLD',
+            isResolved: false,
+            path: 'a.ts',
+            line: 10,
+            comments: {
+              nodes: [
+                {
+                  databaseId: 1,
+                  id: 'PRRC_OLD',
+                  path: 'a.ts',
+                  line: 10,
+                  body: '[P0] fixed on the previous push',
+                  author: { login: 'chatgpt-codex-connector[bot]' },
+                  pullRequestReview: { databaseId: 11 },
+                },
+              ],
+            },
+          },
+        ]);
+      }
+      if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.includes('/pulls/42/reviews')) {
+        return jsonResponse([
+          {
+            id: 11,
+            state: 'CHANGES_REQUESTED',
+            commit_id: 'old0000',
+            body: 'previous revision',
+            user: { login: 'chatgpt-codex-connector[bot]' },
+          },
+          {
+            id: 12,
+            state: 'COMMENTED',
+            commit_id: 'abc1234',
+            body: 'No issues found.',
+            user: { login: 'chatgpt-codex-connector[bot]' },
+          },
+        ]);
+      }
+      if (requestUrl.includes('/pulls/42/comments')) {
+        return jsonResponse([
+          {
+            id: 1,
+            node_id: 'PRRC_OLD',
+            path: 'a.ts',
+            line: 10,
+            body: '[P0] fixed on the previous push',
+            user: { login: 'chatgpt-codex-connector[bot]' },
+            pull_request_review_id: 11,
+          },
+        ]);
+      }
+      throw new Error(`unexpected fetch: ${requestUrl}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const payload = await createGitHubCodexGitHubReviewLoader({
+      product,
+      githubToken: 't',
+    })(ctx);
+
+    expect(payload?.review?.id).toBe(12);
+    expect(payload?.reviewComments).toEqual([]);
+    expect(payload?.reviewThreads).toEqual([]);
   });
 
   it('reports reviewPending with the in-flight Codex check run when no review matches', async () => {

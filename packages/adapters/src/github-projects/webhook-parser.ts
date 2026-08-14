@@ -194,10 +194,9 @@ const DEFAULT_CODERABBIT_TRUSTED_IDENTITIES = new Set([
   'coderabbitai-pro[bot]',
 ]);
 
-const DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES = new Set([
-  'chatgpt-codex-connector[bot]',
-  'chatgpt-codex-connector',
-]);
+// `[bot]` only: the bare app slug is a registrable user login, and review-author
+// matching is exact, so trusting it would accept a human-forged readiness signal.
+const DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES = new Set(['chatgpt-codex-connector[bot]']);
 
 function normalizedSet(values: string[] | undefined, fallback: Set<string>): Set<string> {
   const normalized = (values ?? [])

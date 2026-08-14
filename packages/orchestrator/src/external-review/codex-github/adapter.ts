@@ -99,12 +99,31 @@ function summarize(body: string | undefined, fallback: string): string {
   return firstLine.slice(0, 180);
 }
 
-/** Codex's "nothing to flag" phrasings — a verdict, never a finding. */
+/**
+ * Codex's "nothing to flag" phrasings, as a **whole-body** verdict.
+ *
+ * Anchored on purpose: an unanchored scan drops any real finding that merely
+ * mentions the phrase — `[P1] Validator reports no issues for malformed input`
+ * is a blocker, not a verdict — and a dropped P1 on a `COMMENTED` review reads
+ * back as `clean`. Only a comment that says nothing *but* the verdict qualifies,
+ * and a parsed P-label vetoes it outright.
+ */
 function isNonActionableBody(body: string): boolean {
+  const stripped = body
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/[*_`>#]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (stripped.length === 0) return false;
+  // A finding that carried a priority label is a finding, whatever else it says.
+  if (/\bP\s?[0-3]\b/i.test(stripped)) return false;
   return (
-    /no\s+(?:major\s+|actionable\s+|significant\s+|blocking\s+)?(?:issues|comments|findings|problems)\b/i.test(
-      body,
-    ) || /didn'?t\s+find\s+any\s+(?:major\s+)?(?:issues|problems)/i.test(body)
+    /^(?:i\s+)?(?:found|see|have)?\s*no\s+(?:major\s+|actionable\s+|significant\s+|blocking\s+)?(?:issues|comments|findings|problems)(?:\s+(?:found|here|to\s+(?:flag|report)))?[.!]?$/i.test(
+      stripped,
+    ) ||
+    /^(?:i\s+)?didn'?t\s+find\s+any\s+(?:major\s+)?(?:issues|problems)(?:\s+(?:here|with\s+this\s+change))?[.!]?$/i.test(
+      stripped,
+    )
   );
 }
 

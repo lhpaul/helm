@@ -128,11 +128,15 @@ export const DEFAULT_CODERABBIT_BLOCKING_SEVERITIES = ['critical', 'high', 'medi
  * GitHub logins trusted to author a Codex GitHub code review.
  * Codex signals completion by submitting a PR review (not a commit status), so
  * the review author login is the trust anchor for both readiness and findings.
+ *
+ * Only the `[bot]` account is listed. The bare app slug is a registrable user
+ * login, so trusting it would let anyone who claims that account submit a review
+ * for the pending SHA and have a forged clean verdict accepted. Check-run **app**
+ * identities still match: that comparison strips the `[bot]` suffix from both
+ * sides, so the app record's bare slug matches this entry without the bare login
+ * ever being trusted to author a review.
  */
-export const DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES = [
-  'chatgpt-codex-connector[bot]',
-  'chatgpt-codex-connector',
-];
+export const DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES = ['chatgpt-codex-connector[bot]'];
 /**
  * Optional check-run names Codex may publish while a review is running.
  * Codex readiness comes from the submitted review; a check run, when present,

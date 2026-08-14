@@ -62,6 +62,12 @@ export function formatReviewLoopEscalationComment(input: ReviewLoopEscalationCom
  * and appending buried the PR under identical comments. The escalation history
  * lives on the item's history events, which are already idempotent per
  * `(lane, reason, cyclesTotal)` (ADR-042 §5).
+ *
+ * The marker below is public — it ships in every escalation comment Helm posts,
+ * so a participant can quote it. `upsertPRCommentByMarker` only ever updates a
+ * comment authored by Helm's own token identity and creates a Helm-owned one
+ * otherwise, so a quoted marker can neither be overwritten nor suppress the
+ * real escalation.
  */
 export async function upsertReviewLoopEscalationComment(
   input: ReviewLoopEscalationCommentInput & {

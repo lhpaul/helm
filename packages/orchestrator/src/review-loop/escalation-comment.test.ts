@@ -50,16 +50,30 @@ describe('formatReviewLoopEscalationComment', () => {
   });
 });
 
+/** The login Helm's token posts as in these tests. */
+const HELM_LOGIN = 'helm-bot';
+
+type StubComment = {
+  id: number;
+  body: string;
+  created_at: string;
+  user?: { login?: string };
+};
+
 /**
  * gh stub that stores the PR's comments the way GitHub would: a create appends,
  * a PATCH rewrites the targeted comment from its `--input` payload. Applying the
  * payload is what lets a test assert the *stored* body, not just that a PATCH
- * was sent.
+ * was sent. The `viewer` query answers with `HELM_LOGIN`, so a comment without
+ * an explicit author is Helm's own.
  */
-function makeGhStub(existing: { id: number; body: string; created_at: string }[]) {
+function makeGhStub(existing: StubComment[]) {
   const calls: string[][] = [];
   const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
     calls.push([...args]);
+    if (args[0] === 'api' && args[1] === 'graphql') {
+      return { stdout: `${HELM_LOGIN}\n` };
+    }
     if (args[0] === 'api' && args[2] === '--paginate') {
       return { stdout: JSON.stringify(existing) };
     }
@@ -68,6 +82,7 @@ function makeGhStub(existing: { id: number; body: string; created_at: string }[]
         id: 100 + existing.length,
         body: args[args.indexOf('--body') + 1]!,
         created_at: `2026-08-14T0${existing.length}:00:00Z`,
+        user: { login: HELM_LOGIN },
       });
     }
     if (args[0] === 'api' && args.includes('PATCH')) {
@@ -127,12 +142,63 @@ describe('upsertReviewLoopEscalationComment', () => {
 
   it('leaves the summary comment alone', async () => {
     const gh = makeGhStub([
-      { id: 7, body: '<!-- helm:review-loop-summary -->\nadvisories', created_at: '2026-08-14' },
+      {
+        id: 7,
+        body: '<!-- helm:review-loop-summary -->\nadvisories',
+        created_at: '2026-08-14',
+        user: { login: HELM_LOGIN },
+      },
     ]);
 
     await escalate(gh.runGh, 6);
 
     expect(gh.calls.some((args) => args.includes('PATCH'))).toBe(false);
     expect(gh.calls.some((args) => args[0] === 'pr' && args[1] === 'comment')).toBe(true);
+  });
+
+  it('never overwrites a third party that quoted the public escalation marker', async () => {
+    // The marker ships in every escalation comment, so a participant can quote
+    // it. Matching on the body alone would clobber their comment (or fail on a
+    // permission error the best-effort caller swallows) and leave Helm's own
+    // escalation missing.
+    const gh = makeGhStub([
+      {
+        id: 7,
+        body: `I think ${REVIEW_LOOP_ESCALATION_MARKER} is what tags these`,
+        created_at: '2026-08-14T00:00:00Z',
+        user: { login: 'a-teammate' },
+      },
+    ]);
+
+    await escalate(gh.runGh, 6);
+
+    expect(gh.calls.some((args) => args.includes('PATCH'))).toBe(false);
+    expect(gh.existing).toHaveLength(2);
+    expect(gh.existing[0]!.body).toBe(
+      `I think ${REVIEW_LOOP_ESCALATION_MARKER} is what tags these`,
+    );
+    expect(gh.existing[1]!.user?.login).toBe(HELM_LOGIN);
+    expect(gh.existing[1]!.body).toContain('Review loop escalated');
+  });
+
+  it('re-uses its own comment even after a third party quoted the marker', async () => {
+    const gh = makeGhStub([]);
+
+    await escalate(gh.runGh, 6);
+    gh.existing.push({
+      id: 500,
+      body: `quoting ${REVIEW_LOOP_ESCALATION_MARKER}`,
+      created_at: '2026-08-14T09:00:00Z',
+      user: { login: 'a-teammate' },
+    });
+    await escalate(gh.runGh, 7);
+
+    const patches = gh.calls.filter((args) => args.includes('PATCH'));
+    expect(patches).toHaveLength(1);
+    expect(patches[0]!.join(' ')).toContain('issues/comments/100');
+    expect(gh.existing).toHaveLength(2);
+    expect(gh.existing[0]!.body).toContain(
+      'Lifetime cycles for this lane: 7 completed, budget max_cycles_cumulative=6',
+    );
   });
 });

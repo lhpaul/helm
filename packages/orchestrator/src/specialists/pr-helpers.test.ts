@@ -184,19 +184,38 @@ describe('postPRComment', () => {
 });
 
 describe('upsertPRCommentByMarker', () => {
-  it('patches an existing comment when the marker is present', async () => {
-    const capturedArgs: string[][] = [];
-    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
-      capturedArgs.push([...args]);
+  /**
+   * Stubs the two gh calls the upsert makes: the `viewer` identity lookup and
+   * the issue-comments list. `viewer` defaults to Helm's own token identity.
+   */
+  function stubGh(
+    comments: unknown[],
+    opts: { viewer?: string; capturedArgs?: string[][] } = {},
+  ): RunGh {
+    const viewer = opts.viewer ?? 'helm-bot';
+    return vi.fn().mockImplementation(async (args: string[]) => {
+      opts.capturedArgs?.push([...args]);
+      if (args[0] === 'api' && args[1] === 'graphql') return { stdout: `${viewer}\n` };
       if (args[0] === 'api' && args[1]?.endsWith('/comments') && args[2] === '--paginate') {
-        return {
-          stdout: JSON.stringify([
-            { id: 99, body: '<!-- helm:review-loop-summary --> old', created_at: '2026-01-01' },
-          ]),
-        };
+        return { stdout: JSON.stringify(comments) };
       }
       return { stdout: '' };
     });
+  }
+
+  it('patches an existing comment when the marker is present', async () => {
+    const capturedArgs: string[][] = [];
+    const runGh = stubGh(
+      [
+        {
+          id: 99,
+          body: '<!-- helm:review-loop-summary --> old',
+          created_at: '2026-01-01',
+          user: { login: 'helm-bot' },
+        },
+      ],
+      { capturedArgs },
+    );
 
     await upsertPRCommentByMarker(
       {
@@ -219,11 +238,7 @@ describe('upsertPRCommentByMarker', () => {
 
   it('creates a new comment when no marker comment exists', async () => {
     const capturedArgs: string[][] = [];
-    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
-      capturedArgs.push([...args]);
-      if (args[0] === 'api') return { stdout: '[]' };
-      return { stdout: '' };
-    });
+    const runGh = stubGh([], { capturedArgs });
 
     await upsertPRCommentByMarker(
       {
@@ -242,6 +257,7 @@ describe('upsertPRCommentByMarker', () => {
     const capturedArgs: string[][] = [];
     const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
       capturedArgs.push([...args]);
+      if (args[0] === 'api' && args[1] === 'graphql') return { stdout: 'helm-bot\n' };
       if (args[0] === 'api' && args[2] === '--paginate') {
         return { stdout: '[{"id":1}]\nnot-json' };
       }
@@ -263,6 +279,7 @@ describe('upsertPRCommentByMarker', () => {
 
   it('treats non-array gh comment JSON as empty and creates a new comment', async () => {
     const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'api' && args[1] === 'graphql') return { stdout: 'helm-bot\n' };
       if (args[0] === 'api' && args[2] === '--paginate') {
         return { stdout: '{"message":"Not Found"}' };
       }
@@ -283,5 +300,92 @@ describe('upsertPRCommentByMarker', () => {
       expect.arrayContaining(['pr', 'comment']),
       expect.anything(),
     );
+  });
+
+  it('creates a Helm-owned comment instead of patching a third party that quoted the marker', async () => {
+    // The marker is public. A participant quoting it must not be able to have
+    // their comment overwritten, nor to suppress Helm's own escalation.
+    const capturedArgs: string[][] = [];
+    const runGh = stubGh(
+      [
+        {
+          id: 501,
+          body: 'FYI the loop posts <!-- helm:review-loop-escalation --> markers',
+          created_at: '2026-01-01',
+          user: { login: 'a-teammate' },
+        },
+      ],
+      { capturedArgs },
+    );
+
+    await upsertPRCommentByMarker(
+      {
+        prUrl: 'https://github.com/test-org/test-repo/pull/42',
+        body: '<!-- helm:review-loop-escalation -->\nescalated',
+        githubToken: 'test-token',
+        marker: '<!-- helm:review-loop-escalation -->',
+      },
+      runGh,
+    );
+
+    expect(capturedArgs.some((args) => args.includes('PATCH'))).toBe(false);
+    expect(capturedArgs.some((args) => args[0] === 'pr' && args[1] === 'comment')).toBe(true);
+  });
+
+  it('patches its own comment even when a third party quoted the marker later', async () => {
+    const capturedArgs: string[][] = [];
+    const runGh = stubGh(
+      [
+        {
+          id: 77,
+          body: '<!-- helm:review-loop-escalation -->\nold escalation',
+          created_at: '2026-01-01',
+          user: { login: 'helm-bot' },
+        },
+        {
+          id: 501,
+          body: 'quoting <!-- helm:review-loop-escalation -->',
+          created_at: '2026-01-02',
+          user: { login: 'a-teammate' },
+        },
+      ],
+      { capturedArgs },
+    );
+
+    await upsertPRCommentByMarker(
+      {
+        prUrl: 'https://github.com/test-org/test-repo/pull/42',
+        body: '<!-- helm:review-loop-escalation -->\nnew escalation',
+        githubToken: 'test-token',
+        marker: '<!-- helm:review-loop-escalation -->',
+      },
+      runGh,
+    );
+
+    const patchCall = capturedArgs.find((args) => args.includes('PATCH'));
+    expect(patchCall).toBeDefined();
+    expect(patchCall!.join(' ')).toContain('issues/comments/77');
+  });
+
+  it('creates rather than patches when the token identity cannot be resolved', async () => {
+    const capturedArgs: string[][] = [];
+    const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
+      capturedArgs.push([...args]);
+      if (args[0] === 'api' && args[1] === 'graphql') throw new Error('gh: 403 Forbidden');
+      return { stdout: '' };
+    });
+
+    await upsertPRCommentByMarker(
+      {
+        prUrl: 'https://github.com/test-org/test-repo/pull/42',
+        body: '<!-- helm:review-loop-escalation -->\nescalated',
+        githubToken: 'test-token',
+        marker: '<!-- helm:review-loop-escalation -->',
+      },
+      runGh,
+    );
+
+    expect(capturedArgs.some((args) => args.includes('PATCH'))).toBe(false);
+    expect(capturedArgs.some((args) => args[0] === 'pr' && args[1] === 'comment')).toBe(true);
   });
 });

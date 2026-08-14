@@ -89,8 +89,8 @@ review:
     resume_on_check_run: true
     codex_github:
       trusted_identities:
+        # The `[bot]` login only — see the exact-matching note below.
         - 'chatgpt-codex-connector[bot]'
-        - chatgpt-codex-connector
       check_names: # optional — only used to name an in-flight analysis
         - Codex
         - Codex Review
@@ -116,11 +116,26 @@ since a human could register the un-suffixed one. Check-run **app** identities
 are matched with the `[bot]` suffix ignored, because GitHub's app record carries
 the bare slug and that value is not user-settable.
 
+Only a **submitted** review counts. A draft (`PENDING`, `submitted_at` null) is
+visible on the reviews endpoint before its author submits it and carries no
+inline comments, so treating it as the verdict would forge a `clean` result;
+Helm keeps deferring until the review is submitted.
+
 **Operator prerequisite:** Codex reviews are not automatic by default. Either
 enable _Automatic reviews_ in Codex's GitHub settings for the repo, or comment
 `@codex review` on the PR. Without one of the two, no review is ever submitted:
 Helm defers, and the pending intent expires after `review.external.max_defer_sec`
 (default 30 minutes).
+
+> **Known gap — no terminal signal on a clean run.** Codex publishes no check
+> run and no commit status, and a run that finds nothing may end as a 👍
+> reaction rather than a submitted review. Helm reads neither reactions nor a
+> Codex check run (there is none to read), so a genuinely clean PR can stay
+> deferred until its intent expires — and re-triggering does not help, because
+> the rerun is clean too. Until Codex exposes a terminal signal Helm can trust,
+> `codex-github` is **supported but not recommended as a product's default
+> provider**; use `coderabbit` or `bugbot` as the default and select
+> `codex-github` where an operator is watching the loop.
 
 ## Early Draft Review Loop
 

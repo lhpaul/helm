@@ -100,6 +100,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
             id: 1,
             state: 'COMMENTED',
             commit_id: 'abc1234',
+            submitted_at: '2026-08-14T00:00:00Z',
             body: 'stale reviewer',
             user: { login: 'someone-else' },
           },
@@ -107,6 +108,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
             id: 2,
             state: 'COMMENTED',
             commit_id: 'older000',
+            submitted_at: '2026-08-14T00:00:00Z',
             body: 'previous revision',
             user: { login: 'chatgpt-codex-connector[bot]' },
           },
@@ -114,6 +116,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
             id: 3,
             state: 'CHANGES_REQUESTED',
             commit_id: 'abc1234',
+            submitted_at: '2026-08-14T00:00:00Z',
             body: 'Codex Review',
             user: { login: 'chatgpt-codex-connector[bot]' },
           },
@@ -204,6 +207,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
             id: 11,
             state: 'CHANGES_REQUESTED',
             commit_id: 'old0000',
+            submitted_at: '2026-08-14T00:00:00Z',
             body: 'previous revision',
             user: { login: 'chatgpt-codex-connector[bot]' },
           },
@@ -211,6 +215,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
             id: 12,
             state: 'COMMENTED',
             commit_id: 'abc1234',
+            submitted_at: '2026-08-14T00:00:00Z',
             body: 'No issues found.',
             user: { login: 'chatgpt-codex-connector[bot]' },
           },
@@ -292,10 +297,72 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
             id: 9,
             state: 'CHANGES_REQUESTED',
             commit_id: 'abc1234',
+            submitted_at: '2026-08-14T00:00:00Z',
             body: 'impersonation attempt',
             // A human may hold the un-suffixed login; only the `[bot]` account
             // is the app, so this must not count as a Codex verdict.
             user: { login: 'chatgpt-codex-connector' },
+          },
+        ]);
+      }
+      if (requestUrl.includes('/commits/abc1234/check-runs')) {
+        return jsonResponse({ check_runs: [] });
+      }
+      throw new Error(`unexpected fetch: ${requestUrl}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      createGitHubCodexGitHubReviewLoader({ product, githubToken: 't' })(ctx),
+    ).resolves.toEqual({ reviewPending: true });
+  });
+
+  it('keeps deferring on an unsubmitted draft review from a trusted author', async () => {
+    // A PENDING review is a draft the author has not submitted: it carries no
+    // inline comments yet, so selecting it would fall through to `clean` and
+    // forge a passing verdict for a revision nobody has reviewed.
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = typeof url === 'string' ? url : url.toString();
+      if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.includes('/pulls/42/reviews')) {
+        return jsonResponse([
+          {
+            id: 7,
+            state: 'PENDING',
+            commit_id: 'abc1234',
+            submitted_at: null,
+            body: '',
+            user: { login: 'chatgpt-codex-connector[bot]' },
+          },
+        ]);
+      }
+      if (requestUrl.includes('/commits/abc1234/check-runs')) {
+        return jsonResponse({ check_runs: [] });
+      }
+      throw new Error(`unexpected fetch: ${requestUrl}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      createGitHubCodexGitHubReviewLoader({ product, githubToken: 't' })(ctx),
+    ).resolves.toEqual({ reviewPending: true });
+  });
+
+  it('keeps deferring on a trusted review that has no submitted_at', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = typeof url === 'string' ? url : url.toString();
+      if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.includes('/pulls/42/reviews')) {
+        return jsonResponse([
+          {
+            id: 8,
+            // A submitted-looking state is not enough on its own — the
+            // timestamp is what GitHub only fills in on submit.
+            state: 'COMMENTED',
+            commit_id: 'abc1234',
+            submitted_at: null,
+            body: '',
+            user: { login: 'chatgpt-codex-connector[bot]' },
           },
         ]);
       }
@@ -347,6 +414,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
             id: 7,
             state: 'COMMENTED',
             commit_id: 'deadbee1',
+            submitted_at: '2026-08-14T00:00:00Z',
             body: 'Codex Review',
             user: { login: 'chatgpt-codex-connector[bot]' },
           },

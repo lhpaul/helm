@@ -132,6 +132,20 @@ function isTrustedCodexAppIdentity(identity: string | undefined | null, product:
 }
 
 /**
+ * A draft review is visible on the reviews endpoint before its author submits
+ * it: state `PENDING`, `submitted_at` null. Codex's completion contract is a
+ * **submitted** review, so a draft must keep the loop deferring — selecting it
+ * would fall through to `clean` on its (necessarily empty) comment set and
+ * forge a passing verdict for a revision nobody has reviewed yet.
+ */
+function isSubmittedReview(review: GitHubReviewResponse): boolean {
+  if (typeof review.submitted_at !== 'string' || review.submitted_at.trim().length === 0) {
+    return false;
+  }
+  return normalize(review.state ?? '') !== 'pending';
+}
+
+/**
  * A check run counts as Codex's only when the name is allowlisted **and** the
  * publishing app identity is trusted — a matching name from any other app is
  * ignored (the ADR-036 Option B trust boundary).
@@ -354,6 +368,7 @@ export function createGitHubCodexGitHubReviewLoader(input: {
         .filter(
           (candidate) =>
             isTrustedCodexIdentity(candidate.user?.login, input.product) &&
+            isSubmittedReview(candidate) &&
             typeof candidate.commit_id === 'string' &&
             normalize(candidate.commit_id) === normalize(targetSha),
         )

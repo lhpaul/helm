@@ -5,5 +5,10 @@ reviews:
   poem: false # apaga el "poema" cómico al final de cada review
   review_status: true
   auto_review:
-    enabled: true
+    # Apagado: el dogfood de Helm usa Codex GitHub como external reviewer
+    # (review.external.provider: codex-github en helm-knowledge/.helm/product.yaml).
+    # CodeRabbit venía rate-limiteando cada review en los PRs abiertos, así que
+    # dejó de aportar señal. La config queda para poder volver invirtiendo este
+    # flag; un `@coderabbitai review` manual sigue funcionando.
+    enabled: false
     drafts: false # no revise PRs en draft

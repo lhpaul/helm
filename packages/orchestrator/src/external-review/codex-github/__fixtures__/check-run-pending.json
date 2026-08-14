@@ -1,0 +1,9 @@
+{
+  "reviewPending": true,
+  "checkRun": {
+    "name": "Codex",
+    "status": "in_progress",
+    "conclusion": null,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

@@ -100,6 +100,7 @@ function externalReviewTrustConfig(
 ): ExternalReviewWebhookTrustConfig {
   const bugbot = config.review?.external?.bugbot;
   const coderabbit = config.review?.external?.coderabbit;
+  const codexGithub = config.review?.external?.codex_github;
   return {
     bugbot: {
       checkNames: bugbot?.check_names,
@@ -108,6 +109,9 @@ function externalReviewTrustConfig(
     coderabbit: {
       statusContexts: coderabbit?.status_contexts,
       trustedIdentities: coderabbit?.trusted_identities,
+    },
+    codexGithub: {
+      trustedIdentities: codexGithub?.trusted_identities,
     },
   };
 }
@@ -150,14 +154,15 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       eventType === 'release' ||
       eventType === 'issue_comment' ||
       eventType === 'check_run' ||
-      eventType === 'status'
+      eventType === 'status' ||
+      eventType === 'pull_request_review'
     ) {
       // Tracker-agnostic — pure parser. The knowledge/code repos are always on
       // GitHub regardless of the issue tracker, so PR merge events (helm/spec/*,
       // helm/plan/*, helm/impl/*) AND release.published events must process for
       // Linear products too (a Linear product still ships via GitHub releases).
       const trustConfig =
-        eventType === 'check_run' || eventType === 'status'
+        eventType === 'check_run' || eventType === 'status' || eventType === 'pull_request_review'
           ? externalReviewTrustConfig(await getProductConfig())
           : undefined;
       event = parseGitHubWebhook({ eventType, payload: body }, trustConfig);

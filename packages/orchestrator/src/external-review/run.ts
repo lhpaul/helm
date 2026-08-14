@@ -5,6 +5,10 @@ import {
   createCodeRabbitExternalReviewAdapter,
   type CodeRabbitAdapterDeps,
 } from './coderabbit/adapter.js';
+import {
+  createCodexGitHubExternalReviewAdapter,
+  type CodexGitHubAdapterDeps,
+} from './codex-github/adapter.js';
 import type { ExternalReviewContext, ExternalReviewResult } from './types.js';
 
 /** Parses `owner/repo#N` from a GitHub PR URL. */
@@ -16,7 +20,9 @@ export function parsePullRequestRef(
   return { owner: match[1]!, repo: match[2]!, prNumber: Number(match[3]) };
 }
 
-export type RunExternalReviewDeps = BugbotAdapterDeps & CodeRabbitAdapterDeps;
+export type RunExternalReviewDeps = BugbotAdapterDeps &
+  CodeRabbitAdapterDeps &
+  CodexGitHubAdapterDeps;
 
 /**
  * Runs the configured external reviewer when `review.external.provider` is set.
@@ -59,6 +65,11 @@ export async function runExternalReviewIfConfigured(
 
   if (provider === 'coderabbit') {
     const adapter = createCodeRabbitExternalReviewAdapter(product, deps);
+    return adapter.reviewPullRequest(ctx);
+  }
+
+  if (provider === 'codex-github') {
+    const adapter = createCodexGitHubExternalReviewAdapter(product, deps);
     return adapter.reviewPullRequest(ctx);
   }
 

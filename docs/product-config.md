@@ -17,7 +17,9 @@ review:
 `max_cycles_cumulative` bounds the item's whole life: remediation passes are
 counted in a durable per-item ledger, so re-dispatching (operator retry, PR
 `synchronize` webhook, resumed deferred external review) does **not** reset the
-count. Without it, an item can run dozens of cycles and never escalate.
+count. Ledger writes are best effort: if a write fails, a later dispatch can
+load stale counters until a subsequent successful write reconciles the state.
+Without the ledger, an item can run dozens of cycles and never escalate.
 
 `max_cycles_cumulative` is optional and defaults to `max_cycles * 3`. It must be
 greater than or equal to `max_cycles` — a lifetime budget smaller than one

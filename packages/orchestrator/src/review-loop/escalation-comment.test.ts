@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import {
   formatReviewLoopEscalationComment,
@@ -49,7 +50,12 @@ describe('formatReviewLoopEscalationComment', () => {
   });
 });
 
-/** gh stub that remembers the comments already on the PR, like GitHub would. */
+/**
+ * gh stub that stores the PR's comments the way GitHub would: a create appends,
+ * a PATCH rewrites the targeted comment from its `--input` payload. Applying the
+ * payload is what lets a test assert the *stored* body, not just that a PATCH
+ * was sent.
+ */
 function makeGhStub(existing: { id: number; body: string; created_at: string }[]) {
   const calls: string[][] = [];
   const runGh: RunGh = vi.fn().mockImplementation(async (args: string[]) => {
@@ -63,6 +69,13 @@ function makeGhStub(existing: { id: number; body: string; created_at: string }[]
         body: args[args.indexOf('--body') + 1]!,
         created_at: `2026-08-14T0${existing.length}:00:00Z`,
       });
+    }
+    if (args[0] === 'api' && args.includes('PATCH')) {
+      const payloadPath = args[args.indexOf('--input') + 1]!;
+      const { body } = JSON.parse(await readFile(payloadPath, 'utf8')) as { body: string };
+      const commentId = Number(args[1]!.split('/').at(-1));
+      const target = existing.find((comment) => comment.id === commentId);
+      if (target) target.body = body;
     }
     return { stdout: '' };
   });
@@ -104,7 +117,12 @@ describe('upsertReviewLoopEscalationComment', () => {
     expect(creates).toHaveLength(1);
     expect(patches).toHaveLength(1);
     expect(patches[0]!.join(' ')).toContain('issues/comments/100');
+    // One comment, and its stored body carries the second escalation's counters.
     expect(gh.existing).toHaveLength(1);
+    expect(gh.existing[0]!.body).toContain(
+      'Lifetime cycles for this lane: 7 completed, budget max_cycles_cumulative=6',
+    );
+    expect(gh.existing[0]!.body).not.toContain('6 completed');
   });
 
   it('leaves the summary comment alone', async () => {

@@ -18,7 +18,8 @@ review:
 counted in a durable per-item ledger, so re-dispatching (operator retry, PR
 `synchronize` webhook, resumed deferred external review) does **not** reset the
 count. Ledger writes are best effort: if a write fails, a later dispatch can
-load stale counters until a subsequent successful write reconciles the state.
+load stale counters. Cycles from a failed write are not recoverable after the
+dispatch ends, so cumulative usage can remain undercounted.
 Without the ledger, an item can run dozens of cycles and never escalate.
 
 `max_cycles_cumulative` is optional and defaults to `max_cycles * 3`. It must be

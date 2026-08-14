@@ -33,9 +33,8 @@ import { runExternalReviewIfConfigured, parsePullRequestRef } from '../external-
 import type { RunExternalReviewDeps } from '../external-review/run.js';
 import type { ExternalReviewResult, NormalizedFinding } from '../external-review/types.js';
 import { defaultSleep } from '../lib/sleep.js';
-import { postPRComment } from '../specialists/pr-helpers.js';
 import { resolveReviewLoopConfig, type ReviewLoopConfig } from './config.js';
-import { formatReviewLoopEscalationComment } from './escalation-comment.js';
+import { upsertReviewLoopEscalationComment } from './escalation-comment.js';
 import { evaluateExternalReviewStopRule } from './external-stop-rule.js';
 import {
   fetchFalsePositivesCatalog,
@@ -164,6 +163,12 @@ function externalMaxDeferSec(product: Product): number {
   return product.review?.external?.max_defer_sec ?? 30 * 60;
 }
 
+/**
+ * Upserts the escalation comment by marker (lhpaul/helm#93) instead of appending:
+ * a still-blocked item re-escalates on every re-dispatch, so appending buried the
+ * PR under identical comments. The comment always carries the latest reason,
+ * cycle counts, and external signal.
+ */
 async function postEscalationCommentBestEffort(
   params: RunCodeReviewLoopParams,
   input: {
@@ -171,16 +176,18 @@ async function postEscalationCommentBestEffort(
     message: string;
     cyclesCompleted: number;
     externalReason?: string;
+    cumulative?: { cyclesTotal: number; maxCyclesCumulative: number };
   },
 ): Promise<void> {
   try {
-    // Formatting inside the try too: this helper must never reject, or a
-    // rendering slip would swallow the escalation result itself.
-    const body = formatReviewLoopEscalationComment(input);
-    await postPRComment(
-      { prUrl: params.prUrl, body, githubToken: params.githubToken },
-      params.runGh,
-    );
+    // Rendering happens inside the upsert, and the upsert is inside the try:
+    // a rendering slip must not swallow the escalation result itself.
+    await upsertReviewLoopEscalationComment({
+      ...input,
+      prUrl: params.prUrl,
+      githubToken: params.githubToken,
+      runGh: params.runGh,
+    });
   } catch {
     // Best-effort — escalation still returns error to the operator.
   }
@@ -470,6 +477,10 @@ async function escalateFromStopRule(
     reason: input.reason,
     message,
     cyclesCompleted: input.cycle,
+    cumulative: {
+      cyclesTotal: input.cyclesTotal,
+      maxCyclesCumulative: input.loopConfig.maxCyclesCumulative,
+    },
   });
 
   return {

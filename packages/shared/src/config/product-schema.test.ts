@@ -522,6 +522,46 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts max_cycles_cumulative at or above max_cycles (ADR-042)', () => {
+    const result = ProductSchema.safeParse(
+      withReview({ loop: { max_cycles: 5, max_cycles_cumulative: 15 } }),
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.review?.loop?.max_cycles_cumulative).toBe(15);
+    }
+  });
+
+  it('leaves max_cycles_cumulative undefined when omitted (derived at read time)', () => {
+    const result = ProductSchema.safeParse(withReview({ loop: { max_cycles: 5 } }));
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.review?.loop?.max_cycles_cumulative).toBeUndefined();
+    }
+  });
+
+  it('rejects max_cycles_cumulative below max_cycles', () => {
+    const result = ProductSchema.safeParse(
+      withReview({ loop: { max_cycles: 5, max_cycles_cumulative: 4 } }),
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.path).toEqual(['review', 'loop', 'max_cycles_cumulative']);
+    }
+  });
+
+  it('rejects max_cycles_cumulative below the default max_cycles', () => {
+    // max_cycles defaults to 5 — the refinement must compare against the
+    // defaulted value, not treat an omitted max_cycles as no lower bound.
+    const result = ProductSchema.safeParse(withReview({ loop: { max_cycles_cumulative: 2 } }));
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects non-positive max_cycles_cumulative', () => {
+    const result = ProductSchema.safeParse(withReview({ loop: { max_cycles_cumulative: 0 } }));
+    expect(result.success).toBe(false);
+  });
+
   it('rejects non-positive no_progress_cycles', () => {
     const result = ProductSchema.safeParse(
       withReview({ loop: { stop_rule: { no_progress_cycles: 0 } } }),

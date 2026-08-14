@@ -106,6 +106,11 @@ import {
   parseFalsePositivesCatalog,
 } from './false-positives.js';
 import type { ReviewerFanoutResult, ReviewerResult } from '../specialists/reviewer-fanout.js';
+import type {
+  PersistReviewLoopLedgerFn,
+  ReviewLoopLedgerEntry,
+  ReviewLoopLedgerUpdate,
+} from './cumulative-ledger.js';
 
 const PR_URL = 'https://github.com/o/r/pull/42';
 
@@ -358,6 +363,252 @@ describe('runCodeReviewLoop', () => {
     expect(result.error).toContain('no progress on blocking findings');
     expect(fanoutReviewers).toHaveBeenCalledTimes(3);
     expect(transition).toHaveBeenCalledTimes(4);
+  });
+
+  describe('cumulative cross-dispatch budget (ADR-042)', () => {
+    /** Mimics ItemStore.updateReviewLoopLedger for one lane. */
+    const makeLedgerStore = () => {
+      const calls: { lane: string; update: ReviewLoopLedgerUpdate }[] = [];
+      let entry: ReviewLoopLedgerEntry | undefined;
+      return {
+        calls,
+        get entry() {
+          return entry;
+        },
+        persist: vi.fn(
+          ({ lane, update }: { lane: string; update: ReviewLoopLedgerUpdate }): void => {
+            calls.push({ lane, update });
+            entry = { ...update, updatedAt: '2026-08-13T00:00:00.000Z' };
+          },
+        ),
+      };
+    };
+
+    const budgetedProduct = (overrides: {
+      max_cycles: number;
+      max_cycles_cumulative?: number;
+      no_progress_cycles?: number;
+    }): Product => ({
+      ...baseProduct,
+      review: {
+        loop: {
+          max_cycles: overrides.max_cycles,
+          ...(overrides.max_cycles_cumulative !== undefined
+            ? { max_cycles_cumulative: overrides.max_cycles_cumulative }
+            : {}),
+          stop_rule: { no_progress_cycles: overrides.no_progress_cycles ?? 2 },
+          remediate_severity: 'critical_high',
+        },
+      },
+    });
+
+    const runBudgetedLoop = (
+      product: Product,
+      store: ReturnType<typeof makeLedgerStore>,
+      ledgerEntry?: ReviewLoopLedgerEntry,
+    ) =>
+      runCodeReviewLoop({
+        externalId: 'issue_1',
+        product,
+        prUrl: PR_URL,
+        codeRepo: product.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+        reviewLoopLedgerEntry: ledgerEntry,
+        persistReviewLoopLedger: store.persist,
+      });
+
+    it('records a cumulative cycle on the code-review lane after each remediation pass', async () => {
+      const store = makeLedgerStore();
+      // Two remediation passes, then a clean fan-out ends the loop.
+      vi.mocked(shouldRemediate)
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(true)
+        .mockReturnValue(false);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+
+      const result = await runBudgetedLoop(budgetedProduct({ max_cycles: 10 }), store);
+
+      expect(result.status).toBe('done');
+      expect(store.calls).toEqual([
+        {
+          lane: 'code-review',
+          update: { cyclesTotal: 1, noProgressStreak: 0, bestBlockerCount: 1 },
+        },
+        {
+          lane: 'code-review',
+          update: { cyclesTotal: 2, noProgressStreak: 1, bestBlockerCount: 1 },
+        },
+      ]);
+    });
+
+    it('does not touch the ledger when the loop is clean', async () => {
+      const store = makeLedgerStore();
+      vi.mocked(shouldRemediate).mockReturnValue(false);
+
+      const result = await runBudgetedLoop(budgetedProduct({ max_cycles: 5 }), store);
+
+      expect(result.status).toBe('done');
+      expect(store.persist).not.toHaveBeenCalled();
+    });
+
+    it('escalates when a re-dispatch exhausts the lifetime budget', async () => {
+      // The bug this closes: max_cycles alone lets each manual re-dispatch start
+      // a fresh burst, so an item can never reach escalation.
+      const product = budgetedProduct({
+        max_cycles: 3,
+        max_cycles_cumulative: 4,
+        no_progress_cycles: 10,
+      });
+      const store = makeLedgerStore();
+      vi.mocked(shouldRemediate).mockReturnValue(true);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+
+      const first = await runBudgetedLoop(product, store);
+      expect(first).toMatchObject({
+        status: 'error',
+        escalated: true,
+        escalationReason: 'max_cycles',
+        cyclesCompleted: 3,
+      });
+      expect(store.entry?.cyclesTotal).toBe(2);
+
+      // Manual re-dispatch: per-dispatch cycle restarts at 1, the ledger does not.
+      const second = await runBudgetedLoop(product, store, store.entry);
+
+      expect(second).toMatchObject({
+        status: 'error',
+        escalated: true,
+        escalationReason: 'max_cycles_cumulative',
+        cyclesCompleted: 2,
+      });
+      expect(second.error).toContain('max_cycles_cumulative=4');
+      expect(store.entry?.escalationReason).toBe('max_cycles_cumulative');
+      expect(store.entry?.escalatedAt).toBeDefined();
+    });
+
+    it('carries the no-progress streak across dispatches', async () => {
+      const store = makeLedgerStore();
+      vi.mocked(shouldRemediate).mockReturnValue(true);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+
+      const result = await runBudgetedLoop(
+        budgetedProduct({ max_cycles: 10, no_progress_cycles: 2 }),
+        store,
+        {
+          cyclesTotal: 4,
+          noProgressStreak: 1,
+          bestBlockerCount: 1,
+          updatedAt: '2026-08-13T00:00:00.000Z',
+        },
+      );
+
+      // Streak 1 (carried) + this flat cycle = 2 → escalates on the first cycle
+      // of the new dispatch instead of restarting the count.
+      expect(result).toMatchObject({
+        status: 'error',
+        escalated: true,
+        escalationReason: 'no_progress',
+        cyclesCompleted: 1,
+      });
+      expect(result.error).toContain('spans dispatches');
+      expect(store.entry?.escalationReason).toBe('no_progress');
+    });
+
+    it('posts the escalation comment on the PR for internal stop-rule exits', async () => {
+      const store = makeLedgerStore();
+      vi.mocked(shouldRemediate).mockReturnValue(true);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+
+      await runBudgetedLoop(budgetedProduct({ max_cycles: 1 }), store);
+
+      expect(postPRComment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prUrl: PR_URL,
+          body: expect.stringContaining('`max_cycles`'),
+        }),
+        undefined,
+      );
+    });
+
+    it('keeps draft-artifact loops on their own lane', async () => {
+      const store = makeLedgerStore();
+      vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValue(false);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+
+      await runEarlyArtifactReviewLoop({
+        kind: 'plan',
+        externalId: 'issue_1',
+        product: budgetedProduct({ max_cycles: 5 }),
+        prUrl: PR_URL,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+        persistReviewLoopLedger: store.persist,
+      });
+
+      expect(store.calls.map((call) => call.lane)).toEqual(['plan-draft']);
+    });
+
+    const runWithLedgerWriter = (persistReviewLoopLedger: PersistReviewLoopLedgerFn) =>
+      runCodeReviewLoop({
+        externalId: 'issue_1',
+        product: budgetedProduct({ max_cycles: 5 }),
+        prUrl: PR_URL,
+        codeRepo: baseProduct.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+        persistReviewLoopLedger,
+      });
+
+    it('retries a failed ledger write once before giving up', async () => {
+      vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValue(false);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+      const persist = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('transient'))
+        .mockResolvedValueOnce(undefined);
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const result = await runWithLedgerWriter(persist);
+
+      expect(result.status).toBe('done');
+      expect(persist).toHaveBeenCalledTimes(2);
+      // Second attempt succeeded — nothing to warn about.
+      expect(consoleError).not.toHaveBeenCalled();
+      consoleError.mockRestore();
+    });
+
+    it('survives a ledger write failure without failing the loop', async () => {
+      vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValue(false);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const persist = vi.fn().mockRejectedValue(new Error('disk full'));
+
+      const result = await runWithLedgerWriter(persist);
+
+      expect(result.status).toBe('done');
+      expect(persist).toHaveBeenCalledTimes(2);
+      expect(consoleError).toHaveBeenCalled();
+      consoleError.mockRestore();
+    });
+
+    it('does not reject when the escalation comment cannot be rendered or posted', async () => {
+      // postEscalationCommentBestEffort must never throw — a rendering slip
+      // would otherwise swallow the escalation result itself.
+      vi.mocked(shouldRemediate).mockReturnValue(true);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+      vi.mocked(postPRComment).mockRejectedValueOnce(new Error('GitHub 500'));
+
+      const result = await runBudgetedLoop(budgetedProduct({ max_cycles: 1 }), makeLedgerStore());
+
+      expect(result).toMatchObject({ escalated: true, escalationReason: 'max_cycles' });
+    });
   });
 
   it('returns error when fan-out fails with zero reviewer results', async () => {

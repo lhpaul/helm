@@ -1,3 +1,4 @@
+import type { ReviewLoopLedger } from '@helm/orchestrator';
 import type { WorkflowStage } from '@helm/workflow';
 
 /**
@@ -96,6 +97,11 @@ export type ItemState = {
   history: WorkflowEvent[];
   /** Durable ledger of human-resolved review adjudication decisions. */
   resolvedProductDecisions?: ResolvedProductDecision[];
+  /**
+   * Lifetime review/remediation counters per loop lane (ADR-042). Survives
+   * re-dispatch so `max_cycles` cannot be reset by dispatching again.
+   */
+  reviewLoopLedger?: ReviewLoopLedger;
   /** ISO 8601 — set on creation, never changes */
   createdAt: string;
   /** ISO 8601 — updated on every transition */

@@ -750,6 +750,17 @@ export async function runDispatchJob(
           return [...(latest.resolvedProductDecisions ?? [])];
         },
         targetRevision: job.targetRevision,
+        // ADR-042 — lifetime review budget: seeded from the item and written
+        // back per cycle so a manual re-dispatch cannot restart it at zero.
+        reviewLoopLedger: freshItem.reviewLoopLedger,
+        persistReviewLoopLedger: async ({ lane, update }) => {
+          await store.updateReviewLoopLedger({
+            externalId: freshItem.externalId,
+            lane,
+            update,
+            triggeredBy: 'review-loop:cumulative-budget',
+          });
+        },
         onExternalReviewDeferred: async (intent) => {
           await persistPendingExternalReview({
             dataRoot: ctx.dataRoot,

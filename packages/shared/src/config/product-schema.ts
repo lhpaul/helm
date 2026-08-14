@@ -254,6 +254,11 @@ export const ProductSchema = z
         loop: z
           .object({
             max_cycles: z.number().int().positive().default(5),
+            /**
+             * Lifetime review/remediation budget for one item, accumulated across
+             * dispatches (ADR-042). Omitted → derived as `max_cycles * 3`.
+             */
+            max_cycles_cumulative: z.number().int().positive().optional(),
             adjudication: z
               .object({
                 enabled: z.boolean().default(true),
@@ -288,6 +293,16 @@ export const ProductSchema = z
         path: ['review', 'loop', 'adjudication', 'enabled'],
         message:
           'review-adjudicator specialist must be configured when loop adjudication is enabled',
+      });
+    }
+
+    const loop = data.review?.loop;
+    if (loop?.max_cycles_cumulative !== undefined && loop.max_cycles_cumulative < loop.max_cycles) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['review', 'loop', 'max_cycles_cumulative'],
+        message:
+          'max_cycles_cumulative must be greater than or equal to max_cycles (lifetime budget cannot be smaller than the per-dispatch burst limit)',
       });
     }
   });

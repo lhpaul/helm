@@ -230,6 +230,51 @@ describe('runDispatchJob lifecycle', () => {
     ]);
   });
 
+  it('seeds and persists the cumulative review-loop ledger (ADR-042)', async () => {
+    vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
+    const ledger = {
+      'code-review': { cyclesTotal: 6, noProgressStreak: 1, updatedAt: '2026-08-13T00:00:00.000Z' },
+    };
+    const updateReviewLoopLedger = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(getItemStore).mockResolvedValue({
+      get: vi.fn().mockResolvedValue({
+        externalId: 'LEA-1',
+        productSlug: 'test',
+        currentStage: 'code-review',
+        reviewLoopLedger: ledger,
+      }),
+      updateReviewLoopLedger,
+    } as never);
+
+    await runDispatchJob({ jobId: 'job-1' } as never, {
+      product: { product: { slug: 'test' } } as never,
+      item: { externalId: 'LEA-1', productSlug: 'test', currentStage: 'code-review' } as never,
+      workdir: '/tmp/ws',
+      dataRoot: '/tmp/data',
+      specialistId: 'reviewer-fanout',
+      feedback: undefined,
+      githubToken: 'token',
+    });
+
+    const options = vi.mocked(dispatchStageHandler).mock.calls[0]![4] as {
+      reviewLoopLedger?: unknown;
+      persistReviewLoopLedger?: (input: { lane: string; update: unknown }) => Promise<void>;
+    };
+    // Seeded from the freshly re-read item, not the enqueue-time snapshot.
+    expect(options.reviewLoopLedger).toEqual(ledger);
+
+    await options.persistReviewLoopLedger?.({
+      lane: 'code-review',
+      update: { cyclesTotal: 7, noProgressStreak: 2 },
+    });
+    expect(updateReviewLoopLedger).toHaveBeenCalledWith({
+      externalId: 'LEA-1',
+      lane: 'code-review',
+      update: { cyclesTotal: 7, noProgressStreak: 2 },
+      triggeredBy: 'review-loop:cumulative-budget',
+    });
+  });
+
   it('reloads decisions from ItemStore when the queued snapshot is stale', async () => {
     vi.mocked(dispatchStageHandler).mockResolvedValue({ status: 'done' } as never);
     const decision = {

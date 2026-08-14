@@ -18,6 +18,7 @@ export function countBlockingFindings(
 
 export type StopRuleEscalationReason =
   | 'max_cycles'
+  | 'max_cycles_cumulative'
   | 'no_progress'
   | 'adjudication_conflict'
   | 'external_escalate'
@@ -30,13 +31,29 @@ export type StopRuleEvaluation =
 /**
  * Returns whether the internal review loop should stop and escalate to a human.
  * Call before starting another remediate cycle (after fan-out reported blockers).
+ *
+ * `cumulativeCycle` counts remediation passes across *all* dispatches for this
+ * item (ADR-042). It is checked first: once the lifetime budget is gone, the
+ * per-dispatch burst limit is no longer the interesting signal — a manual
+ * re-dispatch resetting `cycle` to 1 is precisely what it exists to catch.
+ * A cross-dispatch `no_progress` streak keeps the plain `no_progress` reason;
+ * the streak carrying over is the mechanism, not a separate outcome.
  */
 export function evaluateStopRule(input: {
   cycle: number;
   maxCycles: number;
   noProgressCycles: number;
   noProgressStreak: number;
+  cumulativeCycle?: number;
+  maxCyclesCumulative?: number;
 }): StopRuleEvaluation {
+  if (
+    input.cumulativeCycle !== undefined &&
+    input.maxCyclesCumulative !== undefined &&
+    input.cumulativeCycle >= input.maxCyclesCumulative
+  ) {
+    return { escalate: true, reason: 'max_cycles_cumulative' };
+  }
   if (input.cycle >= input.maxCycles) {
     return { escalate: true, reason: 'max_cycles' };
   }

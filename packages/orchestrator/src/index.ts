@@ -31,6 +31,17 @@ export type {
   StoredResolvedProductDecision,
 } from './review-loop/adjudication.js';
 
+// Cumulative cross-dispatch review budget (ADR-042)
+export { seedFromReviewLoopLedger } from './review-loop/cumulative-ledger.js';
+export type {
+  PersistReviewLoopLedgerFn,
+  ReviewLoopLane,
+  ReviewLoopLedger,
+  ReviewLoopLedgerEntry,
+  ReviewLoopLedgerUpdate,
+} from './review-loop/cumulative-ledger.js';
+export type { StopRuleEscalationReason } from './review-loop/stop-rule.js';
+
 // Product-readiness gate (ADR-026)
 export { checkProductReadiness } from './readiness.js';
 export type { ReadinessResult, MissingContextEntry } from './readiness.js';

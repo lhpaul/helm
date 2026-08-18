@@ -165,19 +165,53 @@ function stripBlockQuotes(text: string): string {
     .join('\n');
 }
 
+/**
+ * Removes fenced code blocks with CommonMark's **length-aware** closing rule: a
+ * fence opened with a run of N backticks or tildes is closed only by a run of
+ * the same character that is at least N long, on its own line.
+ *
+ * A regex pair like ```` /```[\s\S]*?```/ ```` gets this wrong in the dangerous
+ * direction. Given a four-backtick opener and a three-backtick line, it treats
+ * the short run as a closer and exposes everything after it — while Markdown
+ * keeps that content *inside* the block, rendering it as quoted code. The marker
+ * then looks innocuous to a human and reads as live evidence to Helm.
+ *
+ * An unclosed fence swallows the rest of the body, which is both what Markdown
+ * renders and the fail-closed answer.
+ */
+function stripFencedBlocks(text: string): string {
+  let fence: { char: string; length: number } | null = null;
+  return text
+    .split('\n')
+    .map((line) => {
+      const run = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+      if (fence) {
+        const closes =
+          run !== undefined &&
+          run[0] === fence.char &&
+          run.length >= fence.length &&
+          /^\s{0,3}[`~]+\s*$/.test(line);
+        if (closes) fence = null;
+        return ' ';
+      }
+      if (run !== undefined) {
+        fence = { char: run[0]!, length: run.length };
+        return ' ';
+      }
+      return line;
+    })
+    .join('\n');
+}
+
 function stripBlockQuotedSpans(body: string): string {
   return (
-    stripBlockQuotes(body.replace(/```[\s\S]*?```/g, ' ').replace(/~~~[\s\S]*?~~~/g, ' '))
-      // A run of two or more backticks delimits a span that can itself contain
+    stripBlockQuotes(stripFencedBlocks(body))
+      // Inline code spans: a run of two or more backticks can wrap
       // single-backtick content — a whole marker included.
       .replace(/(`{2,})[\s\S]*?\1/g, ' ')
-      // Fail closed on an *unclosed* delimiter. The passes above only remove
-      // matched pairs, so a comment that opens a fence and never closes it would
-      // leave the marker inside it eligible — and Markdown renders an unclosed
-      // fence as quoted through end of document anyway. Everything from the
-      // first surviving run to the end is therefore treated as quoted. Single
-      // backticks are untouched: that is where the SHA legitimately lives.
-      .replace(/(?:```|~~~|`{2,})[\s\S]*$/, ' ')
+      // Fail closed on any surviving run, which by construction is unclosed or
+      // mismatched. Single backticks are untouched: that is where the SHA lives.
+      .replace(/(?:`{2,}|~{3,})[\s\S]*$/, ' ')
   );
 }
 

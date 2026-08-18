@@ -241,15 +241,40 @@ function stripBlockQuotes(text: string): string {
     .join('\n');
 }
 
+/**
+ * Removes fenced code blocks with CommonMark's length-aware closing rule — a
+ * fence closes only on a same-character run at least as long as its opener, so
+ * a short run cannot expose content Markdown still renders inside the block.
+ * Mirrors `stripFencedBlocks` in the classifier.
+ */
+function stripFencedBlocks(text: string): string {
+  let fence: { char: string; length: number } | null = null;
+  return text
+    .split('\n')
+    .map((line) => {
+      const run = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+      if (fence) {
+        const closes =
+          run !== undefined &&
+          run[0] === fence.char &&
+          run.length >= fence.length &&
+          /^\s{0,3}[`~]+\s*$/.test(line);
+        if (closes) fence = null;
+        return ' ';
+      }
+      if (run !== undefined) {
+        fence = { char: run[0]!, length: run.length };
+        return ' ';
+      }
+      return line;
+    })
+    .join('\n');
+}
+
 function stripBlockQuotedSpans(body: string): string {
-  return (
-    stripBlockQuotes(body.replace(/```[\s\S]*?```/g, ' ').replace(/~~~[\s\S]*?~~~/g, ' '))
-      .replace(/(`{2,})[\s\S]*?\1/g, ' ')
-      // Fail closed on an unclosed delimiter, matching the classifier: only
-      // matched pairs are removed above, so an unterminated fence would
-      // otherwise leave the marker inside it eligible to emit readiness.
-      .replace(/(?:```|~~~|`{2,})[\s\S]*$/, ' ')
-  );
+  return stripBlockQuotes(stripFencedBlocks(body))
+    .replace(/(`{2,})[\s\S]*?\1/g, ' ')
+    .replace(/(?:`{2,}|~{3,})[\s\S]*$/, ' ');
 }
 
 function codexReviewedCommitFromComment(

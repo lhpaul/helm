@@ -89,6 +89,26 @@ describe('evaluateExternalReviewStopRule', () => {
       action: 'escalate',
       reason: 'external_repeated_skip',
       skipAttempt: 2,
+      externalReason: 'unavailable',
     });
+  });
+
+  it('names the provider reason in a repeated-skip escalation', () => {
+    // Every unavailability reads as `unavailable` on its own; the human who
+    // receives the escalation has to tell a quota stop from a misconfiguration.
+    const decision = evaluateExternalReviewStopRule({
+      result: { status: 'skipped', reason: 'unavailable', providerReason: 'usage_limit' },
+      skipAttempt: 2,
+      maxSkipAttempts: 2,
+    });
+
+    expect(decision).toMatchObject({
+      action: 'escalate',
+      reason: 'external_repeated_skip',
+      externalReason: 'unavailable: usage_limit',
+    });
+    if (decision.action === 'escalate') {
+      expect(decision.message).toContain('unavailable: usage_limit');
+    }
   });
 });

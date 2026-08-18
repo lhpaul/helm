@@ -55,12 +55,18 @@ export function evaluateExternalReviewStopRule(input: {
   }
 
   if (skipAttempt >= maxSkipAttempts) {
+    // A provider that knows *why* it is unavailable says so — a Codex quota stop
+    // and a missing Codex environment both read as `unavailable` otherwise, and
+    // the human receiving the escalation needs to tell them apart.
+    const detail = result.providerReason
+      ? `${result.reason}: ${result.providerReason}`
+      : result.reason;
     return {
       action: 'escalate',
       reason: 'external_repeated_skip',
-      message: `External review skipped ${skipAttempt} time(s) (${result.reason}); escalating per stop-rule`,
+      message: `External review skipped ${skipAttempt} time(s) (${detail}); escalating per stop-rule`,
       skipAttempt,
-      externalReason: result.reason,
+      externalReason: detail,
     };
   }
 

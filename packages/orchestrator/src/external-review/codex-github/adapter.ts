@@ -254,7 +254,9 @@ export function normalizeCodexGitHubReviewPayload(
 
   const reviewState = text(review.state)?.toUpperCase();
   if (reviewState === 'DISMISSED') {
-    return { status: 'skipped', reason: 'unavailable' };
+    // Withdrawn evidence, never a pass — and named, so the escalation that a
+    // repeated skip eventually produces says which unavailability it hit.
+    return { status: 'skipped', reason: 'unavailable', providerReason: 'review_dismissed' };
   }
 
   const findings = { blockers: [] as NormalizedFinding[], advisories: [] as NormalizedFinding[] };

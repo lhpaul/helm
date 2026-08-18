@@ -210,6 +210,6 @@ describe('CodexGitHubExternalReviewAdapter', () => {
         { review: { state: 'DISMISSED', commit_id: 'abc1234' } },
         config,
       ),
-    ).toEqual({ status: 'skipped', reason: 'unavailable' });
+    ).toEqual({ status: 'skipped', reason: 'unavailable', providerReason: 'review_dismissed' });
   });
 });

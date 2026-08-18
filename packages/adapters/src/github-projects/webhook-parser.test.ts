@@ -833,6 +833,26 @@ describe('parseGitHubWebhook', () => {
       expect(result.type).toBe('pull_request_comment_created');
     });
 
+    it('rejects a tab-indented fence closer and an indented-code marker', () => {
+      const head = 'a'.repeat(40);
+      const bodies = [
+        `\`\`\`\nfoo\n\t\`\`\`\nReviewed commit: \`${head}\`\n\nNo issues found.`,
+        `Notes:\n\n\tReviewed commit: \`${head}\`\n\nNo issues found.`,
+      ];
+
+      for (const body of bodies) {
+        const result = parseGitHubWebhook(
+          ctx('issue_comment', {
+            action: 'created',
+            comment: { body, user: { login: 'chatgpt-codex-connector[bot]' } },
+            issue: { number: 42, pull_request: {} },
+            repository: { name: 'repo', owner: { login: 'owner' } },
+          }),
+        );
+        expect(result.type).toBe('pull_request_comment_created');
+      }
+    });
+
     it('fails closed on a marker inside an unclosed fence', () => {
       const head = 'a'.repeat(40);
       const result = parseGitHubWebhook(

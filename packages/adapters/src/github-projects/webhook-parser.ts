@@ -228,7 +228,7 @@ function stripBlockQuotes(text: string): string {
   return text
     .split('\n')
     .map((line) => {
-      if (/^\s{0,3}>/.test(line)) {
+      if (/^ {0,3}>/.test(line)) {
         inQuote = true;
         return ' ';
       }
@@ -238,6 +238,30 @@ function stripBlockQuotes(text: string): string {
       }
       return inQuote ? ' ' : line;
     })
+    .join('\n');
+}
+
+/** Leading indentation in columns; a tab advances to the next multiple of four. */
+function indentColumns(line: string): number {
+  if (line.trim().length === 0) return 0;
+  let col = 0;
+  for (const ch of line) {
+    if (ch === ' ') col += 1;
+    else if (ch === '\t') col += 4 - (col % 4);
+    else break;
+  }
+  return col;
+}
+
+/**
+ * Removes indented code blocks (four columns or more, so a tab counts). Markdown
+ * renders them as code while the parser would read them as prose, exposing a
+ * marker. Mirrors `stripIndentedCode` in the classifier.
+ */
+function stripIndentedCode(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => (indentColumns(line) >= 4 ? ' ' : line))
     .join('\n');
 }
 
@@ -252,7 +276,7 @@ function stripFencedBlocks(text: string): string {
   return text
     .split('\n')
     .map((line) => {
-      const opener = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+      const opener = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
       if (fence !== null) {
         const current = fence;
         const trimmed = line.trim();
@@ -261,7 +285,7 @@ function stripFencedBlocks(text: string): string {
         // run accepts `` ```~~~ ``, which closes nothing — the content after it
         // stays fenced in the renderer while the parser would expose it.
         const closes =
-          /^\s{0,3}\S/.test(line) &&
+          indentColumns(line) <= 3 &&
           trimmed.length >= current.length &&
           [...trimmed].every((ch) => ch === current.char);
         if (closes) fence = null;
@@ -278,7 +302,7 @@ function stripFencedBlocks(text: string): string {
 }
 
 function stripBlockQuotedSpans(body: string): string {
-  return stripBlockQuotes(stripFencedBlocks(body))
+  return stripBlockQuotes(stripIndentedCode(stripFencedBlocks(body)))
     .replace(/(`{2,})[\s\S]*?\1/g, ' ')
     .replace(/(?:`{2,}|~{3,})[\s\S]*$/, ' ');
 }

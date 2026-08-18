@@ -152,7 +152,7 @@ function stripBlockQuotes(text: string): string {
   return text
     .split('\n')
     .map((line) => {
-      if (/^\s{0,3}>/.test(line)) {
+      if (/^ {0,3}>/.test(line)) {
         inQuote = true;
         return ' ';
       }
@@ -162,6 +162,42 @@ function stripBlockQuotes(text: string): string {
       }
       return inQuote ? ' ' : line;
     })
+    .join('\n');
+}
+
+/**
+ * Leading indentation of `line` in **columns**, with tabs advancing to the next
+ * multiple of four, as CommonMark measures them. A blank line has no
+ * indentation to speak of.
+ */
+function indentColumns(line: string): number {
+  if (line.trim().length === 0) return 0;
+  let col = 0;
+  for (const ch of line) {
+    if (ch === ' ') col += 1;
+    else if (ch === '\t') col += 4 - (col % 4);
+    else break;
+  }
+  return col;
+}
+
+/**
+ * Removes indented code blocks — four columns or more, so a single tab counts.
+ *
+ * Markdown renders these as code, i.e. visually quoted, while the parser read
+ * them as ordinary prose: a marker on a tab-indented line was extracted and
+ * classified as clean terminal evidence.
+ *
+ * Deliberately blunt. CommonMark also requires that the line not be a lazy
+ * continuation of a paragraph, which this ignores, so an indented continuation
+ * line is dropped too. That is the safe direction — over-stripping the marker
+ * costs a deferral, under-stripping forges a clean verdict — and Codex writes
+ * its `Reviewed commit:` summary at the top level, not indented four columns.
+ */
+function stripIndentedCode(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => (indentColumns(line) >= 4 ? ' ' : line))
     .join('\n');
 }
 
@@ -184,7 +220,7 @@ function stripFencedBlocks(text: string): string {
   return text
     .split('\n')
     .map((line) => {
-      const opener = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+      const opener = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
       if (fence !== null) {
         const current = fence;
         const trimmed = line.trim();
@@ -193,7 +229,7 @@ function stripFencedBlocks(text: string): string {
         // run accepts `` ```~~~ ``, which closes nothing — the content after it
         // stays fenced in the renderer while the parser would expose it.
         const closes =
-          /^\s{0,3}\S/.test(line) &&
+          indentColumns(line) <= 3 &&
           trimmed.length >= current.length &&
           [...trimmed].every((ch) => ch === current.char);
         if (closes) fence = null;
@@ -211,7 +247,7 @@ function stripFencedBlocks(text: string): string {
 
 function stripBlockQuotedSpans(body: string): string {
   return (
-    stripBlockQuotes(stripFencedBlocks(body))
+    stripBlockQuotes(stripIndentedCode(stripFencedBlocks(body)))
       // Inline code spans: a run of two or more backticks can wrap
       // single-backtick content — a whole marker included.
       .replace(/(`{2,})[\s\S]*?\1/g, ' ')

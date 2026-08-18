@@ -252,18 +252,24 @@ function stripFencedBlocks(text: string): string {
   return text
     .split('\n')
     .map((line) => {
-      const run = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
-      if (fence) {
+      const opener = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+      if (fence !== null) {
+        const current = fence;
+        const trimmed = line.trim();
+        // The closing fence is a run of the *same* character, at least as long
+        // as the opener, and nothing else on the line. Testing only the leading
+        // run accepts `` ```~~~ ``, which closes nothing — the content after it
+        // stays fenced in the renderer while the parser would expose it.
         const closes =
-          run !== undefined &&
-          run[0] === fence.char &&
-          run.length >= fence.length &&
-          /^\s{0,3}[`~]+\s*$/.test(line);
+          /^\s{0,3}\S/.test(line) &&
+          trimmed.length >= current.length &&
+          [...trimmed].every((ch) => ch === current.char);
         if (closes) fence = null;
         return ' ';
       }
-      if (run !== undefined) {
-        fence = { char: run[0]!, length: run.length };
+      // An opener may carry an info string (`` ```ts ``); only the closer is bare.
+      if (opener !== undefined) {
+        fence = { char: opener[0]!, length: opener.length };
         return ' ';
       }
       return line;

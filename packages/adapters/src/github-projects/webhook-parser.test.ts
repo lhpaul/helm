@@ -816,6 +816,23 @@ describe('parseGitHubWebhook', () => {
       expect(result.type).toBe('pull_request_comment_created');
     });
 
+    it('does not accept a mixed-character run as a fence closer', () => {
+      const head = 'a'.repeat(40);
+      const result = parseGitHubWebhook(
+        ctx('issue_comment', {
+          action: 'created',
+          comment: {
+            body: `\`\`\`\nfoo\n\`\`\`~~~\nReviewed commit: \`${head}\`\n\nNo issues found.`,
+            user: { login: 'chatgpt-codex-connector[bot]' },
+          },
+          issue: { number: 42, pull_request: {} },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result.type).toBe('pull_request_comment_created');
+    });
+
     it('fails closed on a marker inside an unclosed fence', () => {
       const head = 'a'.repeat(40);
       const result = parseGitHubWebhook(

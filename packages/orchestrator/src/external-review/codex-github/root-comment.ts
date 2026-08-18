@@ -125,12 +125,49 @@ export function stripQuotedSpans(body: string): string {
  * backtick span, and if unquoted approval prose follows, the quoted marker
  * would otherwise be promoted to clean evidence for the current head.
  */
+/**
+ * Drops block quotes, **including GFM lazy continuations**.
+ *
+ * A `>`-prefixed line opens a quote, and the quote's paragraph then continues
+ * onto following non-blank lines that carry no `>` of their own — they render
+ * as quoted even though they do not look it in source. Removing only
+ * `>`-prefixed lines therefore left this shape live:
+ *
+ * ```text
+ * > Prior quoted content
+ * Reviewed commit: `<head>`
+ * ```
+ *
+ * The marker renders inside the quote but was parsed as unquoted prose, so one
+ * trusted comment could spoof head-pinned evidence. A quote now runs until a
+ * blank line, which is where CommonMark ends the paragraph.
+ *
+ * Applied to marker extraction only, not to `stripQuotedSpans`. The two want
+ * opposite biases: marker parsing must strip aggressively (over-stripping costs
+ * a deferral), while blocking-phrase detection must strip conservatively
+ * (over-stripping would drop a real blocker and let a clean verdict win).
+ */
+function stripBlockQuotes(text: string): string {
+  let inQuote = false;
+  return text
+    .split('\n')
+    .map((line) => {
+      if (/^\s{0,3}>/.test(line)) {
+        inQuote = true;
+        return ' ';
+      }
+      if (line.trim().length === 0) {
+        inQuote = false;
+        return line;
+      }
+      return inQuote ? ' ' : line;
+    })
+    .join('\n');
+}
+
 function stripBlockQuotedSpans(body: string): string {
   return (
-    body
-      .replace(/```[\s\S]*?```/g, ' ')
-      .replace(/~~~[\s\S]*?~~~/g, ' ')
-      .replace(/^\s*>.*$/gm, ' ')
+    stripBlockQuotes(body.replace(/```[\s\S]*?```/g, ' ').replace(/~~~[\s\S]*?~~~/g, ' '))
       // A run of two or more backticks delimits a span that can itself contain
       // single-backtick content — a whole marker included.
       .replace(/(`{2,})[\s\S]*?\1/g, ' ')

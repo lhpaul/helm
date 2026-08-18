@@ -761,6 +761,44 @@ describe('parseGitHubWebhook', () => {
       expect(result.type).toBe('pull_request_comment_created');
     });
 
+    it('rejects a marker on a lazy block-quote continuation line', () => {
+      const head = 'a'.repeat(40);
+      const result = parseGitHubWebhook(
+        ctx('issue_comment', {
+          action: 'created',
+          comment: {
+            body: `> Prior quoted content\nReviewed commit: \`${head}\`\n\nLGTM`,
+            user: { login: 'chatgpt-codex-connector[bot]' },
+          },
+          issue: { number: 42, pull_request: {} },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result.type).toBe('pull_request_comment_created');
+    });
+
+    it('still emits readiness once a blank line has closed the quote', () => {
+      const head = 'a'.repeat(40);
+      const result = parseGitHubWebhook(
+        ctx('issue_comment', {
+          action: 'created',
+          comment: {
+            body: `> Prior quoted content\n\nReviewed commit: \`${head}\`\n\nNo issues found.`,
+            user: { login: 'chatgpt-codex-connector[bot]' },
+          },
+          issue: { number: 42, pull_request: {} },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result).toMatchObject({
+        type: 'external_review_ready',
+        provider: 'codex-github',
+        targetRevision: head,
+      });
+    });
+
     it('fails closed on a marker inside an unclosed fence', () => {
       const head = 'a'.repeat(40);
       const result = parseGitHubWebhook(

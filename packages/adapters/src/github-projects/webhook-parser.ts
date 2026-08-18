@@ -218,12 +218,32 @@ const codexReviewedCommitPattern = (): RegExp =>
  * marker cannot emit readiness — single-backtick spans stay, since that is where
  * the SHA itself lives. Mirrors `stripBlockQuotedSpans` in the classifier.
  */
+/**
+ * Drops block quotes including GFM lazy continuations — a quote's paragraph
+ * continues onto following non-blank lines that carry no `>`, so those render
+ * as quoted too. Mirrors `stripBlockQuotes` in the classifier.
+ */
+function stripBlockQuotes(text: string): string {
+  let inQuote = false;
+  return text
+    .split('\n')
+    .map((line) => {
+      if (/^\s{0,3}>/.test(line)) {
+        inQuote = true;
+        return ' ';
+      }
+      if (line.trim().length === 0) {
+        inQuote = false;
+        return line;
+      }
+      return inQuote ? ' ' : line;
+    })
+    .join('\n');
+}
+
 function stripBlockQuotedSpans(body: string): string {
   return (
-    body
-      .replace(/```[\s\S]*?```/g, ' ')
-      .replace(/~~~[\s\S]*?~~~/g, ' ')
-      .replace(/^\s*>.*$/gm, ' ')
+    stripBlockQuotes(body.replace(/```[\s\S]*?```/g, ' ').replace(/~~~[\s\S]*?~~~/g, ' '))
       .replace(/(`{2,})[\s\S]*?\1/g, ' ')
       // Fail closed on an unclosed delimiter, matching the classifier: only
       // matched pairs are removed above, so an unterminated fence would

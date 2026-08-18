@@ -149,26 +149,44 @@ Codex run a terminal signal at all: Codex publishes no check run or status and
 does not always submit a review, but it does post a summary naming the commit it
 reviewed.
 
-When evidence disagrees: **blocking always wins**, whatever its age; then an
-exhausted **usage limit**; then a **failed root-comment read** (missing evidence,
-not absent evidence — a clean review cannot silently override it); otherwise the
-**newest** wins, and on an exact timestamp tie the less-clean side does. So an
+When evidence disagrees: **blocking always wins**, whatever its age; then a
+**failed root-comment read** (missing evidence, not absent evidence — a clean
+review cannot silently override it, and it is the one unavailability with no
+timestamp to rank); otherwise the **newest** wins, and on an exact timestamp tie
+the less-clean side does.
+
+Both unavailability notices — an exhausted usage limit and a missing Codex
+environment — are dated, so neither outlives the condition it reported. An
 operator who creates the Codex environment mid-loop has the resulting fresh
-review supersede the recorded environment error, while a later bare
-acknowledgement never does.
+review supersede the recorded error, and a clean summary published after the
+quota resets supersedes the quota notice; a later bare acknowledgement never
+supersedes either.
 
-#### What reads as unavailable, never clean
+#### What no longer reads as clean
 
-Reaction-only responses, stale reviews and stale summaries, draft reviews,
-dismissed reviews, a missing Codex cloud environment (`To use Codex here, create
-an environment for this repo`), an exhausted usage limit, a SHA-pinned response
-Helm cannot parse, and a failed root-comment read. Each names its cause in the
-`external_repeated_skip` escalation, so a quota stop is distinguishable from a
-misconfiguration.
+Two distinct outcomes — neither of them `clean`.
+
+**Dropped, so they produce no verdict at all:** reaction-only responses, comments
+from an untrusted author, stale reviews and stale summaries, and draft
+(`PENDING`) reviews. With nothing terminal on the current head the loop stays
+deferred, and a lane that keeps finding nothing exits through the repeated-skip
+stop rule or expires with `max_defer_sec`. A stale blocker is dropped the same
+way, so it can never override current-head evidence.
+
+**Ranked as unavailable, each naming its cause:** a dismissed review
+(`review_dismissed`), a missing Codex cloud environment (`environment_missing` —
+`To use Codex here, create an environment for this repo`), an exhausted usage
+limit (`usage_limit`), a SHA-pinned response Helm cannot parse
+(`unrecognized_terminal_response`), and a failed root-comment read
+(`root_comments_unavailable`). The `external_repeated_skip` escalation names the
+reason, so a quota stop is distinguishable from a misconfiguration.
 
 Unavailability wording is only read outside quoted spans, and a body carrying a
 multi-backtick or 3+-tilde run is not classified at all — a Codex review of this
-very section quotes the phrases the classifier matches on.
+very section quotes the phrases the classifier matches on. The
+`Reviewed commit:` marker is likewise read from unquoted prose only: quoting one
+and following it with approval prose would otherwise forge clean evidence for
+the current head.
 
 #### Resume path
 

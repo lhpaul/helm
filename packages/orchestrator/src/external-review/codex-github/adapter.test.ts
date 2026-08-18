@@ -353,6 +353,52 @@ describe('codex-github root-comment evidence', () => {
     });
   });
 
+  /**
+   * The quota notice stays on the PR forever. Treating it as a sticky flag meant
+   * every later poll re-asserted it, so a PR that once hit quota could never
+   * read clean from root-comment evidence again — it ground on to
+   * `external_repeated_skip` long after the quota reset.
+   */
+  it('lets a newer clean summary supersede an older usage-limit notice', () => {
+    expect(
+      normalizeCodexGitHubReviewPayload(
+        {
+          targetRevision: HEAD,
+          reviewPending: true,
+          rootComments: [
+            rootComment('You have reached your Codex usage limits.', '2026-08-17T12:00:00Z', 1),
+            rootComment(
+              `Reviewed commit: \`${HEAD}\`\n\nNo issues found.`,
+              '2026-08-17T13:00:00Z',
+              2,
+            ),
+          ],
+        },
+        config,
+      ),
+    ).toEqual({ status: 'clean', blockers: [], advisories: [] });
+  });
+
+  it('keeps the usage limit when it is the newest evidence', () => {
+    expect(
+      normalizeCodexGitHubReviewPayload(
+        {
+          targetRevision: HEAD,
+          reviewPending: true,
+          rootComments: [
+            rootComment(
+              `Reviewed commit: \`${HEAD}\`\n\nNo issues found.`,
+              '2026-08-17T12:00:00Z',
+              1,
+            ),
+            rootComment('You have reached your Codex usage limits.', '2026-08-17T13:00:00Z', 2),
+          ],
+        },
+        config,
+      ),
+    ).toEqual({ status: 'skipped', reason: 'unavailable', providerReason: 'usage_limit' });
+  });
+
   it('lets an older blocking finding win over a newer usage-limit notice', () => {
     const result = normalizeCodexGitHubReviewPayload(
       {

@@ -210,7 +210,21 @@ const DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES = new Set(['chatgpt-codex-connecto
  * against — those runs are picked up by the adapter on the next poll instead of
  * resuming from this webhook.
  */
-const CODEX_REVIEWED_COMMIT_RE = /reviewed\s+commit\s*:?[^`\n]*`\s*([0-9a-f]{40})\s*`/gi;
+const codexReviewedCommitPattern = (): RegExp =>
+  /reviewed\s+commit\s*:?[^`\n]*`\s*([0-9a-f]{40})\s*`/gi;
+
+/**
+ * Drops fenced blocks, block quotes, and multi-backtick spans so a **quoted**
+ * marker cannot emit readiness — single-backtick spans stay, since that is where
+ * the SHA itself lives. Mirrors `stripBlockQuotedSpans` in the classifier.
+ */
+function stripBlockQuotedSpans(body: string): string {
+  return body
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/~~~[\s\S]*?~~~/g, ' ')
+    .replace(/^\s*>.*$/gm, ' ')
+    .replace(/(`{2,})[\s\S]*?\1/g, ' ');
+}
 
 function codexReviewedCommitFromComment(
   body: string,
@@ -224,9 +238,8 @@ function codexReviewedCommitFromComment(
   const login = authorLogin?.trim().toLowerCase() ?? '';
   if (!login || !trustedLogins.has(login)) return null;
 
-  CODEX_REVIEWED_COMMIT_RE.lastIndex = 0;
   let sha: string | null = null;
-  for (const match of body.matchAll(CODEX_REVIEWED_COMMIT_RE)) {
+  for (const match of stripBlockQuotedSpans(body).matchAll(codexReviewedCommitPattern())) {
     if (match[1]) sha = match[1].toLowerCase();
   }
   return sha;

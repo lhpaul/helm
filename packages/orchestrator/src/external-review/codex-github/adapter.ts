@@ -382,11 +382,6 @@ function findingFromRootComment(
   );
 }
 
-type RootCommentEvidence = {
-  records: EvidenceRecord[];
-  usageLimit: boolean;
-};
-
 /**
  * Reads the trusted Codex root PR comments into ranked evidence.
  *
@@ -398,9 +393,8 @@ type RootCommentEvidence = {
 function rootCommentEvidence(
   payload: CodexGitHubReviewPayload,
   config: CodexGitHubReviewConfig,
-): RootCommentEvidence {
+): EvidenceRecord[] {
   const records: EvidenceRecord[] = [];
-  let usageLimit = false;
 
   for (const comment of payload.rootComments ?? []) {
     const classification = classifyCodexRootComment({
@@ -410,7 +404,13 @@ function rootCommentEvidence(
     const at = timestamp(comment.created_at);
 
     if (classification.kind === 'usage_limit') {
-      usageLimit = true;
+      // Dated like every other record, not a sticky flag. The comment stays on
+      // the PR forever, so a flag would re-assert itself on every later poll and
+      // no post-quota clean summary could ever win — the loop would grind to
+      // `external_repeated_skip` long after the quota reset. The framework's
+      // "usage limit stops the invocation" rule is about one poll window; Helm
+      // reads a fresh snapshot per poll, so recency is what carries it here.
+      records.push({ at, rank: RANK_UNAVAILABLE, result: unavailable('usage_limit') });
       continue;
     }
     if (classification.kind === 'environment_missing') {
@@ -460,7 +460,7 @@ function rootCommentEvidence(
     });
   }
 
-  return { records, usageLimit };
+  return records;
 }
 
 /**
@@ -470,12 +470,14 @@ function rootCommentEvidence(
  * Precedence, in order:
  *  1. **Blocking evidence always wins**, whatever its age and whatever else is
  *     present — an actionable finding must never hide behind an "unavailable".
- *  2. A **usage-limit** notice stops the invocation: once quota is exhausted a
- *     useful review is not going to arrive moments later.
- *  3. A **failed root-comment fetch** is missing evidence, not absent evidence,
- *     so a clean submitted review cannot silently override it.
- *  4. Otherwise the **newest** terminal evidence wins; on an exact timestamp
- *     tie the less-clean one does.
+ *  2. A **failed root-comment fetch** is missing evidence, not absent evidence,
+ *     so a clean submitted review cannot silently override it. It is the one
+ *     unavailability with no timestamp to rank, so it cannot take part in (3).
+ *  3. Otherwise the **newest** evidence wins; on an exact timestamp tie the
+ *     less-clean one does. Both unavailability notices — an exhausted usage
+ *     limit and a missing Codex environment — are dated records here, so each
+ *     is superseded by strictly newer terminal evidence and neither outlives
+ *     the condition it reported.
  */
 export function normalizeCodexGitHubReviewPayload(
   payload: CodexGitHubReviewPayload,
@@ -493,15 +495,13 @@ export function normalizeCodexGitHubReviewPayload(
       ? { status: 'deferred', reason: 'analysis_pending', providerReason }
       : { status: 'escalate', reason: providerReason };
 
-  const roots = rootCommentEvidence(payload, config);
-  const records = [...roots.records];
+  const records = rootCommentEvidence(payload, config);
   const fromReview = reviewEvidence(payload, config);
   if (fromReview) records.push(fromReview);
 
   const blocking = pickWinner(records.filter((record) => record.rank === RANK_BLOCKING));
   if (blocking) return blocking.result;
 
-  if (roots.usageLimit) return unavailable('usage_limit');
   if (payload.rootCommentsUnavailable) return unavailable('root_comments_unavailable');
 
   const winner = pickWinner(records);

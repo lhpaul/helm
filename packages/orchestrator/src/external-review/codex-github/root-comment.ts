@@ -42,8 +42,12 @@ const MIN_SHA_LENGTH = 7;
 /**
  * The `Reviewed commit:` marker, whose SHA Codex renders inside backticks. The
  * SHA is often abbreviated, so callers compare it by prefix, not by equality.
+ *
+ * Built per call: a shared `/g` regex carries `lastIndex` between callers, and
+ * a fresh object is cheaper to reason about than remembering to reset it.
  */
-const REVIEWED_COMMIT_RE = /reviewed\s+commit\s*:?[^`\n]*`\s*([0-9a-f]{7,40})\s*`/gi;
+const reviewedCommitPattern = (): RegExp =>
+  /reviewed\s+commit\s*:?[^`\n]*`\s*([0-9a-f]{7,40})\s*`/gi;
 
 const USAGE_LIMIT_RE =
   /(reached\s+your\s+codex\s+usage\s+limits?|codex\s+usage\s+limits?\s+for\s+code\s+reviews?\s+(?:reached|exceeded|exhausted|hit|unavailable|limited)|codex\s+(?:github\s+app\s+)?(?:review\s+)?(?:usage\s+limit|quota|capacity)\s+(?:reached|exceeded|exhausted|hit|unavailable|limited)|codex\s+review\s+capacity\s+(?:exhausted|unavailable|limited))/i;
@@ -111,6 +115,29 @@ export function stripQuotedSpans(body: string): string {
 }
 
 /**
+ * Removes fenced blocks, block quotes, and multi-backtick spans, but **keeps**
+ * single-backtick spans.
+ *
+ * Marker extraction needs the opposite treatment from prose classification: the
+ * SHA lives inside a single-backtick span, so `stripQuotedSpans` would eat the
+ * very thing being parsed. Quoting a marker must still not forge evidence — a
+ * trusted Codex comment can quote one in a fence, a block quote, or a 2+
+ * backtick span, and if unquoted approval prose follows, the quoted marker
+ * would otherwise be promoted to clean evidence for the current head.
+ */
+function stripBlockQuotedSpans(body: string): string {
+  return (
+    body
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/~~~[\s\S]*?~~~/g, ' ')
+      .replace(/^\s*>.*$/gm, ' ')
+      // A run of two or more backticks delimits a span that can itself contain
+      // single-backtick content — a whole marker included.
+      .replace(/(`{2,})[\s\S]*?\1/g, ' ')
+  );
+}
+
+/**
  * True when the body still carries a multi-backtick or tilde run after
  * stripping. CommonMark lets a code span be delimited by an equal-length run of
  * two or more backticks, which the single-pair strip above leaves intact — so
@@ -130,11 +157,14 @@ export function shaMatches(a: string | undefined | null, b: string | undefined |
   return left.startsWith(right) || right.startsWith(left);
 }
 
-/** The last `Reviewed commit` marker in the body, if any. */
+/**
+ * The last `Reviewed commit` marker in the body's **unquoted** prose, if any.
+ * A marker inside a fence, a block quote, or a multi-backtick span is not
+ * evidence — see `stripBlockQuotedSpans`.
+ */
 export function reviewedCommitFromBody(body: string): string | undefined {
-  REVIEWED_COMMIT_RE.lastIndex = 0;
   let sha: string | undefined;
-  for (const match of body.matchAll(REVIEWED_COMMIT_RE)) {
+  for (const match of stripBlockQuotedSpans(body).matchAll(reviewedCommitPattern())) {
     if (match[1]) sha = match[1].toLowerCase();
   }
   return sha;
@@ -171,17 +201,27 @@ export function classifyCodexRootComment(input: {
   if (!body) return { kind: 'ancillary' };
 
   const reviewedSha = reviewedCommitFromBody(body);
-  if (reviewedSha && shaMatches(reviewedSha, input.targetRevision)) {
-    return { kind: 'terminal', reviewedSha, verdict: verdictFromRootCommentBody(body) };
+  const pinned = reviewedSha !== undefined && shaMatches(reviewedSha, input.targetRevision);
+  const verdict = pinned ? verdictFromRootCommentBody(body) : undefined;
+
+  // Blocking outranks everything, so a pinned finding is returned before the
+  // unavailability wording is even consulted — Codex reporting a blocker and
+  // its own quota in one comment must still surface the blocker.
+  if (pinned && verdict === 'blocking') {
+    return { kind: 'terminal', reviewedSha: reviewedSha!, verdict };
   }
 
   // Unavailability wording is prose, so it is only read outside quoted spans —
-  // and not at all when a delimiter run makes stripping unreliable.
+  // and not at all when a delimiter run makes stripping unreliable. Checked
+  // before the remaining pinned verdicts: a head-pinned response that reports
+  // exhausted quota is a usage limit, not an unparseable verdict.
   if (!hasFenceMarker(body)) {
     const prose = stripQuotedSpans(body);
     if (USAGE_LIMIT_RE.test(prose)) return { kind: 'usage_limit' };
     if (ENVIRONMENT_MISSING_RE.test(prose)) return { kind: 'environment_missing' };
   }
+
+  if (pinned) return { kind: 'terminal', reviewedSha: reviewedSha!, verdict: verdict! };
 
   // Pinned to a *different* revision, or not pinned at all: acknowledgement
   // only. A stale summary must never clear the current head.

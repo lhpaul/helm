@@ -50,6 +50,30 @@ export type CodexGitHubReviewThreadPayload = {
   comments?: CodexGitHubReviewCommentPayload[];
 };
 
+/**
+ * A root PR comment authored by a trusted Codex identity.
+ *
+ * Root comments are the second evidence channel: Codex ends a clean run with a
+ * SHA-pinned summary comment far more reliably than with a submitted review,
+ * and reports quota exhaustion and a missing cloud environment here too.
+ */
+export type CodexGitHubRootCommentPayload = {
+  id?: number | string;
+  node_id?: string;
+  body?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  user?: { login?: string | null } | null;
+};
+
+/** Why Codex produced no usable verdict. Surfaces on the skipped result. */
+export type CodexGitHubUnavailableReason =
+  | 'usage_limit'
+  | 'environment_missing'
+  | 'root_comments_unavailable'
+  | 'unrecognized_terminal_response'
+  | 'review_dismissed';
+
 export type CodexGitHubReviewPayload = {
   /** The payload could not be built at all (no PR, unresolvable revision). */
   unavailable?: boolean;
@@ -63,6 +87,21 @@ export type CodexGitHubReviewPayload = {
   checkRun?: CodexGitHubCheckRunPayload;
   reviewComments?: CodexGitHubReviewCommentPayload[];
   reviewThreads?: CodexGitHubReviewThreadPayload[];
+  /**
+   * The revision the payload was built for. Root-comment evidence is only
+   * terminal when it names this SHA, so the adapter cannot classify without it.
+   */
+  targetRevision?: string;
+  /** Trusted Codex root PR comments, oldest-first. */
+  rootComments?: CodexGitHubRootCommentPayload[];
+  /**
+   * The root-comment fetch failed. Distinct from an empty `rootComments`: a
+   * failed read is missing evidence, not absent evidence, so it must not be
+   * silently overridden by an otherwise clean review.
+   */
+  rootCommentsUnavailable?: boolean;
+  /** Why the payload is unusable, when `unavailable` is set. */
+  unavailableReason?: CodexGitHubUnavailableReason;
 };
 
 export type LoadCodexGitHubReview = (

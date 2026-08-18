@@ -162,7 +162,12 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       // helm/plan/*, helm/impl/*) AND release.published events must process for
       // Linear products too (a Linear product still ships via GitHub releases).
       const trustConfig =
-        eventType === 'check_run' || eventType === 'status' || eventType === 'pull_request_review'
+        eventType === 'check_run' ||
+        eventType === 'status' ||
+        eventType === 'pull_request_review' ||
+        // Codex signals a finished run on a root PR comment as well as on a
+        // submitted review, so issue_comment needs the trust allowlist too.
+        eventType === 'issue_comment'
           ? externalReviewTrustConfig(await getProductConfig())
           : undefined;
       event = parseGitHubWebhook({ eventType, payload: body }, trustConfig);

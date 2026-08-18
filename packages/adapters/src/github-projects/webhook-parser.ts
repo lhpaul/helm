@@ -198,6 +198,134 @@ const DEFAULT_CODERABBIT_TRUSTED_IDENTITIES = new Set([
 // matching is exact, so trusting it would accept a human-forged readiness signal.
 const DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES = new Set(['chatgpt-codex-connector[bot]']);
 
+/**
+ * The `Reviewed commit:` marker Codex puts on the root PR comment that closes a
+ * run, with the SHA rendered inside backticks. Kept in sync with the classifier in
+ * `@helm/orchestrator`'s `external-review/codex-github/root-comment.ts`;
+ * duplicated rather than imported because the adapters package sits below the
+ * orchestrator in the dependency graph.
+ *
+ * Only a **full** 40-hex SHA is accepted here. A pending external-review intent
+ * is addressed by exact revision, so an abbreviated marker has nothing to match
+ * against — those runs are picked up by the adapter on the next poll instead of
+ * resuming from this webhook.
+ */
+const codexReviewedCommitPattern = (): RegExp =>
+  /reviewed\s+commit\s*:?[^`\n]*`\s*([0-9a-f]{40})\s*`/gi;
+
+/**
+ * Drops fenced blocks, block quotes, and multi-backtick spans so a **quoted**
+ * marker cannot emit readiness — single-backtick spans stay, since that is where
+ * the SHA itself lives. Mirrors `stripBlockQuotedSpans` in the classifier.
+ */
+/**
+ * Drops block quotes including GFM lazy continuations — a quote's paragraph
+ * continues onto following non-blank lines that carry no `>`, so those render
+ * as quoted too. Mirrors `stripBlockQuotes` in the classifier.
+ */
+function stripBlockQuotes(text: string): string {
+  let inQuote = false;
+  return text
+    .split('\n')
+    .map((line) => {
+      if (/^ {0,3}>/.test(line)) {
+        inQuote = true;
+        return ' ';
+      }
+      if (line.trim().length === 0) {
+        inQuote = false;
+        return line;
+      }
+      return inQuote ? ' ' : line;
+    })
+    .join('\n');
+}
+
+/** Leading indentation in columns; a tab advances to the next multiple of four. */
+function indentColumns(line: string): number {
+  if (line.trim().length === 0) return 0;
+  let col = 0;
+  for (const ch of line) {
+    if (ch === ' ') col += 1;
+    else if (ch === '\t') col += 4 - (col % 4);
+    else break;
+  }
+  return col;
+}
+
+/**
+ * Removes indented code blocks (four columns or more, so a tab counts). Markdown
+ * renders them as code while the parser would read them as prose, exposing a
+ * marker. Mirrors `stripIndentedCode` in the classifier.
+ */
+function stripIndentedCode(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => (indentColumns(line) >= 4 ? ' ' : line))
+    .join('\n');
+}
+
+/**
+ * Removes fenced code blocks with CommonMark's length-aware closing rule — a
+ * fence closes only on a same-character run at least as long as its opener, so
+ * a short run cannot expose content Markdown still renders inside the block.
+ * Mirrors `stripFencedBlocks` in the classifier.
+ */
+function stripFencedBlocks(text: string): string {
+  let fence: { char: string; length: number } | null = null;
+  return text
+    .split('\n')
+    .map((line) => {
+      const opener = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+      if (fence !== null) {
+        const current = fence;
+        const trimmed = line.trim();
+        // The closing fence is a run of the *same* character, at least as long
+        // as the opener, and nothing else on the line. Testing only the leading
+        // run accepts `` ```~~~ ``, which closes nothing — the content after it
+        // stays fenced in the renderer while the parser would expose it.
+        const closes =
+          indentColumns(line) <= 3 &&
+          trimmed.length >= current.length &&
+          [...trimmed].every((ch) => ch === current.char);
+        if (closes) fence = null;
+        return ' ';
+      }
+      // An opener may carry an info string (`` ```ts ``); only the closer is bare.
+      if (opener !== undefined) {
+        fence = { char: opener[0]!, length: opener.length };
+        return ' ';
+      }
+      return line;
+    })
+    .join('\n');
+}
+
+function stripBlockQuotedSpans(body: string): string {
+  return stripBlockQuotes(stripIndentedCode(stripFencedBlocks(body)))
+    .replace(/(`{2,})[\s\S]*?\1/g, ' ')
+    .replace(/(?:`{2,}|~{3,})[\s\S]*$/, ' ');
+}
+
+function codexReviewedCommitFromComment(
+  body: string,
+  authorLogin: string | undefined,
+  trustConfig?: ExternalReviewWebhookTrustConfig,
+): string | null {
+  const trustedLogins = normalizedSet(
+    trustConfig?.codexGithub?.trustedIdentities,
+    DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES,
+  );
+  const login = authorLogin?.trim().toLowerCase() ?? '';
+  if (!login || !trustedLogins.has(login)) return null;
+
+  let sha: string | null = null;
+  for (const match of stripBlockQuotedSpans(body).matchAll(codexReviewedCommitPattern())) {
+    if (match[1]) sha = match[1].toLowerCase();
+  }
+  return sha;
+}
+
 function normalizedSet(values: string[] | undefined, fallback: Set<string>): Set<string> {
   const normalized = (values ?? [])
     .map((value) => value.trim().toLowerCase())
@@ -278,6 +406,31 @@ export function parseGitHubWebhook(
       if (parsed.data.issue.pull_request !== undefined) {
         const repo = parsed.data.repository;
         if (!repo) return { type: 'unknown', raw: rawEvent };
+
+        // Codex closes a run with a root PR comment naming the commit it
+        // reviewed — frequently the only terminal evidence a *clean* run
+        // produces, since it may publish no review at all. Resume the deferred
+        // intent from it on the same trust boundary the review webhook uses:
+        // allowlisted author, pinned to an exact commit. A Codex comment never
+        // parses as a structured human decision, so nothing is lost by taking
+        // this branch first.
+        const codexRevision = codexReviewedCommitFromComment(
+          parsed.data.comment.body,
+          parsed.data.comment.user?.login,
+          trustConfig,
+        );
+        if (codexRevision) {
+          return {
+            type: 'external_review_ready',
+            provider: 'codex-github',
+            owner: repo.owner.login,
+            repo: repo.name,
+            prNumber: parsed.data.issue.number,
+            targetRevision: codexRevision,
+            timestamp,
+          };
+        }
+
         return {
           type: 'pull_request_comment_created',
           owner: repo.owner.login,

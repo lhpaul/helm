@@ -1,0 +1,20 @@
+{
+  "targetRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "reviewPending": true,
+  "rootComments": [
+    {
+      "id": 800001,
+      "node_id": "IC_kwDOack",
+      "body": "Codex is reviewing this PR...",
+      "created_at": "2026-08-17T11:59:00Z",
+      "user": { "login": "chatgpt-codex-connector[bot]" }
+    },
+    {
+      "id": 800002,
+      "node_id": "IC_kwDOclean",
+      "body": "Reviewed commit: `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`\n\nNo issues found.",
+      "created_at": "2026-08-17T12:00:00Z",
+      "user": { "login": "chatgpt-codex-connector[bot]" }
+    }
+  ]
+}

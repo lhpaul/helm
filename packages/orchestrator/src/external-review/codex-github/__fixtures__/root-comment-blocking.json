@@ -1,0 +1,13 @@
+{
+  "targetRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "reviewPending": true,
+  "rootComments": [
+    {
+      "id": 800003,
+      "node_id": "IC_kwDOblocking",
+      "body": "Reviewed commit: `aaaaaaa`\n\n**[P1] The webhook signature comparison is not constant time.** Must fix before merge.",
+      "created_at": "2026-08-17T12:00:00Z",
+      "user": { "login": "chatgpt-codex-connector[bot]" }
+    }
+  ]
+}

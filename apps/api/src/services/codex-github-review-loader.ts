@@ -43,6 +43,16 @@ type GitHubReviewCommentResponse = {
   pull_request_review_id?: number | null;
 };
 
+/** Root (non-inline) PR comment — the `issues/{n}/comments` shape. */
+type GitHubIssueCommentResponse = {
+  id?: number | string;
+  node_id?: string;
+  body?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  user?: { login?: string | null } | null;
+};
+
 type LoadedReviewThread = {
   id?: string | number;
   isResolved?: boolean;
@@ -338,6 +348,29 @@ async function fetchCodexReviewThreads(input: {
 }
 
 /**
+ * Loads the PR's **root** comments authored by a trusted Codex identity.
+ *
+ * Codex reports three things here that never appear on a submitted review: the
+ * SHA-pinned summary it posts when a run finishes (frequently the only terminal
+ * evidence a *clean* run produces), an exhausted usage limit, and a missing
+ * Codex cloud environment. Author trust is exact, exactly as it is for review
+ * authors — the un-suffixed login is registrable by a human, so accepting it
+ * would let anyone forge a clean summary for the pending SHA.
+ */
+async function fetchCodexRootComments(input: {
+  repoBase: string;
+  prNumber: number;
+  product: Product;
+  githubToken: string;
+}): Promise<GitHubIssueCommentResponse[]> {
+  const comments = await fetchPaginatedGitHubJson<GitHubIssueCommentResponse>(
+    `${input.repoBase}/issues/${input.prNumber}/comments`,
+    input.githubToken,
+  );
+  return comments.filter((comment) => isTrustedCodexIdentity(comment.user?.login, input.product));
+}
+
+/**
  * Loads the Codex GitHub review payload for a PR (ADR-036).
  *
  * Codex signals completion by **submitting a PR review**, not by publishing a
@@ -358,10 +391,29 @@ export function createGitHubCodexGitHubReviewLoader(input: {
       const targetSha = ctx.targetRevision ?? pr.head?.sha;
       if (!targetSha || !GIT_SHA_RE.test(targetSha)) return { unavailable: true };
 
+      // A failed root-comment read is *missing* evidence, not absent evidence:
+      // reported as such it cannot be silently overridden by a clean review.
+      // Started here and awaited below so it overlaps the reviews fetch. The
+      // `.catch` is attached immediately, so this can never reject unhandled.
+      const rootCommentsPromise = fetchCodexRootComments({
+        repoBase,
+        prNumber: ctx.prNumber,
+        product: input.product,
+        githubToken: input.githubToken,
+      }).catch((err: unknown) => {
+        console.warn('[codex-github-review-loader] Failed to load root PR comments:', err);
+        return null;
+      });
+
       const reviews = await fetchPaginatedGitHubJson<GitHubReviewResponse>(
         `${repoBase}/pulls/${ctx.prNumber}/reviews`,
         input.githubToken,
       );
+      const rootComments = await rootCommentsPromise;
+      const rootEvidence = rootComments
+        ? { rootComments }
+        : { rootCommentsUnavailable: true as const };
+
       // GitHub returns reviews oldest-first; the last trusted match is the
       // current verdict for this revision.
       const review = reviews
@@ -385,6 +437,8 @@ export function createGitHubCodexGitHubReviewLoader(input: {
           isTrustedCodexCheckRun(candidate, input.product),
         );
         return {
+          targetRevision: targetSha,
+          ...rootEvidence,
           reviewPending: true,
           ...(checkRun
             ? {
@@ -436,6 +490,8 @@ export function createGitHubCodexGitHubReviewLoader(input: {
       );
 
       return {
+        targetRevision: targetSha,
+        ...rootEvidence,
         review: {
           id: review.id,
           node_id: review.node_id,

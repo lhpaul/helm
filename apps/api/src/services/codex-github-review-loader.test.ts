@@ -94,6 +94,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
         ]);
       }
       if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.includes('/issues/42/comments')) return jsonResponse([]);
       if (requestUrl.includes('/pulls/42/reviews')) {
         return jsonResponse([
           {
@@ -201,6 +202,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
         ]);
       }
       if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.includes('/issues/42/comments')) return jsonResponse([]);
       if (requestUrl.includes('/pulls/42/reviews')) {
         return jsonResponse([
           {
@@ -252,6 +254,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const requestUrl = typeof url === 'string' ? url : url.toString();
       if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.includes('/issues/42/comments')) return jsonResponse([]);
       if (requestUrl.includes('/pulls/42/reviews')) return jsonResponse([]);
       if (requestUrl.includes('/commits/abc1234/check-runs')) {
         return jsonResponse({
@@ -277,6 +280,8 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
     })(ctx);
 
     expect(payload).toEqual({
+      targetRevision: 'abc1234',
+      rootComments: [],
       reviewPending: true,
       checkRun: {
         name: 'Codex',
@@ -291,6 +296,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const requestUrl = typeof url === 'string' ? url : url.toString();
       if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.includes('/issues/42/comments')) return jsonResponse([]);
       if (requestUrl.includes('/pulls/42/reviews')) {
         return jsonResponse([
           {
@@ -314,7 +320,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
 
     await expect(
       createGitHubCodexGitHubReviewLoader({ product, githubToken: 't' })(ctx),
-    ).resolves.toEqual({ reviewPending: true });
+    ).resolves.toEqual({ targetRevision: 'abc1234', rootComments: [], reviewPending: true });
   });
 
   it('keeps deferring on an unsubmitted draft review from a trusted author', async () => {
@@ -324,6 +330,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const requestUrl = typeof url === 'string' ? url : url.toString();
       if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.includes('/issues/42/comments')) return jsonResponse([]);
       if (requestUrl.includes('/pulls/42/reviews')) {
         return jsonResponse([
           {
@@ -345,13 +352,14 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
 
     await expect(
       createGitHubCodexGitHubReviewLoader({ product, githubToken: 't' })(ctx),
-    ).resolves.toEqual({ reviewPending: true });
+    ).resolves.toEqual({ targetRevision: 'abc1234', rootComments: [], reviewPending: true });
   });
 
   it('keeps deferring on a trusted review that has no submitted_at', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const requestUrl = typeof url === 'string' ? url : url.toString();
       if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.includes('/issues/42/comments')) return jsonResponse([]);
       if (requestUrl.includes('/pulls/42/reviews')) {
         return jsonResponse([
           {
@@ -375,7 +383,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
 
     await expect(
       createGitHubCodexGitHubReviewLoader({ product, githubToken: 't' })(ctx),
-    ).resolves.toEqual({ reviewPending: true });
+    ).resolves.toEqual({ targetRevision: 'abc1234', rootComments: [], reviewPending: true });
   });
 
   it('is unavailable when the target revision cannot be resolved', async () => {
@@ -408,6 +416,7 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
       const requestUrl = typeof url === 'string' ? url : url.toString();
       if (requestUrl === 'https://api.github.com/graphql') return threadsResponse([]);
       if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'newsha1' } });
+      if (requestUrl.includes('/issues/42/comments')) return jsonResponse([]);
       if (requestUrl.includes('/pulls/42/reviews')) {
         return jsonResponse([
           {
@@ -431,5 +440,63 @@ describe('createGitHubCodexGitHubReviewLoader', () => {
     });
 
     expect(payload?.review?.id).toBe(7);
+  });
+
+  it('loads trusted root PR comments and drops untrusted authors', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = typeof url === 'string' ? url : url.toString();
+      if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.includes('/pulls/42/reviews')) return jsonResponse([]);
+      if (requestUrl.includes('/commits/abc1234/check-runs')) {
+        return jsonResponse({ check_runs: [] });
+      }
+      if (requestUrl.includes('/issues/42/comments')) {
+        return jsonResponse([
+          {
+            id: 1,
+            body: 'Reviewed commit: `abc1234`\n\nNo issues found.',
+            created_at: '2026-08-17T12:00:00Z',
+            user: { login: 'chatgpt-codex-connector[bot]' },
+          },
+          {
+            id: 2,
+            body: 'Reviewed commit: `abc1234`\n\nNo issues found.',
+            created_at: '2026-08-17T12:01:00Z',
+            // Author matching is exact: the un-suffixed login is registrable by
+            // a human, so a forged clean summary must not reach the adapter.
+            user: { login: 'chatgpt-codex-connector' },
+          },
+        ]);
+      }
+      throw new Error(`unexpected fetch: ${requestUrl}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const payload = await createGitHubCodexGitHubReviewLoader({ product, githubToken: 't' })(ctx);
+
+    expect(payload?.targetRevision).toBe('abc1234');
+    expect(payload?.rootComments?.map((comment) => comment.id)).toEqual([1]);
+    expect(payload?.rootCommentsUnavailable).toBeUndefined();
+  });
+
+  it('reports a failed root-comment read as unavailable rather than as no comments', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = typeof url === 'string' ? url : url.toString();
+      if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.includes('/issues/42/comments')) return new Response('nope', { status: 502 });
+      if (requestUrl.includes('/pulls/42/reviews')) return jsonResponse([]);
+      if (requestUrl.includes('/commits/abc1234/check-runs')) {
+        return jsonResponse({ check_runs: [] });
+      }
+      throw new Error(`unexpected fetch: ${requestUrl}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const payload = await createGitHubCodexGitHubReviewLoader({ product, githubToken: 't' })(ctx);
+
+    expect(payload?.rootCommentsUnavailable).toBe(true);
+    expect(payload?.rootComments).toBeUndefined();
+    warnSpy.mockRestore();
   });
 });

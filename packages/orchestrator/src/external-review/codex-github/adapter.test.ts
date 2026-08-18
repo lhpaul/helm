@@ -9,7 +9,7 @@ import {
   normalizeCodexGitHubReviewPayload,
   resolveCodexGitHubReviewConfig,
 } from './adapter.js';
-import type { CodexGitHubReviewPayload } from './types.js';
+import type { CodexGitHubReviewPayload, CodexGitHubRootCommentPayload } from './types.js';
 
 const baseProduct = {
   helm_version: '0' as const,
@@ -211,5 +211,331 @@ describe('CodexGitHubExternalReviewAdapter', () => {
         config,
       ),
     ).toEqual({ status: 'skipped', reason: 'unavailable', providerReason: 'review_dismissed' });
+  });
+});
+
+/**
+ * helm#96: Codex's trusted clean terminal signal. Codex does not always publish
+ * a submitted review, so a run that finds nothing has to be readable from the
+ * SHA-pinned root comment it does publish — without ever letting an
+ * acknowledgement, a stale summary, or a quota notice read as clean.
+ */
+describe('codex-github root-comment evidence', () => {
+  const config = resolveCodexGitHubReviewConfig(baseProduct);
+  const HEAD = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+  function rootComment(body: string, createdAt: string, id = 1): CodexGitHubRootCommentPayload {
+    return {
+      id,
+      node_id: `IC_${id}`,
+      body,
+      created_at: createdAt,
+      user: { login: 'chatgpt-codex-connector[bot]' },
+    };
+  }
+
+  it('reads a SHA-pinned clean summary as clean', () => {
+    expect(
+      normalizeCodexGitHubReviewPayload(loadFixture('root-comment-clean.json'), config),
+    ).toEqual({ status: 'clean', blockers: [], advisories: [] });
+  });
+
+  it('accepts an abbreviated SHA in the marker and blocks on the finding', () => {
+    const result = normalizeCodexGitHubReviewPayload(
+      loadFixture('root-comment-blocking.json'),
+      config,
+    );
+
+    expect(result.status).toBe('needs_fixes');
+    if (result.status === 'needs_fixes') {
+      expect(result.blockers).toHaveLength(1);
+      expect(result.blockers[0]?.severity).toBe('high');
+      expect(result.blockers[0]?.blocking).toBe(true);
+    }
+  });
+
+  it('keeps deferring on a stale summary and an acknowledgement-only comment', () => {
+    expect(
+      normalizeCodexGitHubReviewPayload(loadFixture('root-comment-stale.json'), config),
+    ).toEqual({
+      status: 'deferred',
+      reason: 'analysis_pending',
+      providerReason: 'codex-github review pending',
+    });
+  });
+
+  it('reports a missing Codex environment as unavailable, not clean', () => {
+    expect(
+      normalizeCodexGitHubReviewPayload(
+        loadFixture('root-comment-environment-missing.json'),
+        config,
+      ),
+    ).toEqual({
+      status: 'skipped',
+      reason: 'unavailable',
+      providerReason: 'environment_missing',
+    });
+  });
+
+  it('reports an exhausted usage limit as unavailable, not clean', () => {
+    expect(
+      normalizeCodexGitHubReviewPayload(loadFixture('root-comment-usage-limit.json'), config),
+    ).toEqual({ status: 'skipped', reason: 'unavailable', providerReason: 'usage_limit' });
+  });
+
+  it('treats a SHA-pinned response it cannot parse as unavailable', () => {
+    expect(
+      normalizeCodexGitHubReviewPayload(
+        {
+          targetRevision: HEAD,
+          reviewPending: true,
+          rootComments: [
+            rootComment(
+              `Reviewed commit: \`${HEAD}\`\n\nSee the attached trace.`,
+              '2026-08-17T12:00:00Z',
+            ),
+          ],
+        },
+        config,
+      ),
+    ).toEqual({
+      status: 'skipped',
+      reason: 'unavailable',
+      providerReason: 'unrecognized_terminal_response',
+    });
+  });
+
+  it('lets a strictly newer clean summary supersede an environment error', () => {
+    expect(
+      normalizeCodexGitHubReviewPayload(
+        {
+          targetRevision: HEAD,
+          reviewPending: true,
+          rootComments: [
+            rootComment(
+              'To use Codex here, create an environment for this repo.',
+              '2026-08-17T12:00:00Z',
+              1,
+            ),
+            rootComment(
+              `Reviewed commit: \`${HEAD}\`\n\nNo issues found.`,
+              '2026-08-17T12:05:00Z',
+              2,
+            ),
+          ],
+        },
+        config,
+      ),
+    ).toEqual({ status: 'clean', blockers: [], advisories: [] });
+  });
+
+  it('keeps an environment error when only an acknowledgement follows it', () => {
+    expect(
+      normalizeCodexGitHubReviewPayload(
+        {
+          targetRevision: HEAD,
+          reviewPending: true,
+          rootComments: [
+            rootComment(
+              'To use Codex here, create an environment for this repo.',
+              '2026-08-17T12:00:00Z',
+              1,
+            ),
+            rootComment('Working on it.', '2026-08-17T12:30:00Z', 2),
+          ],
+        },
+        config,
+      ),
+    ).toEqual({
+      status: 'skipped',
+      reason: 'unavailable',
+      providerReason: 'environment_missing',
+    });
+  });
+
+  /**
+   * The quota notice stays on the PR forever. Treating it as a sticky flag meant
+   * every later poll re-asserted it, so a PR that once hit quota could never
+   * read clean from root-comment evidence again — it ground on to
+   * `external_repeated_skip` long after the quota reset.
+   */
+  it('lets a newer clean summary supersede an older usage-limit notice', () => {
+    expect(
+      normalizeCodexGitHubReviewPayload(
+        {
+          targetRevision: HEAD,
+          reviewPending: true,
+          rootComments: [
+            rootComment('You have reached your Codex usage limits.', '2026-08-17T12:00:00Z', 1),
+            rootComment(
+              `Reviewed commit: \`${HEAD}\`\n\nNo issues found.`,
+              '2026-08-17T13:00:00Z',
+              2,
+            ),
+          ],
+        },
+        config,
+      ),
+    ).toEqual({ status: 'clean', blockers: [], advisories: [] });
+  });
+
+  it('keeps the usage limit when it is the newest evidence', () => {
+    expect(
+      normalizeCodexGitHubReviewPayload(
+        {
+          targetRevision: HEAD,
+          reviewPending: true,
+          rootComments: [
+            rootComment(
+              `Reviewed commit: \`${HEAD}\`\n\nNo issues found.`,
+              '2026-08-17T12:00:00Z',
+              1,
+            ),
+            rootComment('You have reached your Codex usage limits.', '2026-08-17T13:00:00Z', 2),
+          ],
+        },
+        config,
+      ),
+    ).toEqual({ status: 'skipped', reason: 'unavailable', providerReason: 'usage_limit' });
+  });
+
+  it('lets an older blocking finding win over a newer usage-limit notice', () => {
+    const result = normalizeCodexGitHubReviewPayload(
+      {
+        targetRevision: HEAD,
+        reviewPending: true,
+        rootComments: [
+          rootComment(
+            `Reviewed commit: \`${HEAD}\`\n\n**[P0]** The migration drops the column before backfilling it.`,
+            '2026-08-17T12:00:00Z',
+            1,
+          ),
+          rootComment('You have reached your Codex usage limits.', '2026-08-17T12:30:00Z', 2),
+        ],
+      },
+      config,
+    );
+
+    expect(result.status).toBe('needs_fixes');
+  });
+
+  it('prefers the non-clean side when a review and a summary share a timestamp', () => {
+    const result = normalizeCodexGitHubReviewPayload(
+      {
+        targetRevision: HEAD,
+        review: {
+          id: 1,
+          state: 'COMMENTED',
+          body: 'Codex Review',
+          commit_id: HEAD,
+          submitted_at: '2026-08-17T12:00:00Z',
+        },
+        rootComments: [
+          rootComment(
+            `Reviewed commit: \`${HEAD}\`\n\nSee the attached trace.`,
+            '2026-08-17T12:00:00Z',
+          ),
+        ],
+      },
+      config,
+    );
+
+    expect(result).toEqual({
+      status: 'skipped',
+      reason: 'unavailable',
+      providerReason: 'unrecognized_terminal_response',
+    });
+  });
+
+  it('does not let a clean review paper over a failed root-comment read', () => {
+    expect(
+      normalizeCodexGitHubReviewPayload(
+        {
+          targetRevision: HEAD,
+          rootCommentsUnavailable: true,
+          review: {
+            id: 1,
+            state: 'COMMENTED',
+            body: 'Codex Review: no issues found.',
+            commit_id: HEAD,
+            submitted_at: '2026-08-17T12:00:00Z',
+          },
+        },
+        config,
+      ),
+    ).toEqual({
+      status: 'skipped',
+      reason: 'unavailable',
+      providerReason: 'root_comments_unavailable',
+    });
+  });
+
+  it('lands a P3-only summary on the advisory list instead of blocking', () => {
+    const result = normalizeCodexGitHubReviewPayload(
+      {
+        targetRevision: HEAD,
+        reviewPending: true,
+        rootComments: [
+          rootComment(
+            `Reviewed commit: \`${HEAD}\`\n\n**[P3] Nit:** stale wording in the table.`,
+            '2026-08-17T12:00:00Z',
+          ),
+        ],
+      },
+      config,
+    );
+
+    expect(result.status).toBe('clean');
+    if (result.status === 'clean') {
+      expect(result.advisories).toHaveLength(1);
+      expect(result.advisories[0]?.severity).toBe('low');
+    }
+  });
+
+  it('keeps the review advisories when a clean summary outranks a clean review', () => {
+    const result = normalizeCodexGitHubReviewPayload(
+      {
+        targetRevision: HEAD,
+        review: {
+          id: 1,
+          state: 'COMMENTED',
+          body: 'Codex Review',
+          commit_id: HEAD,
+          submitted_at: '2026-08-17T12:00:00Z',
+        },
+        reviewComments: [
+          { id: 5, path: 'docs/product-config.md', line: 12, body: '**[P3] Nit:** stale wording.' },
+        ],
+        rootComments: [
+          rootComment(`Reviewed commit: \`${HEAD}\`\n\nNo issues found.`, '2026-08-17T12:05:00Z'),
+        ],
+      },
+      config,
+    );
+
+    expect(result.status).toBe('clean');
+    if (result.status === 'clean') {
+      expect(result.advisories).toHaveLength(1);
+      expect(result.advisories[0]?.severity).toBe('low');
+    }
+  });
+
+  it('still surfaces blockers when the root-comment read failed', () => {
+    const result = normalizeCodexGitHubReviewPayload(
+      {
+        targetRevision: HEAD,
+        rootCommentsUnavailable: true,
+        review: {
+          id: 1,
+          state: 'CHANGES_REQUESTED',
+          body: '[P0] boom',
+          commit_id: HEAD,
+          submitted_at: '2026-08-17T12:00:00Z',
+        },
+      },
+      config,
+    );
+
+    expect(result.status).toBe('needs_fixes');
   });
 });

@@ -127,15 +127,89 @@ enable _Automatic reviews_ in Codex's GitHub settings for the repo, or comment
 Helm defers, and the pending intent expires after `review.external.max_defer_sec`
 (default 30 minutes).
 
-> **Known gap — no terminal signal on a clean run.** Codex publishes no check
-> run and no commit status, and a run that finds nothing may end as a 👍
-> reaction rather than a submitted review. Helm reads neither reactions nor a
-> Codex check run (there is none to read), so a genuinely clean PR can stay
-> deferred until its intent expires — and re-triggering does not help, because
-> the rerun is clean too. Until Codex exposes a terminal signal Helm can trust,
-> `codex-github` is **supported but not recommended as a product's default
-> provider**; use `coderabbit` or `bugbot` as the default and select
-> `codex-github` where an operator is watching the loop.
+#### The clean-terminal contract
+
+Helm returns `clean` for Codex only on evidence that is **all four** of:
+
+1. **Attributable** — authored by a trusted identity (exact match for review and
+   comment authors; only check-run **app** identities relax the `[bot]` suffix).
+2. **Head-pinned** — a submitted review whose `commit_id` matches the revision
+   under review, or a root PR comment whose `Reviewed commit:` marker names it.
+   Abbreviated SHAs match by prefix.
+3. **Terminal** — a verdict, not an acknowledgement. A 👍 reaction, a "starting
+   a review" comment, and a draft (`PENDING`) review are not verdicts.
+4. **Parseable as a pass** — the body reads as an explicit approval.
+
+Findings in a summary comment follow the same severity rules as inline ones: an
+explicit blocker (`must fix`, `changes requested`, a merge refusal) or a P0/P1
+label blocks, while a P2/P3-only summary lands on the advisory list.
+
+Root PR comments are the second evidence channel, and the one that gives a clean
+Codex run a terminal signal at all: Codex publishes no check run or status and
+does not always submit a review, but it does post a summary naming the commit it
+reviewed.
+
+When evidence disagrees: **blocking always wins**, whatever its age; then a
+**failed root-comment read** (missing evidence, not absent evidence — a clean
+review cannot silently override it, and it is the one unavailability with no
+timestamp to rank); otherwise the **newest** wins, and on an exact timestamp tie
+the less-clean side does.
+
+Both unavailability notices — an exhausted usage limit and a missing Codex
+environment — are dated, so neither outlives the condition it reported. An
+operator who creates the Codex environment mid-loop has the resulting fresh
+review supersede the recorded error, and a clean summary published after the
+quota resets supersedes the quota notice; a later bare acknowledgement never
+supersedes either.
+
+#### What no longer reads as clean
+
+Two distinct outcomes — neither of them `clean`.
+
+**Absent — never enters the evidence set:** reaction-only responses. Helm reads
+reactions from no provider, and a reaction carries no reviewed revision to pin
+to.
+
+**Dropped — reaches Helm, but produces no record:** comments from an untrusted
+author, stale reviews and stale summaries, and draft (`PENDING`) reviews. A stale
+blocker is dropped the same way, so it can never override current-head evidence.
+
+Both land in the same place operationally: with nothing terminal on the current
+head the loop stays deferred, and a lane that keeps finding nothing exits through
+the repeated-skip stop rule or expires with `max_defer_sec`.
+
+**Ranked as unavailable, each naming its cause:** a dismissed review
+(`review_dismissed`), a missing Codex cloud environment (`environment_missing` —
+`To use Codex here, create an environment for this repo`), an exhausted usage
+limit (`usage_limit`), a SHA-pinned response Helm cannot parse
+(`unrecognized_terminal_response`), and a failed root-comment read
+(`root_comments_unavailable`). The `external_repeated_skip` escalation names the
+reason, so a quota stop is distinguishable from a misconfiguration.
+
+Unavailability wording is only read outside quoted spans, and a multi-backtick or
+3+-tilde run in the body suppresses the **unavailability** classification
+specifically — the terminal verdicts still resolve normally. A Codex review of
+this very section quotes the phrases the classifier matches on.
+
+The `Reviewed commit:` marker is likewise read from unquoted prose only, and
+fails closed on an unclosed delimiter: only matched pairs can be stripped, so an
+unterminated fence is treated as quoting everything after it. Quoting a marker —
+in a fence, a block quote, a multi-backtick span, or an unterminated opener — and
+following it with approval prose would otherwise forge clean evidence for the
+current head.
+
+#### Resume path
+
+A trusted root comment whose marker names a **full** 40-hex SHA resumes a
+deferred intent from the `issue_comment` webhook, alongside the
+`pull_request_review`/`submitted` path. An abbreviated marker cannot address a
+pending intent (matched by exact revision); those runs are picked up on the next
+poll instead.
+
+> **Not the default yet.** The trusted clean signal above is implemented but has
+> not been dogfooded on a real PR, so the dogfood product still runs
+> `provider: coderabbit`. Promoting `codex-github` to a product's default is a
+> separate, explicitly approved change — see ADR-036's 2026-08-18 addendum.
 
 ## Early Draft Review Loop
 

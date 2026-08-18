@@ -105,6 +105,30 @@ describe('classifyCodexRootComment', () => {
     }
   });
 
+  /**
+   * Only *matched* delimiter pairs are stripped, so an unterminated fence would
+   * otherwise leave its marker eligible — and Markdown renders an unclosed fence
+   * as quoted through end of document anyway.
+   */
+  it('fails closed on an unclosed fence, tilde block, or multi-backtick span', () => {
+    const unclosed = [
+      '```\nReviewed commit: `' + HEAD + '`\n\nNo issues found.',
+      '~~~\nReviewed commit: `' + HEAD + '`\n\nNo issues found.',
+      '``Reviewed commit: `' + HEAD + '`\n\nNo issues found.',
+      'Notes below.\n```\nReviewed commit: `' + HEAD + '`\nLGTM.',
+    ];
+
+    for (const body of unclosed) {
+      expect(reviewedCommitFromBody(body)).toBeUndefined();
+      expect(classify(body)).toEqual({ kind: 'ancillary' });
+    }
+  });
+
+  it('keeps a marker that precedes an unclosed delimiter', () => {
+    const body = 'Reviewed commit: `' + HEAD + '`\n\nNo issues found.\n\n```\ntrailing';
+    expect(classify(body)).toEqual({ kind: 'terminal', reviewedSha: HEAD, verdict: 'clean' });
+  });
+
   it('still reads a real marker beside a quoted one', () => {
     const body =
       '```\nReviewed commit: `bbbbbbb`\n```\n\nReviewed commit: `' + HEAD + '`\n\nNo issues found.';

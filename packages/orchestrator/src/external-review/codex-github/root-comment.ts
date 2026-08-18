@@ -134,6 +134,13 @@ function stripBlockQuotedSpans(body: string): string {
       // A run of two or more backticks delimits a span that can itself contain
       // single-backtick content — a whole marker included.
       .replace(/(`{2,})[\s\S]*?\1/g, ' ')
+      // Fail closed on an *unclosed* delimiter. The passes above only remove
+      // matched pairs, so a comment that opens a fence and never closes it would
+      // leave the marker inside it eligible — and Markdown renders an unclosed
+      // fence as quoted through end of document anyway. Everything from the
+      // first surviving run to the end is therefore treated as quoted. Single
+      // backticks are untouched: that is where the SHA legitimately lives.
+      .replace(/(?:```|~~~|`{2,})[\s\S]*$/, ' ')
   );
 }
 

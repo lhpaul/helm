@@ -219,11 +219,17 @@ const codexReviewedCommitPattern = (): RegExp =>
  * the SHA itself lives. Mirrors `stripBlockQuotedSpans` in the classifier.
  */
 function stripBlockQuotedSpans(body: string): string {
-  return body
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/~~~[\s\S]*?~~~/g, ' ')
-    .replace(/^\s*>.*$/gm, ' ')
-    .replace(/(`{2,})[\s\S]*?\1/g, ' ');
+  return (
+    body
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/~~~[\s\S]*?~~~/g, ' ')
+      .replace(/^\s*>.*$/gm, ' ')
+      .replace(/(`{2,})[\s\S]*?\1/g, ' ')
+      // Fail closed on an unclosed delimiter, matching the classifier: only
+      // matched pairs are removed above, so an unterminated fence would
+      // otherwise leave the marker inside it eligible to emit readiness.
+      .replace(/(?:```|~~~|`{2,})[\s\S]*$/, ' ')
+  );
 }
 
 function codexReviewedCommitFromComment(

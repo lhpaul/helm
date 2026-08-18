@@ -186,12 +186,17 @@ limit (`usage_limit`), a SHA-pinned response Helm cannot parse
 (`root_comments_unavailable`). The `external_repeated_skip` escalation names the
 reason, so a quota stop is distinguishable from a misconfiguration.
 
-Unavailability wording is only read outside quoted spans, and a body carrying a
-multi-backtick or 3+-tilde run is not classified at all — a Codex review of this
-very section quotes the phrases the classifier matches on. The
-`Reviewed commit:` marker is likewise read from unquoted prose only: quoting one
-and following it with approval prose would otherwise forge clean evidence for
-the current head.
+Unavailability wording is only read outside quoted spans, and a multi-backtick or
+3+-tilde run in the body suppresses the **unavailability** classification
+specifically — the terminal verdicts still resolve normally. A Codex review of
+this very section quotes the phrases the classifier matches on.
+
+The `Reviewed commit:` marker is likewise read from unquoted prose only, and
+fails closed on an unclosed delimiter: only matched pairs can be stripped, so an
+unterminated fence is treated as quoting everything after it. Quoting a marker —
+in a fence, a block quote, a multi-backtick span, or an unterminated opener — and
+following it with approval prose would otherwise forge clean evidence for the
+current head.
 
 #### Resume path
 

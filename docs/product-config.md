@@ -166,12 +166,17 @@ supersedes either.
 
 Two distinct outcomes — neither of them `clean`.
 
-**Dropped, so they produce no verdict at all:** reaction-only responses, comments
-from an untrusted author, stale reviews and stale summaries, and draft
-(`PENDING`) reviews. With nothing terminal on the current head the loop stays
-deferred, and a lane that keeps finding nothing exits through the repeated-skip
-stop rule or expires with `max_defer_sec`. A stale blocker is dropped the same
-way, so it can never override current-head evidence.
+**Absent — never enters the evidence set:** reaction-only responses. Helm reads
+reactions from no provider, and a reaction carries no reviewed revision to pin
+to.
+
+**Dropped — reaches Helm, but produces no record:** comments from an untrusted
+author, stale reviews and stale summaries, and draft (`PENDING`) reviews. A stale
+blocker is dropped the same way, so it can never override current-head evidence.
+
+Both land in the same place operationally: with nothing terminal on the current
+head the loop stays deferred, and a lane that keeps finding nothing exits through
+the repeated-skip stop rule or expires with `max_defer_sec`.
 
 **Ranked as unavailable, each naming its cause:** a dismissed review
 (`review_dismissed`), a missing Codex cloud environment (`environment_missing` —

@@ -198,6 +198,40 @@ const DEFAULT_CODERABBIT_TRUSTED_IDENTITIES = new Set([
 // matching is exact, so trusting it would accept a human-forged readiness signal.
 const DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES = new Set(['chatgpt-codex-connector[bot]']);
 
+/**
+ * The `Reviewed commit:` marker Codex puts on the root PR comment that closes a
+ * run, with the SHA rendered inside backticks. Kept in sync with the classifier in
+ * `@helm/orchestrator`'s `external-review/codex-github/root-comment.ts`;
+ * duplicated rather than imported because the adapters package sits below the
+ * orchestrator in the dependency graph.
+ *
+ * Only a **full** 40-hex SHA is accepted here. A pending external-review intent
+ * is addressed by exact revision, so an abbreviated marker has nothing to match
+ * against — those runs are picked up by the adapter on the next poll instead of
+ * resuming from this webhook.
+ */
+const CODEX_REVIEWED_COMMIT_RE = /reviewed\s+commit\s*:?[^`\n]*`\s*([0-9a-f]{40})\s*`/gi;
+
+function codexReviewedCommitFromComment(
+  body: string,
+  authorLogin: string | undefined,
+  trustConfig?: ExternalReviewWebhookTrustConfig,
+): string | null {
+  const trustedLogins = normalizedSet(
+    trustConfig?.codexGithub?.trustedIdentities,
+    DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES,
+  );
+  const login = authorLogin?.trim().toLowerCase() ?? '';
+  if (!login || !trustedLogins.has(login)) return null;
+
+  CODEX_REVIEWED_COMMIT_RE.lastIndex = 0;
+  let sha: string | null = null;
+  for (const match of body.matchAll(CODEX_REVIEWED_COMMIT_RE)) {
+    if (match[1]) sha = match[1].toLowerCase();
+  }
+  return sha;
+}
+
 function normalizedSet(values: string[] | undefined, fallback: Set<string>): Set<string> {
   const normalized = (values ?? [])
     .map((value) => value.trim().toLowerCase())
@@ -278,6 +312,31 @@ export function parseGitHubWebhook(
       if (parsed.data.issue.pull_request !== undefined) {
         const repo = parsed.data.repository;
         if (!repo) return { type: 'unknown', raw: rawEvent };
+
+        // Codex closes a run with a root PR comment naming the commit it
+        // reviewed — frequently the only terminal evidence a *clean* run
+        // produces, since it may publish no review at all. Resume the deferred
+        // intent from it on the same trust boundary the review webhook uses:
+        // allowlisted author, pinned to an exact commit. A Codex comment never
+        // parses as a structured human decision, so nothing is lost by taking
+        // this branch first.
+        const codexRevision = codexReviewedCommitFromComment(
+          parsed.data.comment.body,
+          parsed.data.comment.user?.login,
+          trustConfig,
+        );
+        if (codexRevision) {
+          return {
+            type: 'external_review_ready',
+            provider: 'codex-github',
+            owner: repo.owner.login,
+            repo: repo.name,
+            prNumber: parsed.data.issue.number,
+            targetRevision: codexRevision,
+            timestamp,
+          };
+        }
+
         return {
           type: 'pull_request_comment_created',
           owner: repo.owner.login,

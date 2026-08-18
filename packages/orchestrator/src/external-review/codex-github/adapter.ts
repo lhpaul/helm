@@ -12,9 +12,12 @@ import type {
   CodexGitHubReviewPayload,
   CodexGitHubReviewSummaryPayload,
   CodexGitHubReviewThreadPayload,
+  CodexGitHubRootCommentPayload,
   CodexGitHubSeverity,
+  CodexGitHubUnavailableReason,
   LoadCodexGitHubReview,
 } from './types.js';
+import { classifyCodexRootComment } from './root-comment.js';
 
 export type CodexGitHubAdapterDeps = {
   loadCodexGitHubReview?: LoadCodexGitHubReview;
@@ -226,39 +229,61 @@ function isCheckRunInFlight(status: string | undefined): boolean {
   );
 }
 
-export function normalizeCodexGitHubReviewPayload(
+/**
+ * One piece of head-pinned evidence, ready to be ranked against the others.
+ *
+ * `rank` encodes the tie-break helm#96 requires: when two pieces of evidence
+ * carry the same timestamp, anything that is not a clean approval wins, so an
+ * actionable finding can never be hidden behind a same-second clean summary.
+ */
+type EvidenceRecord = {
+  at: number;
+  rank: 0 | 1 | 2;
+  result: ExternalReviewResult;
+};
+
+const RANK_CLEAN = 0;
+const RANK_UNAVAILABLE = 1;
+const RANK_BLOCKING = 2;
+
+function timestamp(value: string | null | undefined): number {
+  const parsed = Date.parse(value ?? '');
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function unavailable(reason: CodexGitHubUnavailableReason): ExternalReviewResult {
+  return { status: 'skipped', reason: 'unavailable', providerReason: reason };
+}
+
+/** Advisories from every clean record, de-duplicated by finding id. */
+function mergeAdvisories(records: EvidenceRecord[]): NormalizedFinding[] {
+  const merged: NormalizedFinding[] = [];
+  const seen = new Set<string>();
+  for (const record of records) {
+    if (record.result.status !== 'clean') continue;
+    for (const advisory of record.result.advisories) {
+      if (seen.has(advisory.id)) continue;
+      seen.add(advisory.id);
+      merged.push(advisory);
+    }
+  }
+  return merged;
+}
+
+/** Newest wins; on an exact tie the higher rank (less clean) wins. */
+function pickWinner(records: EvidenceRecord[]): EvidenceRecord | undefined {
+  return records.reduce<EvidenceRecord | undefined>((best, candidate) => {
+    if (!best) return candidate;
+    if (candidate.at > best.at) return candidate;
+    if (candidate.at === best.at && candidate.rank > best.rank) return candidate;
+    return best;
+  }, undefined);
+}
+
+function collectReviewFindings(
   payload: CodexGitHubReviewPayload,
   config: CodexGitHubReviewConfig,
-): ExternalReviewResult {
-  if (payload.unavailable) return { status: 'skipped', reason: 'unavailable' };
-  if (payload.error) return { status: 'escalate', reason: `codex-github ${payload.error}` };
-
-  const deferOrEscalate = (providerReason: string): ExternalReviewResult =>
-    config.deferWhenPending
-      ? { status: 'deferred', reason: 'analysis_pending', providerReason }
-      : { status: 'escalate', reason: providerReason };
-
-  const checkRun = payload.checkRun;
-  if (isCheckRunInFlight(checkRun?.status)) {
-    return deferOrEscalate(`codex-github check_run ${checkRun?.status}`);
-  }
-
-  // No submitted review for this revision yet. Unlike a status-driven provider
-  // there is no pending signal to read, so waiting is the only way the verdict
-  // is ever picked up — the deferred intent is resumed by the review webhook or
-  // expires with `max_defer_sec`.
-  const review = payload.review;
-  if (payload.reviewPending || !review) {
-    return deferOrEscalate('codex-github review pending');
-  }
-
-  const reviewState = text(review.state)?.toUpperCase();
-  if (reviewState === 'DISMISSED') {
-    // Withdrawn evidence, never a pass — and named, so the escalation that a
-    // repeated skip eventually produces says which unavailability it hit.
-    return { status: 'skipped', reason: 'unavailable', providerReason: 'review_dismissed' };
-  }
-
+): { blockers: NormalizedFinding[]; advisories: NormalizedFinding[] } {
   const findings = { blockers: [] as NormalizedFinding[], advisories: [] as NormalizedFinding[] };
   const seen = new Set<string>();
 
@@ -280,21 +305,227 @@ export function normalizeCodexGitHubReviewPayload(
     const finding = findingFromComment(comment, config);
     if (finding) appendFinding(finding, findings, seen);
   }
+  return findings;
+}
 
+/** The verdict carried by the submitted review for the target revision. */
+function reviewEvidence(
+  payload: CodexGitHubReviewPayload,
+  config: CodexGitHubReviewConfig,
+): EvidenceRecord | undefined {
+  // `reviewPending` is the loader saying it looked and found nothing submitted
+  // for this revision; never read a review object alongside it.
+  if (payload.reviewPending) return undefined;
+  const review = payload.review;
+  if (!review) return undefined;
+  const at = timestamp(review.submitted_at);
+  const reviewState = text(review.state)?.toUpperCase();
+
+  // A dismissed review is withdrawn evidence, never a pass — but it is dated,
+  // so a newer root-comment summary can still supersede it.
+  if (reviewState === 'DISMISSED') {
+    return { at, rank: RANK_UNAVAILABLE, result: unavailable('review_dismissed') };
+  }
+
+  const findings = collectReviewFindings(payload, config);
   if (findings.blockers.length > 0) {
-    return { status: 'needs_fixes', blockers: findings.blockers, advisories: findings.advisories };
+    return {
+      at,
+      rank: RANK_BLOCKING,
+      result: {
+        status: 'needs_fixes',
+        blockers: findings.blockers,
+        advisories: findings.advisories,
+      },
+    };
   }
 
   if (reviewState === 'CHANGES_REQUESTED') {
     const finding = findingFromChangesRequested(review, config);
     return {
-      status: 'needs_fixes',
-      blockers: [{ ...finding, blocking: true }],
-      advisories: findings.advisories,
+      at,
+      rank: RANK_BLOCKING,
+      result: {
+        status: 'needs_fixes',
+        blockers: [{ ...finding, blocking: true }],
+        advisories: findings.advisories,
+      },
     };
   }
 
-  return { status: 'clean', blockers: [], advisories: findings.advisories };
+  return {
+    at,
+    rank: RANK_CLEAN,
+    result: { status: 'clean', blockers: [], advisories: findings.advisories },
+  };
+}
+
+/**
+ * A SHA-pinned root comment blocks on its own: Codex writes the finding into the
+ * summary body when it has no inline thread to hang it on.
+ */
+function findingFromRootComment(
+  comment: CodexGitHubRootCommentPayload,
+  config: CodexGitHubReviewConfig,
+): NormalizedFinding {
+  const body = text(comment.body ?? undefined);
+  return makeFinding(
+    {
+      nativeId: `root_comment:${comment.node_id ?? comment.id ?? 'codex'}`,
+      summary: body
+        ? summarize(body, 'Codex reported a blocking finding')
+        : 'Codex reported a blocking finding',
+      detail: body,
+      severity: body ? severityFromBody(body) : UNLABELED_SEVERITY,
+    },
+    config,
+  );
+}
+
+type RootCommentEvidence = {
+  records: EvidenceRecord[];
+  usageLimit: boolean;
+};
+
+/**
+ * Reads the trusted Codex root PR comments into ranked evidence.
+ *
+ * This is the channel that gives a *clean* Codex run a terminal signal at all
+ * (helm#96): a submitted review is the strongest evidence but Codex does not
+ * always publish one, while it does reliably post a summary naming the commit
+ * it reviewed.
+ */
+function rootCommentEvidence(
+  payload: CodexGitHubReviewPayload,
+  config: CodexGitHubReviewConfig,
+): RootCommentEvidence {
+  const records: EvidenceRecord[] = [];
+  let usageLimit = false;
+
+  for (const comment of payload.rootComments ?? []) {
+    const classification = classifyCodexRootComment({
+      body: comment.body,
+      targetRevision: payload.targetRevision,
+    });
+    const at = timestamp(comment.created_at);
+
+    if (classification.kind === 'usage_limit') {
+      usageLimit = true;
+      continue;
+    }
+    if (classification.kind === 'environment_missing') {
+      records.push({ at, rank: RANK_UNAVAILABLE, result: unavailable('environment_missing') });
+      continue;
+    }
+    if (classification.kind !== 'terminal') continue;
+
+    if (classification.verdict === 'blocking' || classification.verdict === 'advisory') {
+      const finding = findingFromRootComment(comment, config);
+      // An explicit blocker blocks regardless of the parsed label; a P2/P3-only
+      // summary defers to the configured `blocking_severities`, exactly as the
+      // same finding would if Codex had posted it as an inline comment.
+      const blocks = classification.verdict === 'blocking' || finding.blocking;
+      records.push(
+        blocks
+          ? {
+              at,
+              rank: RANK_BLOCKING,
+              result: {
+                status: 'needs_fixes',
+                blockers: [{ ...finding, blocking: true }],
+                advisories: [],
+              },
+            }
+          : {
+              at,
+              rank: RANK_CLEAN,
+              result: { status: 'clean', blockers: [], advisories: [finding] },
+            },
+      );
+      continue;
+    }
+    if (classification.verdict === 'clean') {
+      records.push({
+        at,
+        rank: RANK_CLEAN,
+        result: { status: 'clean', blockers: [], advisories: [] },
+      });
+      continue;
+    }
+    // Pinned to this head but unparseable: ambiguous, so unavailable — never clean.
+    records.push({
+      at,
+      rank: RANK_UNAVAILABLE,
+      result: unavailable('unrecognized_terminal_response'),
+    });
+  }
+
+  return { records, usageLimit };
+}
+
+/**
+ * Resolves Codex's evidence for the target revision into one verdict (ADR-036,
+ * helm#96).
+ *
+ * Precedence, in order:
+ *  1. **Blocking evidence always wins**, whatever its age and whatever else is
+ *     present — an actionable finding must never hide behind an "unavailable".
+ *  2. A **usage-limit** notice stops the invocation: once quota is exhausted a
+ *     useful review is not going to arrive moments later.
+ *  3. A **failed root-comment fetch** is missing evidence, not absent evidence,
+ *     so a clean submitted review cannot silently override it.
+ *  4. Otherwise the **newest** terminal evidence wins; on an exact timestamp
+ *     tie the less-clean one does.
+ */
+export function normalizeCodexGitHubReviewPayload(
+  payload: CodexGitHubReviewPayload,
+  config: CodexGitHubReviewConfig,
+): ExternalReviewResult {
+  if (payload.unavailable) {
+    return payload.unavailableReason
+      ? unavailable(payload.unavailableReason)
+      : { status: 'skipped', reason: 'unavailable' };
+  }
+  if (payload.error) return { status: 'escalate', reason: `codex-github ${payload.error}` };
+
+  const deferOrEscalate = (providerReason: string): ExternalReviewResult =>
+    config.deferWhenPending
+      ? { status: 'deferred', reason: 'analysis_pending', providerReason }
+      : { status: 'escalate', reason: providerReason };
+
+  const roots = rootCommentEvidence(payload, config);
+  const records = [...roots.records];
+  const fromReview = reviewEvidence(payload, config);
+  if (fromReview) records.push(fromReview);
+
+  const blocking = pickWinner(records.filter((record) => record.rank === RANK_BLOCKING));
+  if (blocking) return blocking.result;
+
+  if (roots.usageLimit) return unavailable('usage_limit');
+  if (payload.rootCommentsUnavailable) return unavailable('root_comments_unavailable');
+
+  const winner = pickWinner(records);
+  if (winner?.result.status === 'clean') {
+    // The summary comment carries no inline advisories of its own, so when it
+    // outranks a clean review the review's P2/P3 findings would vanish from the
+    // post-clean disposition summary. Carry every clean record's advisories.
+    return {
+      status: 'clean',
+      blockers: [],
+      advisories: mergeAdvisories(records),
+    };
+  }
+  if (winner) return winner.result;
+
+  // No evidence at all for this revision. Unlike a status-driven provider there
+  // is no pending signal to read, so waiting is the only way the verdict is ever
+  // picked up — the deferred intent is resumed by the review or comment webhook,
+  // or expires with `max_defer_sec`.
+  const checkRun = payload.checkRun;
+  if (isCheckRunInFlight(checkRun?.status)) {
+    return deferOrEscalate(`codex-github check_run ${checkRun?.status}`);
+  }
+  return deferOrEscalate('codex-github review pending');
 }
 
 /** Codex GitHub external review adapter (ADR-036). */

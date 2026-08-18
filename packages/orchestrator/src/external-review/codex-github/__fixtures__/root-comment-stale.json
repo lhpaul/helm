@@ -1,0 +1,20 @@
+{
+  "targetRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "reviewPending": true,
+  "rootComments": [
+    {
+      "id": 800006,
+      "node_id": "IC_kwDOstale",
+      "body": "Reviewed commit: `bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb`\n\nNo issues found.",
+      "created_at": "2026-08-17T12:00:00Z",
+      "user": { "login": "chatgpt-codex-connector[bot]" }
+    },
+    {
+      "id": 800007,
+      "node_id": "IC_kwDOackonly",
+      "body": "👍 Got it — starting a review.",
+      "created_at": "2026-08-17T12:05:00Z",
+      "user": { "login": "chatgpt-codex-connector[bot]" }
+    }
+  ]
+}

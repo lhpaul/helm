@@ -685,6 +685,82 @@ describe('parseGitHubWebhook', () => {
       ).toBe('unknown');
     });
 
+    it('emits external_review_ready from a SHA-pinned Codex root PR comment', () => {
+      const head = 'a'.repeat(40);
+      const result = parseGitHubWebhook(
+        ctx('issue_comment', {
+          action: 'created',
+          comment: {
+            body: `Reviewed commit: \`${head}\`\n\nNo issues found.`,
+            user: { login: 'chatgpt-codex-connector[bot]' },
+          },
+          issue: { number: 42, pull_request: {} },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result).toEqual({
+        type: 'external_review_ready',
+        provider: 'codex-github',
+        owner: 'owner',
+        repo: 'repo',
+        prNumber: 42,
+        targetRevision: head,
+        timestamp: expect.any(String),
+      });
+    });
+
+    it('leaves a Codex comment without a full-SHA marker on the comment path', () => {
+      // A pending intent is addressed by exact revision, so an abbreviated
+      // marker has nothing to resume — the adapter picks it up on the next poll.
+      const base = {
+        action: 'created',
+        issue: { number: 42, pull_request: {} },
+        repository: { name: 'repo', owner: { login: 'owner' } },
+      };
+
+      expect(
+        parseGitHubWebhook(
+          ctx('issue_comment', {
+            ...base,
+            comment: {
+              body: 'Reviewed commit: `abc1234`\n\nNo issues found.',
+              user: { login: 'chatgpt-codex-connector[bot]' },
+            },
+          }),
+        ).type,
+      ).toBe('pull_request_comment_created');
+
+      expect(
+        parseGitHubWebhook(
+          ctx('issue_comment', {
+            ...base,
+            comment: {
+              body: '👍 Starting a review.',
+              user: { login: 'chatgpt-codex-connector[bot]' },
+            },
+          }),
+        ).type,
+      ).toBe('pull_request_comment_created');
+    });
+
+    it('rejects a SHA-pinned marker from an untrusted comment author', () => {
+      const head = 'a'.repeat(40);
+      const result = parseGitHubWebhook(
+        ctx('issue_comment', {
+          action: 'created',
+          comment: {
+            body: `Reviewed commit: \`${head}\`\n\nNo issues found.`,
+            user: { login: 'chatgpt-codex-connector' },
+          },
+          issue: { number: 42, pull_request: {} },
+          repository: { name: 'repo', owner: { login: 'owner' } },
+        }),
+      );
+
+      expect(result.type).toBe('pull_request_comment_created');
+    });
+
     it('rejects CodeRabbit status payloads with unexpected fields', () => {
       const result = parseGitHubWebhook(
         ctx('status', {

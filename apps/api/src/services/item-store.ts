@@ -10,7 +10,12 @@ import { INITIAL_STAGE, validateTransition } from '@helm/workflow';
 import type { WorkflowStage } from '@helm/workflow';
 import { ItemAlreadyExistsError, ItemNotFoundError, StageMismatchError } from './errors.js';
 import { EXTERNAL_ID_REGEX } from './types.js';
-import type { ItemState, ResolvedProductDecision, WorkflowEvent } from './types.js';
+import type {
+  AcceptedFinding,
+  ItemState,
+  ResolvedProductDecision,
+  WorkflowEvent,
+} from './types.js';
 
 /** Lowest of two optional counters — undefined only when both are absent. */
 function minDefined(a: number | undefined, b: number | undefined): number | undefined {
@@ -239,6 +244,58 @@ export class ItemStore {
       const updated: ItemState = {
         ...current,
         resolvedProductDecisions: [...existing, decision],
+        history: [...current.history, auditEvent],
+        updatedAt: now,
+      };
+
+      await writeJsonAtomic(this.itemPath(current.externalId), updated);
+      return { state: structuredClone(updated), inserted: true };
+    });
+  }
+
+  /**
+   * Records a finding a maintainer accepted on this item (ADR-043 §4).
+   *
+   * Mirrors {@link upsertResolvedProductDecision}: same item lock, idempotent by
+   * fingerprint so a webhook redelivery does not double-record, and an audit
+   * event on the item's history. Unlike a product decision it settles no
+   * conflict — it dismisses one finding, so the caller is responsible for the
+   * severity ceiling before it gets here.
+   *
+   * Throws ItemNotFoundError if the item does not exist.
+   */
+  async upsertAcceptedFinding(input: {
+    externalId: string;
+    finding: Omit<AcceptedFinding, 'recordedAt'> & { recordedAt?: string };
+    triggeredBy: string;
+  }): Promise<{ state: ItemState; inserted: boolean }> {
+    return this.withItemLock(input.externalId, async () => {
+      const current = await readJson<ItemState>(this.itemPath(input.externalId));
+      if (current === null) {
+        throw new ItemNotFoundError(input.externalId);
+      }
+
+      const existing = current.acceptedFindings ?? [];
+      if (existing.some((entry) => entry.fingerprint === input.finding.fingerprint)) {
+        return { state: structuredClone(current), inserted: false };
+      }
+
+      const now = new Date().toISOString();
+      const finding: AcceptedFinding = {
+        ...input.finding,
+        recordedAt: input.finding.recordedAt ?? now,
+      };
+      const auditEvent: WorkflowEvent = {
+        fromStage: current.currentStage,
+        toStage: current.currentStage,
+        triggeredBy: input.triggeredBy,
+        at: now,
+        note: `accepted_finding:${finding.fingerprint}: ${finding.severity} accepted by ${finding.source.authorLogin}`,
+        idempotencyKey: `accepted-finding:${finding.fingerprint}`,
+      };
+      const updated: ItemState = {
+        ...current,
+        acceptedFindings: [...existing, finding],
         history: [...current.history, auditEvent],
         updatedAt: now,
       };

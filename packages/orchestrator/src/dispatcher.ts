@@ -25,6 +25,7 @@ import type {
   ReviewLoopLedger,
 } from './review-loop/cumulative-ledger.js';
 import type { StoredResolvedProductDecision } from './review-loop/adjudication.js';
+import type { StoredAcceptedFinding } from './review-loop/accept-finding.js';
 import { provisionCodeWorkspace, artifactsDirFor } from './specialists/code-workspace.js';
 import {
   fetchProductContext,
@@ -140,6 +141,10 @@ export type DispatchOptions = {
    * static snapshot when a review job may span multiple cycles.
    */
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
+  /** Findings a maintainer dismissed on this item (ADR-043 §4). */
+  acceptedFindings?: StoredAcceptedFinding[];
+  /** Live loader for accepted findings, so a mid-run accept lands next cycle. */
+  loadAcceptedFindings?: () => Promise<StoredAcceptedFinding[]>;
   targetRevision?: string;
   onExternalReviewDeferred?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
   externalReviewDeps?: RunExternalReviewDeps;
@@ -647,6 +652,8 @@ export async function dispatchStageHandler(
       fetchFn: options.fetchFn,
       resolvedProductDecisions: options.resolvedProductDecisions,
       loadResolvedProductDecisions: options.loadResolvedProductDecisions,
+      acceptedFindings: options.acceptedFindings,
+      loadAcceptedFindings: options.loadAcceptedFindings,
       targetRevision: options.targetRevision,
       onExternalReviewDeferred: options.onExternalReviewDeferred,
       externalReviewDeps: options.externalReviewDeps,
@@ -732,6 +739,8 @@ export async function dispatchStageHandler(
       fetchFn: options.fetchFn,
       resolvedProductDecisions: options.resolvedProductDecisions,
       loadResolvedProductDecisions: options.loadResolvedProductDecisions,
+      acceptedFindings: options.acceptedFindings,
+      loadAcceptedFindings: options.loadAcceptedFindings,
       targetRevision: options.targetRevision,
       onExternalReviewDeferred: options.onExternalReviewDeferred,
       externalReviewDeps: options.externalReviewDeps,

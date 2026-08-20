@@ -298,6 +298,86 @@ describe('forceTransition', () => {
   });
 });
 
+describe('upsertAcceptedFinding', () => {
+  const finding = {
+    fingerprint: 'test-fidelity',
+    findingTitle: 'Unit smoke does not exercise Expo Router navigation',
+    severity: 'MEDIUM',
+    rationale: 'AC #4 closed on the Vitest smoke; Maestro is separate work.',
+    recordedAt: '2026-08-20T12:00:00.000Z',
+    source: {
+      provider: 'github' as const,
+      owner: 'test-org',
+      repo: 'test-repo',
+      prNumber: 16,
+      authorLogin: 'maintainer',
+    },
+  };
+
+  it('persists an accepted finding with audit history', async () => {
+    await store.create(BASE_INPUT);
+
+    const { state, inserted } = await store.upsertAcceptedFinding({
+      externalId: 'HLM-1',
+      finding,
+      triggeredBy: 'webhook:pr-accept-finding-comment',
+    });
+
+    expect(inserted).toBe(true);
+    expect(state.acceptedFindings).toEqual([finding]);
+    expect(state.history.at(-1)).toMatchObject({
+      fromStage: 'discovery',
+      toStage: 'discovery',
+      triggeredBy: 'webhook:pr-accept-finding-comment',
+      idempotencyKey: `accepted-finding:${finding.fingerprint}`,
+    });
+    expect(state.history.at(-1)?.note).toContain('accepted_finding');
+    expect(state.history.at(-1)?.note).toContain('maintainer');
+  });
+
+  it('is idempotent on webhook redelivery', async () => {
+    await store.create(BASE_INPUT);
+    await store.upsertAcceptedFinding({
+      externalId: 'HLM-1',
+      finding,
+      triggeredBy: 'webhook:pr-accept-finding-comment',
+    });
+
+    const replay = await store.upsertAcceptedFinding({
+      externalId: 'HLM-1',
+      finding: { ...finding, rationale: 'reworded' },
+      triggeredBy: 'webhook:pr-accept-finding-comment',
+    });
+
+    expect(replay.inserted).toBe(false);
+    expect(replay.state.acceptedFindings).toHaveLength(1);
+    expect(
+      replay.state.history.filter((event) => event.note?.includes(finding.fingerprint)),
+    ).toHaveLength(1);
+  });
+
+  it('leaves the settled-decision ledger alone', async () => {
+    await store.create(BASE_INPUT);
+    const { state } = await store.upsertAcceptedFinding({
+      externalId: 'HLM-1',
+      finding,
+      triggeredBy: 'webhook:pr-accept-finding-comment',
+    });
+
+    expect(state.resolvedProductDecisions).toBeUndefined();
+  });
+
+  it('throws ItemNotFoundError for an unknown item', async () => {
+    await expect(
+      store.upsertAcceptedFinding({
+        externalId: 'HLM-404',
+        finding,
+        triggeredBy: 'webhook:pr-accept-finding-comment',
+      }),
+    ).rejects.toThrow(ItemNotFoundError);
+  });
+});
+
 describe('upsertResolvedProductDecision', () => {
   const decision = {
     fingerprint: 'kind=product_decision|title=pick direction|paths=src/a.ts|markers=api',

@@ -51,8 +51,9 @@ export function buildAdvisorySummaryRows(
   advisories: NormalizedFinding[],
   catalog: FalsePositiveEntry[],
   stage: WorkflowStage,
+  acceptedFindings: readonly { fingerprint: string; rationale?: string }[] = [],
 ): AdvisoryWithDisposition[] {
-  return resolveAdvisoryDispositions(advisories, catalog, stage);
+  return resolveAdvisoryDispositions(advisories, catalog, stage, acceptedFindings);
 }
 
 export async function upsertReviewLoopSummaryComment(input: {
@@ -63,11 +64,17 @@ export async function upsertReviewLoopSummaryComment(input: {
   advisories: NormalizedFinding[];
   catalog: FalsePositiveEntry[];
   stage: WorkflowStage;
+  acceptedFindings?: readonly { fingerprint: string; rationale?: string }[];
   runGh?: RunGh;
 }): Promise<void> {
   if (input.advisories.length === 0) return;
 
-  const rows = buildAdvisorySummaryRows(input.advisories, input.catalog, input.stage);
+  const rows = buildAdvisorySummaryRows(
+    input.advisories,
+    input.catalog,
+    input.stage,
+    input.acceptedFindings ?? [],
+  );
   const body = formatReviewLoopSummaryComment({
     cyclesCompleted: input.cyclesCompleted,
     externalProvider: input.externalProvider,

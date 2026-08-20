@@ -42,6 +42,11 @@ import {
   type FalsePositiveEntry,
 } from './false-positives.js';
 import { catalogEntriesForStage } from './catalog-prompt.js';
+import {
+  acceptedFindingMatchesExternal,
+  acceptedFindingMatchesTitle,
+  type StoredAcceptedFinding,
+} from './accept-finding.js';
 import { upsertReviewLoopSummaryComment } from './summary.js';
 import {
   countBlockingFindings,
@@ -57,10 +62,13 @@ import {
   type ReviewLoopLedgerUpdate,
 } from './cumulative-ledger.js';
 import {
-  collectGateFindingFingerprints,
+  collectGateFindings,
   createStickyLane,
   observeStickyLane,
+  recordStickyFindings,
   recordStickyImprovement,
+  unresolvedStickyFindings,
+  type StickyFindingRecord,
 } from './finding-fingerprint.js';
 import { isEnoentError } from '../lib/fs-errors.js';
 import { type StoredResolvedProductDecision } from './adjudication.js';
@@ -113,6 +121,13 @@ export type RunCodeReviewLoopParams = {
    * so a human choice recorded while the job is still running is visible.
    */
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
+  /** Findings a maintainer dismissed on this item (ADR-043 §4). */
+  acceptedFindings?: StoredAcceptedFinding[];
+  /**
+   * Optional per-cycle loader for accepted findings, so an accept posted while
+   * this job is still running takes effect on the next pass.
+   */
+  loadAcceptedFindings?: () => Promise<StoredAcceptedFinding[]>;
   targetRevision?: string;
   onExternalReviewDeferred?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
   mode?: 'code' | 'early-artifact';
@@ -201,6 +216,7 @@ async function postReviewLoopSummaryBestEffort(
     stage: WorkflowStage;
     catalog: FalsePositiveEntry[];
     externalProvider?: string;
+    acceptedFindings?: readonly StoredAcceptedFinding[];
   },
 ): Promise<void> {
   if (input.advisories.length === 0) return;
@@ -214,6 +230,7 @@ async function postReviewLoopSummaryBestEffort(
       advisories: input.advisories,
       catalog: input.catalog,
       stage: input.stage,
+      acceptedFindings: input.acceptedFindings,
       runGh: params.runGh,
     });
   } catch {
@@ -222,6 +239,31 @@ async function postReviewLoopSummaryBestEffort(
 }
 
 /** The lane this run belongs to — also the false-positive catalog stage key. */
+/**
+ * Latest accepted findings for this item (ADR-043 §4).
+ *
+ * Fails *open* to the value already in hand, unlike settled decisions: an accept
+ * only ever removes work, so a transient read error must not resurrect a finding
+ * the operator already dismissed mid-run. On the very first read there is
+ * nothing in hand, so the enqueue-time snapshot is used.
+ */
+async function resolveAcceptedFindings(
+  params: RunCodeReviewLoopParams,
+  current?: StoredAcceptedFinding[],
+): Promise<StoredAcceptedFinding[]> {
+  const fallback = current ?? [...(params.acceptedFindings ?? [])];
+  if (!params.loadAcceptedFindings) return fallback;
+  try {
+    return [...(await params.loadAcceptedFindings())];
+  } catch (err) {
+    console.error(
+      '[code-review-loop] Failed to reload accepted findings:',
+      err instanceof Error ? err.message : String(err),
+    );
+    return fallback;
+  }
+}
+
 function stageForLoopParams(params: RunCodeReviewLoopParams): ReviewLoopLane {
   if (params.mode !== 'early-artifact') return 'code-review';
   return params.kind === 'spec' ? 'spec-draft' : 'plan-draft';
@@ -269,6 +311,7 @@ async function suppressFalsePositiveExternalFindings(
   params: RunCodeReviewLoopParams,
   findings: NormalizedFinding[],
   catalog: FalsePositiveEntry[],
+  acceptedFindings: readonly StoredAcceptedFinding[] = [],
 ): Promise<{ blockers: NormalizedFinding[]; suppressed: NormalizedFinding[] }> {
   if (findings.length === 0) return { blockers: [], suppressed: [] };
 
@@ -277,7 +320,10 @@ async function suppressFalsePositiveExternalFindings(
   const suppressed: NormalizedFinding[] = [];
 
   for (const finding of findings) {
-    if (findFalsePositiveMatch(finding, catalog, stage)) {
+    const accepted =
+      isSuppressibleOnCodePr(finding.severity) &&
+      acceptedFindingMatchesExternal(acceptedFindings, finding);
+    if (accepted || findFalsePositiveMatch(finding, catalog, stage)) {
       suppressed.push({ ...finding, blocking: false });
     } else {
       blockers.push(finding);
@@ -287,19 +333,77 @@ async function suppressFalsePositiveExternalFindings(
   return { blockers, suppressed };
 }
 
+/**
+ * Severities a catalogue match may demote on a code PR (ADR-043 §1).
+ *
+ * ADR-041 §4 declined catalogued gate suppression on code PRs entirely, because
+ * catalogue matching is heuristic token overlap and silently clearing a real
+ * security HIGH is worse than one extra deferral cycle. That reasoning holds at
+ * CRITICAL/HIGH and only there — the LEA-246 churn was a MEDIUM coverage
+ * opinion. The cap is what makes ADR-043 an amendment rather than an override.
+ *
+ * `early-artifact` mode stays uncapped: a draft spec or plan carries no shipping
+ * code to protect (ADR-040).
+ */
+const CODE_REVIEW_SUPPRESSIBLE_SEVERITIES: ReadonlySet<NormalizedFinding['severity']> = new Set([
+  'medium',
+  'low',
+  'info',
+]);
+
+function isSuppressibleOnCodePr(severity: NormalizedFinding['severity']): boolean {
+  return CODE_REVIEW_SUPPRESSIBLE_SEVERITIES.has(severity);
+}
+
+const DEMOTION_LABELS = ['Catalogued false positive:', 'Accepted by operator:'] as const;
+
+/**
+ * Demotes findings the loop must stop acting on — catalogued patterns (ADR-043
+ * §1) and findings a maintainer accepted on this item (ADR-043 §4) — to INFO,
+ * recounting the severity buckets and re-deriving the review status.
+ *
+ * Both sources share the MEDIUM ceiling on code PRs. An accept is stored only
+ * for MEDIUM and below, but a fingerprint can match a later restatement filed
+ * higher; the ceiling is what keeps yesterday's accepted MEDIUM from clearing
+ * today's HIGH.
+ */
+function demotionLabelFor(
+  finding: NormalizedFinding,
+  summary: string,
+  catalog: FalsePositiveEntry[],
+  stage: WorkflowStage,
+  acceptedFindings: readonly StoredAcceptedFinding[],
+): string | null {
+  // Accept first: a named human decision on this item outranks a heuristic match.
+  if (
+    isSuppressibleOnCodePr(finding.severity) &&
+    acceptedFindingMatchesTitle(acceptedFindings, summary)
+  ) {
+    return 'Accepted by operator:';
+  }
+  if (findFalsePositiveMatch(finding, catalog, stage)) {
+    return 'Catalogued false positive:';
+  }
+  return null;
+}
+
 function suppressFalsePositiveReviewerComment(
   input: ReviewCommentTransformInput,
   catalog: FalsePositiveEntry[],
   stage: WorkflowStage,
+  acceptedFindings: readonly StoredAcceptedFinding[] = [],
 ): ReviewCommentTransformResult {
   const findings = { ...input.findings };
+  const capped = stage === 'code-review';
   let suppressedCount = 0;
   const reviewContentWithSuppressedFindings = input.reviewContent.replace(
     /\*\*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\*\*\s*·\s*([^\n]+)/g,
     (line, rawSeverity: string, summary: string) => {
-      if (summary.startsWith('Catalogued false positive:')) return line;
+      if (DEMOTION_LABELS.some((label) => summary.startsWith(label))) return line;
 
       const severity = rawSeverity.toLowerCase() as NormalizedFinding['severity'];
+      if (capped && !isSuppressibleOnCodePr(severity)) return line;
+
       const finding: NormalizedFinding = {
         id: `${input.kind}:${summary}`,
         severity,
@@ -307,11 +411,12 @@ function suppressFalsePositiveReviewerComment(
         summary,
       };
 
-      if (!findFalsePositiveMatch(finding, catalog, stage)) return line;
+      const label = demotionLabelFor(finding, summary, catalog, stage, acceptedFindings);
+      if (!label) return line;
       suppressedCount += 1;
       if (findings[severity] > 0) findings[severity] -= 1;
       findings.info += 1;
-      return `**INFO** · Catalogued false positive: ${summary}`;
+      return `**INFO** · ${label} ${summary}`;
     },
   );
 
@@ -336,27 +441,37 @@ function rewriteReviewStatus(reviewContent: string, status: 'APPROVED' | 'CHANGE
   return `${reviewContent.trimEnd()}\n\n## Status\n${status}`;
 }
 
+/**
+ * Reviewer-comment transform that demotes catalogued findings before the comment
+ * is posted. Runs in every mode as of ADR-043 §1 — the severity cap that keeps
+ * a code PR safe lives in the transform, not in a mode guard.
+ */
 async function buildFalsePositiveReviewerCommentTransform(
   params: RunCodeReviewLoopParams,
   catalog: FalsePositiveEntry[],
+  acceptedFindings: readonly StoredAcceptedFinding[],
 ): Promise<ReviewCommentTransform | undefined> {
-  if (params.mode !== 'early-artifact') return undefined;
-
   const stage = stageForLoopParams(params);
-  if (catalog.length === 0) return undefined;
+  if (catalog.length === 0 && acceptedFindings.length === 0) return undefined;
 
-  return (input) => suppressFalsePositiveReviewerComment(input, catalog, stage);
+  return (input) => suppressFalsePositiveReviewerComment(input, catalog, stage, acceptedFindings);
 }
 
+/**
+ * Applies the catalogue transform to the fan-out results the gate reads, so a
+ * catalogued finding stops driving `shouldRemediate`, the blocker count, and the
+ * sticky baseline — not just the PR comment text (ADR-043 §1).
+ */
 async function suppressFalsePositiveReviewerResults(
   params: RunCodeReviewLoopParams,
   results: ReviewerResult[],
   catalog: FalsePositiveEntry[],
+  acceptedFindings: readonly StoredAcceptedFinding[] = [],
 ): Promise<ReviewerResult[]> {
-  if (params.mode !== 'early-artifact' || results.length === 0) return results;
+  if (results.length === 0) return results;
 
   const stage = stageForLoopParams(params);
-  if (catalog.length === 0) return results;
+  if (catalog.length === 0 && acceptedFindings.length === 0) return results;
 
   return results.map((result) => {
     if (!result.findings || !result.commentBody) return result;
@@ -368,6 +483,7 @@ async function suppressFalsePositiveReviewerResults(
       },
       catalog,
       stage,
+      acceptedFindings,
     );
     return {
       ...result,
@@ -542,12 +658,18 @@ export async function runCodeReviewLoop(
     falsePositiveCatalog,
     stageForLoopParams(params),
   );
+  // Seeded from the enqueue-time snapshot, then re-read at the top of every
+  // cycle so an accept posted while this job runs lands on the next pass
+  // (ADR-043 §4), the same way settled decisions do.
+  let acceptedFindings: StoredAcceptedFinding[] = [...(params.acceptedFindings ?? [])];
 
   while (true) {
     while (true) {
+      acceptedFindings = await resolveAcceptedFindings(params, acceptedFindings);
       const transformReviewComment = await buildFalsePositiveReviewerCommentTransform(
         params,
         falsePositiveCatalog,
+        acceptedFindings,
       );
       const fanoutResult = await fanoutReviewers(
         params.externalId,
@@ -583,6 +705,7 @@ export async function runCodeReviewLoop(
         params,
         fanoutResult.reviewerResults,
         falsePositiveCatalog,
+        acceptedFindings,
       );
       const gateFanoutResult =
         reviewerResults === fanoutResult.reviewerResults
@@ -597,10 +720,12 @@ export async function runCodeReviewLoop(
         gateFanoutResult.reviewerResults,
         loopConfig.remediateSeverity,
       );
-      const currentFingerprints = collectGateFindingFingerprints(
+      const currentFindings = collectGateFindings(
         gateFanoutResult.reviewerResults,
         loopConfig.remediateSeverity,
       );
+      const currentFingerprints = new Set(currentFindings.map((finding) => finding.fingerprint));
+      recordStickyFindings(internalSticky, currentFindings);
       const stickyRemaining = observeStickyLane(internalSticky, currentFingerprints);
       noProgressStreak = nextNoProgressStreak(
         bestBlockerCount,
@@ -613,6 +738,8 @@ export async function runCodeReviewLoop(
         bestBlockerCount = blockerCount;
       }
       recordStickyImprovement(internalSticky, stickyRemaining);
+      // ADR-043 §3 — findings this lane has now seen twice. Empty on cycle 1.
+      const stickyFindings = unresolvedStickyFindings(internalSticky, currentFingerprints);
 
       const stop = evaluateStopRule({
         cycle,
@@ -644,6 +771,7 @@ export async function runCodeReviewLoop(
         totalCost,
         maxDuration,
         catalogEntries: stageCatalogEntries,
+        stickyFindings,
         loopConfig,
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,
@@ -780,6 +908,7 @@ export async function runCodeReviewLoop(
         params,
         external.blockers,
         falsePositiveCatalog,
+        acceptedFindings,
       );
       if (blockers.length === 0) {
         if (suppressed.length > 0 || external.advisories.length > 0) {
@@ -789,6 +918,7 @@ export async function runCodeReviewLoop(
             stage: stageForLoopParams(params),
             catalog: falsePositiveCatalog,
             externalProvider: params.product.review?.external?.provider,
+            acceptedFindings,
           });
         }
         if (fanout.status === 'error') {
@@ -815,6 +945,14 @@ export async function runCodeReviewLoop(
 
       const blockerCount = blockers.length;
       const currentFingerprints = new Set(blockers.map((finding) => finding.id));
+      recordStickyFindings(
+        externalSticky,
+        blockers.map((finding) => ({
+          fingerprint: finding.id,
+          title: finding.summary,
+          severity: finding.severity,
+        })),
+      );
       const stickyRemaining = observeStickyLane(externalSticky, currentFingerprints);
       noProgressStreak = nextNoProgressStreak(
         bestBlockerCount,
@@ -827,6 +965,9 @@ export async function runCodeReviewLoop(
         bestBlockerCount = blockerCount;
       }
       recordStickyImprovement(externalSticky, stickyRemaining);
+      // External ids and internal fingerprints never share a baseline (ADR-038 §3),
+      // so the block handed to the prompts is the external lane's alone.
+      const stickyFindings = unresolvedStickyFindings(externalSticky, currentFingerprints);
 
       const stop = evaluateStopRule({
         cycle,
@@ -857,6 +998,7 @@ export async function runCodeReviewLoop(
         maxDuration,
         externalFindingsBody: formatExternalBlockersForRemediation(blockers),
         catalogEntries: stageCatalogEntries,
+        stickyFindings,
         loopConfig,
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,
@@ -914,6 +1056,7 @@ export async function runCodeReviewLoop(
         stage: stageForLoopParams(params),
         catalog: falsePositiveCatalog,
         externalProvider: params.product.review?.external?.provider,
+        acceptedFindings,
       });
     }
 
@@ -1023,6 +1166,7 @@ async function runAdjudicationPass(input: {
   fetchFn?: FetchFn;
   resolvedProductDecisions?: StoredResolvedProductDecision[];
   catalogEntries?: readonly FalsePositiveEntry[];
+  stickyFindings?: readonly StickyFindingRecord[];
 }): Promise<AdjudicationPassOutcome> {
   let workspacePath = '';
   try {
@@ -1088,6 +1232,7 @@ async function runAdjudicationPass(input: {
         draftArtifact,
         resolvedProductDecisions: input.resolvedProductDecisions,
         catalogEntries: input.catalogEntries,
+        stickyFindings: input.stickyFindings,
         codeRepo: input.codeRepo,
         branchName: input.branchName,
       },
@@ -1221,6 +1366,7 @@ async function runAdjudicationIfEnabled(input: {
   resolvedProductDecisions?: StoredResolvedProductDecision[];
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
   catalogEntries?: readonly FalsePositiveEntry[];
+  stickyFindings?: readonly StickyFindingRecord[];
 }): Promise<AdjudicationPassOutcome> {
   if (!input.loopConfig.adjudicationEnabled) {
     return { status: 'skipped' };
@@ -1287,6 +1433,7 @@ async function runRemediationPass(input: {
   resolvedProductDecisions?: StoredResolvedProductDecision[];
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
   catalogEntries?: readonly FalsePositiveEntry[];
+  stickyFindings?: readonly StickyFindingRecord[];
   stageTransitions?: 'code-review' | 'none';
 }): Promise<RemediationPassOutcome> {
   let totalCost = input.totalCost;
@@ -1313,6 +1460,7 @@ async function runRemediationPass(input: {
     resolvedProductDecisions: input.resolvedProductDecisions,
     loadResolvedProductDecisions: input.loadResolvedProductDecisions,
     catalogEntries: input.catalogEntries,
+    stickyFindings: input.stickyFindings,
   });
 
   if (adjudication.status === 'human_required') {
@@ -1395,7 +1543,7 @@ async function runRemediationPass(input: {
       adjudicationPlan,
       input.codeRepo,
       input.branchName,
-      { catalogEntries: input.catalogEntries },
+      { catalogEntries: input.catalogEntries, stickyFindings: input.stickyFindings },
     );
 
     let remediationResult: RemediationResult | undefined;

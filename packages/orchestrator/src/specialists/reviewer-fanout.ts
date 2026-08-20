@@ -311,6 +311,11 @@ export function buildReviewerParams(
         '- Flag excessive mocking that may hide real bugs.',
         '- Identify tests that may be flaky (time-dependent, order-dependent, environment-dependent).',
         '',
+        '**Severity contract (ADR-043 §5) — the acceptance criteria set the bar:**',
+        '- Every finding must cite the acceptance criterion it maps to. A finding you cannot tie to an AC line is filed at **LOW** or **INFO**, never higher.',
+        '- Asking for a higher-fidelity test artifact than the AC requires — a real-device run, an end-to-end or UI-automation harness, a framework runtime rendering the real app — is a suggestion, not a blocker. Cap it at **LOW** unless an AC names that artifact.',
+        '- If the AC closed on a narrower artifact (a unit smoke, a contract test) and that artifact is present and meaningful, say so and move on. Restating the same fidelity ask in new words across reviews is not a new finding.',
+        '',
         '**Do not modify any files in the working directory.** Surface all findings in your review only (written to the artifact path shown below). The orchestrator does not push changes from security or test reviewers.',
       ].join('\n');
       break;

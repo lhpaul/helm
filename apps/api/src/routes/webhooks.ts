@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import {
   verifyGitHubSignature,
   verifyLinearSignature,
@@ -8,7 +8,10 @@ import {
 } from '@helm/adapters';
 import {
   decisionMatchesLatestAdjudication,
+  isAcceptableSeverity,
+  parseAcceptFindingComment,
   parseHumanProductDecisionComment,
+  type ParsedAcceptedFinding,
 } from '@helm/orchestrator';
 import { WORKFLOW_STAGES, WorkflowTransitionError, type WorkflowStage } from '@helm/workflow';
 import { parseArtifactBranch } from '@helm/shared';
@@ -293,6 +296,10 @@ webhooksRouter.post('/webhooks/github', async (c) => {
     console.info(`[webhooks/github] comment_added on ${event.externalId} — no action in v0`);
   } else if (event.type === 'pull_request_comment_created') {
     const decision = parseHumanProductDecisionComment(event.body);
+    const acceptedFinding = decision ? null : parseAcceptFindingComment(event.body);
+    if (acceptedFinding) {
+      return handleAcceptFindingComment(c, event, acceptedFinding);
+    }
     if (!decision) {
       console.info('[webhooks/github] PR comment ignored — no structured Helm decision');
     } else {
@@ -830,6 +837,153 @@ webhooksRouter.post('/webhooks/github', async (c) => {
  * because Linear disables endpoints that do not ACK with HTTP 200 within 5s —
  * `replayPendingReviewDispatchForItem` may call GitHub and easily exceed that.
  */
+/**
+ * Operator accept-finding comment (ADR-043 §4).
+ *
+ * Deliberately a mirror of the product-decision branch above rather than a
+ * second authorization model: same trust boundary (GitHub write access, an open
+ * `helm/impl/*` PR on this product's repo), same ignore-vs-retry split, same
+ * re-dispatch. It differs in two places — there is no adjudication record to
+ * match against, because an accept settles no conflict, and the severity ceiling
+ * is enforced here rather than in the parser so an out-of-policy comment is
+ * dropped whole instead of half-recorded.
+ */
+async function handleAcceptFindingComment(
+  c: Context,
+  event: Extract<NormalizedEvent, { type: 'pull_request_comment_created' }>,
+  acceptedFinding: ParsedAcceptedFinding,
+) {
+  const severity = acceptedFinding.severity;
+  if (!isAcceptableSeverity(severity)) {
+    // CRITICAL/HIGH (and an unstated severity) stay on the adjudication path,
+    // where the trade-off is recorded against a named conflict.
+    console.info(
+      `[webhooks/github] Accept-finding ignored — severity '${severity ?? 'unstated'}' is not acceptable`,
+    );
+    return c.json({ processed: true });
+  }
+
+  try {
+    const [config, itemStore] = await Promise.all([getProductConfig(), getItemStore()]);
+    const repo = getPrimaryCodeRepo(config);
+    if (event.owner !== repo.owner || event.repo !== repo.repo) {
+      console.info('[webhooks/github] Accept-finding ignored — repository mismatch');
+      return c.json({ processed: true });
+    }
+
+    const githubToken = readGitHubTokenFromEnv();
+    if (!githubToken) {
+      console.error('[webhooks/github] GitHub credentials are not configured for accept-finding');
+      return c.json({ error: 'GitHub credentials are not configured' }, 503);
+    }
+
+    if (!event.authorLogin) {
+      console.info('[webhooks/github] Accept-finding ignored — missing author login');
+      return c.json({ processed: true });
+    }
+    const authorized = await authorHasWriteAccess({
+      product: config,
+      login: event.authorLogin,
+      githubToken,
+    });
+    if (!authorized) {
+      console.info(
+        `[webhooks/github] Accept-finding ignored — unauthorized author '${event.authorLogin}'`,
+      );
+      return c.json({ processed: true });
+    }
+
+    const pr = await resolveOpenPrMetadata({
+      product: config,
+      prNumber: event.prNumber,
+      githubToken,
+    });
+    if (pr.owner !== event.owner || pr.repo !== event.repo || pr.number !== event.prNumber) {
+      console.info('[webhooks/github] Accept-finding ignored — PR metadata mismatch');
+      return c.json({ processed: true });
+    }
+
+    const parsed = parseArtifactBranch(pr.headRef);
+    if (parsed?.kind !== 'impl') {
+      console.info('[webhooks/github] Accept-finding ignored — PR is not an impl branch');
+      return c.json({ processed: true });
+    }
+
+    const item = await itemStore.get(parsed.externalId);
+    if (item?.productSlug !== config.product.slug) {
+      console.info(
+        `[webhooks/github] Accept-finding ignored — item stage '${item?.currentStage ?? 'missing'}'`,
+      );
+      return c.json({ processed: true });
+    }
+
+    const { state: afterAccept, inserted } = await itemStore.upsertAcceptedFinding({
+      externalId: parsed.externalId,
+      finding: {
+        fingerprint: acceptedFinding.fingerprint,
+        findingTitle: acceptedFinding.findingTitle,
+        severity: severity.toUpperCase(),
+        rationale: acceptedFinding.rationale,
+        source: {
+          provider: 'github',
+          owner: event.owner,
+          repo: event.repo,
+          prNumber: event.prNumber,
+          authorLogin: event.authorLogin,
+        },
+      },
+      triggeredBy: 'webhook:pr-accept-finding-comment',
+    });
+
+    if (!inserted) {
+      console.info(
+        `[webhooks/github] Accept-finding already recorded for ${parsed.externalId} — no dispatch`,
+      );
+      return c.json({ processed: true });
+    }
+
+    // Gate dispatch on the post-upsert stage so a concurrent transition out of
+    // code-review cannot enqueue a stale reviewer-fanout job.
+    if (afterAccept.currentStage !== 'code-review') {
+      console.info(
+        `[webhooks/github] Accept-finding recorded without dispatch — item stage '${afterAccept.currentStage}'`,
+      );
+      return c.json({ processed: true });
+    }
+
+    const outcome = await scheduleItemDispatch({
+      productSlug: config.product.slug,
+      externalId: parsed.externalId,
+      specialistId: 'reviewer-fanout',
+      targetRevision: pr.headSha,
+      prNumber: pr.number,
+      triggeredBy: 'webhook:pr-accept-finding-comment',
+    });
+    if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
+      await persistReviewDispatchIntent({
+        productSlug: config.product.slug,
+        externalId: parsed.externalId,
+        specialistId: 'reviewer-fanout',
+        prNumber: pr.number,
+        targetRevision: pr.headSha,
+        triggeredBy: 'webhook:pr-accept-finding-comment',
+      });
+      console.info(
+        `[webhooks/github] Accept-finding dispatch deferred for ${parsed.externalId}: ${outcome.reason}`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      '[webhooks/github] Failed to process accept-finding comment:',
+      err instanceof Error ? err.message : String(err),
+    );
+    // Transient failure after an authorized accept — ask GitHub to retry.
+    return c.json({ error: 'Temporary failure processing accept-finding' }, 503);
+  }
+
+  return c.json({ processed: true });
+}
+
 async function processLinearWebhookEvent(
   config: Awaited<ReturnType<typeof getProductConfig>>,
   event: NormalizedEvent,

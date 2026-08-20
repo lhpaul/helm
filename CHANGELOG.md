@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Operator accept-finding marker (ADR-043 §4):** a maintainer with write access can
+  dismiss one non-conflict finding by commenting `<!-- helm:accept-finding -->` with a
+  finding title, severity, and rationale on the impl PR. Matching reviewer findings are
+  demoted to INFO before the remediation gate and matching external blockers become
+  advisories with disposition `Accepted` (which ADR-036 §5 defined but v1 never set).
+  Only MEDIUM and below can be accepted — CRITICAL/HIGH stay on the adjudication path.
+  Authorization, storage, and re-dispatch mirror the ADR-037 product-decision path;
+  accepts are item-scoped and re-read every cycle, so one posted mid-run lands on the
+  next pass.
+
+### Changed
+
+- **Catalogued suppression now runs on code PRs, capped at MEDIUM (ADR-043 §1, amends
+  ADR-041 §4):** `false-positives.md` already documented `Applies to: code-review`, but
+  the transform only ran in `early-artifact` mode, so a catalogued pattern could not stop
+  a code-review remediation. It now runs in both modes. On a code PR only MEDIUM/LOW/INFO
+  are demoted — ADR-041 §4 declined this entirely for fear of a heuristic match clearing a
+  real security HIGH, and the severity cap is what preserves that. `early-artifact` stays
+  uncapped. **Operator note:** a product with an existing catalogue entry gets this
+  behavior on upgrade with no config change.
+
+- **Sticky theme groups for test fidelity (ADR-043 §2, amends ADR-038 §2):** a title
+  matching `e2e-coverage`, `expo-router`, `maestro`, or `unit-smoke` now fingerprints as
+  the group id alone, so a "Expo Router runtime" ask in one cycle and a "Maestro flow" ask
+  in the next stop reading as different findings and `no_progress` fires on schedule.
+  Deliberately coarse: all test-fidelity findings on a PR collapse to one fingerprint.
+
+- **Unresolved sticky findings injected into the remediator and adjudicator prompts
+  (ADR-043 §3):** a finding open in two or more cycles of a lane is rendered as a
+  data-only block with its cycle count, plus the policy that a previously "Applied"
+  sticky finding was not applied and that rewriting a unit test does not answer an
+  end-to-end ask. Internal and external lanes stay separate (ADR-038 §3).
+
+- **Test-reviewer severity contract (ADR-043 §5):** findings must cite the acceptance
+  criterion they map to or be filed at LOW/INFO, and a request for a higher-fidelity test
+  artifact than the AC requires (real device, e2e harness, framework runtime) is capped at
+  LOW unless an AC names it.
+
 ### Fixed
 
 - **Linear webhook ACK within 5s deadline:** `POST /api/webhooks/linear` verified the

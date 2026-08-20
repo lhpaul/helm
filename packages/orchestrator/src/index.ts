@@ -31,6 +31,14 @@ export type {
   StoredResolvedProductDecision,
 } from './review-loop/adjudication.js';
 
+// Operator accept-finding marker (ADR-043 §4)
+export {
+  ACCEPT_FINDING_MARKER,
+  isAcceptableSeverity,
+  parseAcceptFindingComment,
+} from './review-loop/accept-finding.js';
+export type { ParsedAcceptedFinding, StoredAcceptedFinding } from './review-loop/accept-finding.js';
+
 // Cumulative cross-dispatch review budget (ADR-042)
 export { seedFromReviewLoopLedger } from './review-loop/cumulative-ledger.js';
 export type {

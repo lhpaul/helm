@@ -42,6 +42,11 @@ import {
   type FalsePositiveEntry,
 } from './false-positives.js';
 import { catalogEntriesForStage } from './catalog-prompt.js';
+import {
+  acceptedFindingMatchesExternal,
+  acceptedFindingMatchesTitle,
+  type StoredAcceptedFinding,
+} from './accept-finding.js';
 import { upsertReviewLoopSummaryComment } from './summary.js';
 import {
   countBlockingFindings,
@@ -116,6 +121,13 @@ export type RunCodeReviewLoopParams = {
    * so a human choice recorded while the job is still running is visible.
    */
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
+  /** Findings a maintainer dismissed on this item (ADR-043 §4). */
+  acceptedFindings?: StoredAcceptedFinding[];
+  /**
+   * Optional per-cycle loader for accepted findings, so an accept posted while
+   * this job is still running takes effect on the next pass.
+   */
+  loadAcceptedFindings?: () => Promise<StoredAcceptedFinding[]>;
   targetRevision?: string;
   onExternalReviewDeferred?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
   mode?: 'code' | 'early-artifact';
@@ -204,6 +216,7 @@ async function postReviewLoopSummaryBestEffort(
     stage: WorkflowStage;
     catalog: FalsePositiveEntry[];
     externalProvider?: string;
+    acceptedFindings?: readonly StoredAcceptedFinding[];
   },
 ): Promise<void> {
   if (input.advisories.length === 0) return;
@@ -217,6 +230,7 @@ async function postReviewLoopSummaryBestEffort(
       advisories: input.advisories,
       catalog: input.catalog,
       stage: input.stage,
+      acceptedFindings: input.acceptedFindings,
       runGh: params.runGh,
     });
   } catch {
@@ -225,6 +239,31 @@ async function postReviewLoopSummaryBestEffort(
 }
 
 /** The lane this run belongs to — also the false-positive catalog stage key. */
+/**
+ * Latest accepted findings for this item (ADR-043 §4).
+ *
+ * Fails *open* to the value already in hand, unlike settled decisions: an accept
+ * only ever removes work, so a transient read error must not resurrect a finding
+ * the operator already dismissed mid-run. On the very first read there is
+ * nothing in hand, so the enqueue-time snapshot is used.
+ */
+async function resolveAcceptedFindings(
+  params: RunCodeReviewLoopParams,
+  current?: StoredAcceptedFinding[],
+): Promise<StoredAcceptedFinding[]> {
+  const fallback = current ?? [...(params.acceptedFindings ?? [])];
+  if (!params.loadAcceptedFindings) return fallback;
+  try {
+    return [...(await params.loadAcceptedFindings())];
+  } catch (err) {
+    console.error(
+      '[code-review-loop] Failed to reload accepted findings:',
+      err instanceof Error ? err.message : String(err),
+    );
+    return fallback;
+  }
+}
+
 function stageForLoopParams(params: RunCodeReviewLoopParams): ReviewLoopLane {
   if (params.mode !== 'early-artifact') return 'code-review';
   return params.kind === 'spec' ? 'spec-draft' : 'plan-draft';
@@ -272,6 +311,7 @@ async function suppressFalsePositiveExternalFindings(
   params: RunCodeReviewLoopParams,
   findings: NormalizedFinding[],
   catalog: FalsePositiveEntry[],
+  acceptedFindings: readonly StoredAcceptedFinding[] = [],
 ): Promise<{ blockers: NormalizedFinding[]; suppressed: NormalizedFinding[] }> {
   if (findings.length === 0) return { blockers: [], suppressed: [] };
 
@@ -280,7 +320,10 @@ async function suppressFalsePositiveExternalFindings(
   const suppressed: NormalizedFinding[] = [];
 
   for (const finding of findings) {
-    if (findFalsePositiveMatch(finding, catalog, stage)) {
+    const accepted =
+      isSuppressibleOnCodePr(finding.severity) &&
+      acceptedFindingMatchesExternal(acceptedFindings, finding);
+    if (accepted || findFalsePositiveMatch(finding, catalog, stage)) {
       suppressed.push({ ...finding, blocking: false });
     } else {
       blockers.push(finding);
@@ -308,10 +351,47 @@ const CODE_REVIEW_SUPPRESSIBLE_SEVERITIES: ReadonlySet<NormalizedFinding['severi
   'info',
 ]);
 
+function isSuppressibleOnCodePr(severity: NormalizedFinding['severity']): boolean {
+  return CODE_REVIEW_SUPPRESSIBLE_SEVERITIES.has(severity);
+}
+
+const DEMOTION_LABELS = ['Catalogued false positive:', 'Accepted by operator:'] as const;
+
+/**
+ * Demotes findings the loop must stop acting on — catalogued patterns (ADR-043
+ * §1) and findings a maintainer accepted on this item (ADR-043 §4) — to INFO,
+ * recounting the severity buckets and re-deriving the review status.
+ *
+ * Both sources share the MEDIUM ceiling on code PRs. An accept is stored only
+ * for MEDIUM and below, but a fingerprint can match a later restatement filed
+ * higher; the ceiling is what keeps yesterday's accepted MEDIUM from clearing
+ * today's HIGH.
+ */
+function demotionLabelFor(
+  finding: NormalizedFinding,
+  summary: string,
+  catalog: FalsePositiveEntry[],
+  stage: WorkflowStage,
+  acceptedFindings: readonly StoredAcceptedFinding[],
+): string | null {
+  // Accept first: a named human decision on this item outranks a heuristic match.
+  if (
+    isSuppressibleOnCodePr(finding.severity) &&
+    acceptedFindingMatchesTitle(acceptedFindings, summary)
+  ) {
+    return 'Accepted by operator:';
+  }
+  if (findFalsePositiveMatch(finding, catalog, stage)) {
+    return 'Catalogued false positive:';
+  }
+  return null;
+}
+
 function suppressFalsePositiveReviewerComment(
   input: ReviewCommentTransformInput,
   catalog: FalsePositiveEntry[],
   stage: WorkflowStage,
+  acceptedFindings: readonly StoredAcceptedFinding[] = [],
 ): ReviewCommentTransformResult {
   const findings = { ...input.findings };
   const capped = stage === 'code-review';
@@ -319,10 +399,10 @@ function suppressFalsePositiveReviewerComment(
   const reviewContentWithSuppressedFindings = input.reviewContent.replace(
     /\*\*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\*\*\s*·\s*([^\n]+)/g,
     (line, rawSeverity: string, summary: string) => {
-      if (summary.startsWith('Catalogued false positive:')) return line;
+      if (DEMOTION_LABELS.some((label) => summary.startsWith(label))) return line;
 
       const severity = rawSeverity.toLowerCase() as NormalizedFinding['severity'];
-      if (capped && !CODE_REVIEW_SUPPRESSIBLE_SEVERITIES.has(severity)) return line;
+      if (capped && !isSuppressibleOnCodePr(severity)) return line;
 
       const finding: NormalizedFinding = {
         id: `${input.kind}:${summary}`,
@@ -331,11 +411,12 @@ function suppressFalsePositiveReviewerComment(
         summary,
       };
 
-      if (!findFalsePositiveMatch(finding, catalog, stage)) return line;
+      const label = demotionLabelFor(finding, summary, catalog, stage, acceptedFindings);
+      if (!label) return line;
       suppressedCount += 1;
       if (findings[severity] > 0) findings[severity] -= 1;
       findings.info += 1;
-      return `**INFO** · Catalogued false positive: ${summary}`;
+      return `**INFO** · ${label} ${summary}`;
     },
   );
 
@@ -368,11 +449,12 @@ function rewriteReviewStatus(reviewContent: string, status: 'APPROVED' | 'CHANGE
 async function buildFalsePositiveReviewerCommentTransform(
   params: RunCodeReviewLoopParams,
   catalog: FalsePositiveEntry[],
+  acceptedFindings: readonly StoredAcceptedFinding[],
 ): Promise<ReviewCommentTransform | undefined> {
   const stage = stageForLoopParams(params);
-  if (catalog.length === 0) return undefined;
+  if (catalog.length === 0 && acceptedFindings.length === 0) return undefined;
 
-  return (input) => suppressFalsePositiveReviewerComment(input, catalog, stage);
+  return (input) => suppressFalsePositiveReviewerComment(input, catalog, stage, acceptedFindings);
 }
 
 /**
@@ -384,11 +466,12 @@ async function suppressFalsePositiveReviewerResults(
   params: RunCodeReviewLoopParams,
   results: ReviewerResult[],
   catalog: FalsePositiveEntry[],
+  acceptedFindings: readonly StoredAcceptedFinding[] = [],
 ): Promise<ReviewerResult[]> {
   if (results.length === 0) return results;
 
   const stage = stageForLoopParams(params);
-  if (catalog.length === 0) return results;
+  if (catalog.length === 0 && acceptedFindings.length === 0) return results;
 
   return results.map((result) => {
     if (!result.findings || !result.commentBody) return result;
@@ -400,6 +483,7 @@ async function suppressFalsePositiveReviewerResults(
       },
       catalog,
       stage,
+      acceptedFindings,
     );
     return {
       ...result,
@@ -574,12 +658,18 @@ export async function runCodeReviewLoop(
     falsePositiveCatalog,
     stageForLoopParams(params),
   );
+  // Seeded from the enqueue-time snapshot, then re-read at the top of every
+  // cycle so an accept posted while this job runs lands on the next pass
+  // (ADR-043 §4), the same way settled decisions do.
+  let acceptedFindings: StoredAcceptedFinding[] = [...(params.acceptedFindings ?? [])];
 
   while (true) {
     while (true) {
+      acceptedFindings = await resolveAcceptedFindings(params, acceptedFindings);
       const transformReviewComment = await buildFalsePositiveReviewerCommentTransform(
         params,
         falsePositiveCatalog,
+        acceptedFindings,
       );
       const fanoutResult = await fanoutReviewers(
         params.externalId,
@@ -615,6 +705,7 @@ export async function runCodeReviewLoop(
         params,
         fanoutResult.reviewerResults,
         falsePositiveCatalog,
+        acceptedFindings,
       );
       const gateFanoutResult =
         reviewerResults === fanoutResult.reviewerResults
@@ -817,6 +908,7 @@ export async function runCodeReviewLoop(
         params,
         external.blockers,
         falsePositiveCatalog,
+        acceptedFindings,
       );
       if (blockers.length === 0) {
         if (suppressed.length > 0 || external.advisories.length > 0) {
@@ -826,6 +918,7 @@ export async function runCodeReviewLoop(
             stage: stageForLoopParams(params),
             catalog: falsePositiveCatalog,
             externalProvider: params.product.review?.external?.provider,
+            acceptedFindings,
           });
         }
         if (fanout.status === 'error') {
@@ -963,6 +1056,7 @@ export async function runCodeReviewLoop(
         stage: stageForLoopParams(params),
         catalog: falsePositiveCatalog,
         externalProvider: params.product.review?.external?.provider,
+        acceptedFindings,
       });
     }
 

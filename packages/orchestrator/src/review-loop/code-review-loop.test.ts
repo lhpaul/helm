@@ -213,6 +213,11 @@ describe('runCodeReviewLoop', () => {
     });
   });
 
+  const mediumGateProduct = (): Product => ({
+    ...baseProduct,
+    review: { loop: { max_cycles: 5, remediate_severity: 'medium_and_above' } },
+  });
+
   const runLoop = (product: Product = baseProduct) =>
     runCodeReviewLoop({
       externalId: 'issue_1',
@@ -2594,6 +2599,190 @@ describe('runCodeReviewLoop', () => {
     expect(handleReviewAdjudicatorResult).not.toHaveBeenCalled();
   });
 
+  describe('operator accept-finding (ADR-043 §4)', () => {
+    const accepted = [
+      {
+        fingerprint: 'test-fidelity',
+        findingTitle: 'Unit smoke does not exercise Expo Router navigation',
+        severity: 'MEDIUM',
+        rationale: 'AC #4 closed on the Vitest smoke.',
+        recordedAt: '2026-08-20T12:00:00.000Z',
+        source: {
+          provider: 'github' as const,
+          owner: 'o',
+          repo: 'r',
+          prNumber: 42,
+          authorLogin: 'maintainer',
+        },
+      },
+    ];
+
+    const testFinding = (severity: 'HIGH' | 'MEDIUM'): ReviewerFanoutResult =>
+      makeFanout({
+        reviewerResults: [
+          {
+            kind: 'test',
+            status: 'done',
+            costUsd: 0.01,
+            durationMs: 50,
+            commentPosted: true,
+            findings:
+              severity === 'HIGH'
+                ? { critical: 0, high: 1, medium: 0, low: 0, info: 0 }
+                : { critical: 0, high: 0, medium: 1, low: 0, info: 0 },
+            commentBody: `# Test Review\n\n- **${severity}** · Missing Maestro end-to-end flow\n\n## Status\nCHANGES_REQUESTED`,
+          },
+        ],
+      });
+
+    beforeEach(() => {
+      vi.mocked(shouldRemediate).mockImplementation((results, severity) =>
+        results.some((result) => {
+          if (result.findings === undefined) return false;
+          const criticalHigh = result.findings.critical + result.findings.high;
+          return severity === 'medium_and_above'
+            ? criticalHigh + result.findings.medium > 0
+            : criticalHigh > 0;
+        }),
+      );
+    });
+
+    it('demotes a reworded restatement of the accepted finding before the gate', async () => {
+      vi.mocked(fanoutReviewers).mockResolvedValue(testFinding('MEDIUM'));
+
+      const result = await runCodeReviewLoop({
+        externalId: 'issue_1',
+        product: mediumGateProduct(),
+        prUrl: PR_URL,
+        codeRepo: baseProduct.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+        acceptedFindings: accepted,
+      });
+
+      expect(result.status).toBe('done');
+      expect(shouldRemediate).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            findings: { critical: 0, high: 0, medium: 0, low: 0, info: 1 },
+            commentBody: expect.stringContaining('**INFO** · Accepted by operator:'),
+          }),
+        ],
+        'medium_and_above',
+      );
+      expect(buildRemediationParams).not.toHaveBeenCalled();
+    });
+
+    it('does not let an accepted MEDIUM clear a later HIGH restatement', async () => {
+      vi.mocked(fanoutReviewers)
+        .mockResolvedValueOnce(testFinding('HIGH'))
+        .mockResolvedValue(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+
+      await runCodeReviewLoop({
+        externalId: 'issue_1',
+        product: baseProduct,
+        prUrl: PR_URL,
+        codeRepo: baseProduct.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+        acceptedFindings: accepted,
+      });
+
+      expect(buildRemediationParams).toHaveBeenCalled();
+    });
+
+    it('moves a matching external blocker out of the blocker set', async () => {
+      const product: Product = {
+        ...baseProduct,
+        review: { external: { provider: 'coderabbit' } },
+      };
+      vi.mocked(fanoutReviewers).mockResolvedValue(
+        makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }),
+      );
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'needs_fixes',
+        blockers: [
+          {
+            id: 'cr-1',
+            severity: 'medium',
+            blocking: true,
+            summary: 'No end-to-end coverage for the onboarding flow',
+          },
+        ],
+        advisories: [],
+      });
+
+      const result = await runCodeReviewLoop({
+        externalId: 'issue_1',
+        product,
+        prUrl: PR_URL,
+        codeRepo: baseProduct.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+        acceptedFindings: accepted,
+      });
+
+      expect(result.status).toBe('done');
+      expect(buildRemediationParams).not.toHaveBeenCalled();
+      expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          advisories: [expect.objectContaining({ id: 'cr-1', blocking: false })],
+          acceptedFindings: accepted,
+        }),
+      );
+    });
+
+    it('picks up an accept recorded while the job is already running', async () => {
+      const loadAcceptedFindings = vi.fn().mockResolvedValueOnce([]).mockResolvedValue(accepted);
+      vi.mocked(fanoutReviewers).mockResolvedValue(testFinding('MEDIUM'));
+
+      const result = await runCodeReviewLoop({
+        externalId: 'issue_1',
+        product: mediumGateProduct(),
+        prUrl: PR_URL,
+        codeRepo: baseProduct.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+        loadAcceptedFindings,
+      });
+
+      // Cycle 1 remediates (nothing accepted yet); cycle 2 sees the accept and stops.
+      expect(result.status).toBe('done');
+      expect(buildRemediationParams).toHaveBeenCalledTimes(1);
+      expect(loadAcceptedFindings.mock.calls.length).toBeGreaterThan(1);
+    });
+
+    it('keeps the accepts it already has when the reload fails', async () => {
+      // Fails open, unlike settled decisions: an accept only removes work, so a
+      // transient read error must not resurrect a dismissed finding mid-run.
+      vi.mocked(fanoutReviewers).mockResolvedValue(testFinding('MEDIUM'));
+
+      const result = await runCodeReviewLoop({
+        externalId: 'issue_1',
+        product: mediumGateProduct(),
+        prUrl: PR_URL,
+        codeRepo: baseProduct.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+        acceptedFindings: accepted,
+        loadAcceptedFindings: vi.fn().mockRejectedValue(new Error('disk read failed')),
+      });
+
+      expect(result.status).toBe('done');
+      expect(buildRemediationParams).not.toHaveBeenCalled();
+    });
+  });
+
   describe('unresolved sticky findings in prompts (ADR-043 §3)', () => {
     const fidelityFanout = (title: string): ReviewerFanoutResult =>
       makeFanout({
@@ -2726,10 +2915,6 @@ describe('runCodeReviewLoop', () => {
   });
 
   describe('catalogued suppression on code PRs (ADR-043 §1)', () => {
-    const mediumGateProduct = (): Product => ({
-      ...baseProduct,
-      review: { loop: { max_cycles: 5, remediate_severity: 'medium_and_above' } },
-    });
     /** LEA-246: the AC closed on a Vitest unit smoke; the e2e harness is separate work. */
     const fidelityCatalogueMd = (appliesTo?: string) =>
       [

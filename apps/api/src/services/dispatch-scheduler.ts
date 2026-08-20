@@ -778,6 +778,17 @@ export async function runDispatchJob(
           }
           return [...(latest.resolvedProductDecisions ?? [])];
         },
+        // ADR-043 §4 — an accept posted while this job runs lands next cycle.
+        acceptedFindings: [...(freshItem.acceptedFindings ?? [])],
+        loadAcceptedFindings: async () => {
+          const latest = await store.get(freshItem.externalId);
+          if (latest === null) {
+            throw new Error(
+              `Item not found while reloading accepted findings: ${freshItem.externalId}`,
+            );
+          }
+          return [...(latest.acceptedFindings ?? [])];
+        },
         targetRevision: job.targetRevision,
         // ADR-042 — lifetime review budget: seeded from the item and written
         // back per cycle so a manual re-dispatch cannot restart it at zero.

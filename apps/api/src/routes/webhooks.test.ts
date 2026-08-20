@@ -38,6 +38,7 @@ const {
   mockGetPrimaryCodeRepo,
   mockListPrIssueComments,
   mockUpsertResolvedProductDecision,
+  mockUpsertAcceptedFinding,
   mockDispatchStageHandler,
   mockResolveSpecialistId,
   mockCreateRuntimeForProduct,
@@ -65,6 +66,7 @@ const {
   mockGetPrimaryCodeRepo: vi.fn(),
   mockListPrIssueComments: vi.fn(),
   mockUpsertResolvedProductDecision: vi.fn(),
+  mockUpsertAcceptedFinding: vi.fn(),
   mockDispatchStageHandler: vi.fn(),
   mockResolveSpecialistId: vi.fn(),
   mockCreateRuntimeForProduct: vi.fn(),
@@ -119,6 +121,7 @@ vi.mock('../services/index.js', async (importOriginal) => {
       list: mockList,
       get: mockGet,
       upsertResolvedProductDecision: mockUpsertResolvedProductDecision,
+      upsertAcceptedFinding: mockUpsertAcceptedFinding,
     }),
     getProductRegistry: mockGetProductRegistry,
     getJobStore: vi.fn().mockResolvedValue({
@@ -423,6 +426,20 @@ const SPEC_STRUCTURED_DECISION = [
   '- **Chosen:** Option A',
 ].join('\n');
 
+const ACCEPT_FINDING_COMMENT = [
+  '<!-- helm:accept-finding -->',
+  '**Finding title:** Unit smoke does not exercise Expo Router navigation',
+  '**Severity:** MEDIUM',
+  '**Rationale:** AC #4 closed on the Vitest smoke; Maestro is separate work.',
+].join('\n');
+
+const ACCEPT_FINDING_HIGH_COMMENT = [
+  '<!-- helm:accept-finding -->',
+  '**Finding title:** Unvalidated input reaches the query builder',
+  '**Severity:** HIGH',
+  '**Rationale:** we will fix it later',
+].join('\n');
+
 const HUMAN_REQUIRED_ADJUDICATION = [
   '# Review Adjudication: issue_42',
   '',
@@ -488,6 +505,10 @@ describe('POST /api/webhooks/github', () => {
     });
     mockListPrIssueComments.mockResolvedValue([{ id: 1, body: HUMAN_REQUIRED_ADJUDICATION }]);
     mockUpsertResolvedProductDecision.mockResolvedValue({
+      inserted: true,
+      state: { currentStage: 'code-review' },
+    });
+    mockUpsertAcceptedFinding.mockResolvedValue({
       inserted: true,
       state: { currentStage: 'code-review' },
     });
@@ -812,6 +833,143 @@ describe('POST /api/webhooks/github', () => {
       const res = await post(body, 'issues');
       expect(res.status).toBe(200);
       expect(mockTransition).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('dispatch: operator accept-finding comment (ADR-043 §4)', () => {
+    const inCodeReview = () =>
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'code-review',
+        history: [],
+      });
+
+    it('records an authorized MEDIUM accept and redispatches reviewer-fanout', async () => {
+      inCodeReview();
+
+      const res = await post(prCommentPayload(ACCEPT_FINDING_COMMENT), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockAuthorHasWriteAccess).toHaveBeenCalledWith(
+        expect.objectContaining({ login: 'maintainer' }),
+      );
+      expect(mockUpsertAcceptedFinding).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalId: 'issue_42',
+          finding: expect.objectContaining({
+            fingerprint: 'test-fidelity',
+            findingTitle: 'Unit smoke does not exercise Expo Router navigation',
+            severity: 'MEDIUM',
+            source: expect.objectContaining({
+              provider: 'github',
+              owner: 'test-org',
+              repo: 'test-repo',
+              prNumber: 42,
+              authorLogin: 'maintainer',
+            }),
+          }),
+          triggeredBy: 'webhook:pr-accept-finding-comment',
+        }),
+      );
+      expect(mockScheduleItemDispatch).toHaveBeenCalledWith({
+        productSlug: 'test-app',
+        externalId: 'issue_42',
+        specialistId: 'reviewer-fanout',
+        targetRevision: 'sha-42',
+        prNumber: 42,
+        triggeredBy: 'webhook:pr-accept-finding-comment',
+      });
+      // An accept settles no conflict, so it must not consult the adjudication record.
+      expect(mockListPrIssueComments).not.toHaveBeenCalled();
+    });
+
+    it('refuses a HIGH accept and leaves it on the adjudication path', async () => {
+      inCodeReview();
+
+      const res = await post(prCommentPayload(ACCEPT_FINDING_HIGH_COMMENT), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockUpsertAcceptedFinding).not.toHaveBeenCalled();
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ignores an author without write access', async () => {
+      inCodeReview();
+      mockAuthorHasWriteAccess.mockResolvedValue(false);
+
+      const res = await post(prCommentPayload(ACCEPT_FINDING_COMMENT), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockUpsertAcceptedFinding).not.toHaveBeenCalled();
+    });
+
+    it('ignores a comment on a PR that is not an impl branch', async () => {
+      inCodeReview();
+      mockResolveOpenPrMetadata.mockResolvedValue({
+        owner: 'test-org',
+        repo: 'test-repo',
+        number: 42,
+        headRef: 'feature/some-branch',
+        headSha: 'sha-42',
+        htmlUrl: 'https://github.com/test-org/test-repo/pull/42',
+      });
+
+      const res = await post(prCommentPayload(ACCEPT_FINDING_COMMENT), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockUpsertAcceptedFinding).not.toHaveBeenCalled();
+    });
+
+    it('records without dispatching once the item has left code-review', async () => {
+      mockGet.mockResolvedValue({
+        externalId: 'issue_42',
+        productSlug: 'test-app',
+        currentStage: 'merged',
+        history: [],
+      });
+      mockUpsertAcceptedFinding.mockResolvedValue({
+        inserted: true,
+        state: { currentStage: 'merged' },
+      });
+
+      const res = await post(prCommentPayload(ACCEPT_FINDING_COMMENT), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockUpsertAcceptedFinding).toHaveBeenCalledTimes(1);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('does not redispatch on a webhook redelivery', async () => {
+      inCodeReview();
+      mockUpsertAcceptedFinding.mockResolvedValue({
+        inserted: false,
+        state: { currentStage: 'code-review' },
+      });
+
+      const res = await post(prCommentPayload(ACCEPT_FINDING_COMMENT), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    it('asks GitHub to retry when storing an authorized accept fails', async () => {
+      inCodeReview();
+      mockUpsertAcceptedFinding.mockRejectedValue(new Error('disk full'));
+
+      const res = await post(prCommentPayload(ACCEPT_FINDING_COMMENT), 'issue_comment');
+
+      expect(res.status).toBe(503);
+    });
+
+    it('leaves a product-decision comment to the decision path', async () => {
+      inCodeReview();
+
+      const res = await post(prCommentPayload(MARKDOWN_DECISION), 'issue_comment');
+
+      expect(res.status).toBe(200);
+      expect(mockUpsertAcceptedFinding).not.toHaveBeenCalled();
+      expect(mockUpsertResolvedProductDecision).toHaveBeenCalled();
     });
   });
 

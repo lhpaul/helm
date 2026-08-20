@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Early-loop: do not demand impl tests on docs drafts (LEA-110):** built-in
+  false-positive `missing required test coverage` for `spec-draft` /
+  `plan-draft`, plus `draftArtifactKind` on reviewer fan-out so the test
+  reviewer prompt reviews AC testability instead of requiring `apps/*` test
+  files on knowledge PRs.
+
 - **Operator accept-finding marker (ADR-043 §4):** a maintainer with write access can
   dismiss one non-conflict finding by commenting `<!-- helm:accept-finding -->` with a
   finding title, severity, and rationale on the impl PR. Matching reviewer findings are

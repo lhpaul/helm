@@ -102,6 +102,8 @@ export interface FanoutReviewersOptions {
   selectedCodeRepo?: CodeRepo;
   selectedBranchName?: string;
   transformReviewComment?: ReviewCommentTransform;
+  /** When set, reviewers treat the PR as a knowledge draft artifact (early-loop). */
+  draftArtifactKind?: 'spec' | 'plan';
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -207,7 +209,11 @@ export function buildReviewerParams(
   workspacePath: string,
   prUrl: string,
   spec?: string,
-  options: { codeRepo?: CodeRepo; branchName?: string } = {},
+  options: {
+    codeRepo?: CodeRepo;
+    branchName?: string;
+    draftArtifactKind?: 'spec' | 'plan';
+  } = {},
 ): SpawnParams {
   const specialistCfg = product.specialists[SPECIALIST_CONFIG_KEY[kind]];
   const specialistId = `${kind}-reviewer`;
@@ -216,13 +222,18 @@ export function buildReviewerParams(
   const codeRepo = options.codeRepo ?? product.code_repos[0];
   const defaultBranch = codeRepo?.default_branch ?? 'main';
   const branchName = options.branchName ?? implBranchName(externalId);
+  const draftArtifactKind = options.draftArtifactKind;
 
   const commonHeader = [
     `You are Helm's ${kindLabel} reviewer specialist. Your task is to review item \`${externalId}\`.`,
     '',
-    `The implementation PR is available at: ${prUrl} (for context only — do not merge or close it).`,
+    draftArtifactKind
+      ? `This is an **early-loop draft-${draftArtifactKind} review** on the knowledge repo. The PR should only add/update \`${draftArtifactKind === 'spec' ? 'specs' : 'plans'}/${externalId}.md\` — not implementation code or tests.`
+      : `The implementation PR is available at: ${prUrl} (for context only — do not merge or close it).`,
     '',
-    `The working directory is a shallow clone of the \`${branchName}\` review branch.`,
+    draftArtifactKind
+      ? `The working directory is a shallow clone of the draft-${draftArtifactKind} review branch.`
+      : `The working directory is a shallow clone of the \`${branchName}\` review branch.`,
     '',
     `To inspect the diff: \`git fetch --depth 1 origin ${defaultBranch}\` then \`git diff origin/${defaultBranch}...HEAD\``,
   ].join('\n');
@@ -302,22 +313,32 @@ export function buildReviewerParams(
       break;
 
     case 'test':
-      kindSpecificInstructions = [
-        '',
-        '**Your task — test coverage review:**',
-        '- Assess test coverage against Acceptance Criteria in the spec (if provided above).',
-        '- Identify edge cases and error paths not covered by existing tests.',
-        '- Evaluate test quality: are assertions meaningful, or are they trivial/tautological?',
-        '- Flag excessive mocking that may hide real bugs.',
-        '- Identify tests that may be flaky (time-dependent, order-dependent, environment-dependent).',
-        '',
-        '**Severity contract (ADR-043 §5) — the acceptance criteria set the bar:**',
-        '- Every finding must cite the acceptance criterion it maps to. A finding you cannot tie to an AC line is filed at **LOW** or **INFO**, never higher.',
-        '- Asking for a higher-fidelity test artifact than the AC requires — a real-device run, an end-to-end or UI-automation harness, a framework runtime rendering the real app — is a suggestion, not a blocker. Cap it at **LOW** unless an AC names that artifact.',
-        '- If the AC closed on a narrower artifact (a unit smoke, a contract test) and that artifact is present and meaningful, say so and move on. Restating the same fidelity ask in new words across reviews is not a new finding.',
-        '',
-        '**Do not modify any files in the working directory.** Surface all findings in your review only (written to the artifact path shown below). The orchestrator does not push changes from security or test reviewers.',
-      ].join('\n');
+      kindSpecificInstructions = draftArtifactKind
+        ? [
+            '',
+            `**Your task — draft-${draftArtifactKind} testability review:**`,
+            `- Check that acceptance criteria are testable and name what will be verified on the **implementation** PR.`,
+            '- Do **not** CHANGES_REQUESTED solely because this knowledge PR lacks `apps/*` test files or executable coverage — those are impl-stage.',
+            '- MEDIUM/CHANGES_REQUESTED only if the artifact itself is untestable (AC missing, contradictory, or unmeasurable).',
+            '',
+            '**Do not modify any files in the working directory.** Surface all findings in your review only (written to the artifact path shown below). The orchestrator does not push changes from security or test reviewers.',
+          ].join('\n')
+        : [
+            '',
+            '**Your task — test coverage review:**',
+            '- Assess test coverage against Acceptance Criteria in the spec (if provided above).',
+            '- Identify edge cases and error paths not covered by existing tests.',
+            '- Evaluate test quality: are assertions meaningful, or are they trivial/tautological?',
+            '- Flag excessive mocking that may hide real bugs.',
+            '- Identify tests that may be flaky (time-dependent, order-dependent, environment-dependent).',
+            '',
+            '**Severity contract (ADR-043 §5) — the acceptance criteria set the bar:**',
+            '- Every finding must cite the acceptance criterion it maps to. A finding you cannot tie to an AC line is filed at **LOW** or **INFO**, never higher.',
+            '- Asking for a higher-fidelity test artifact than the AC requires — a real-device run, an end-to-end or UI-automation harness, a framework runtime rendering the real app — is a suggestion, not a blocker. Cap it at **LOW** unless an AC names that artifact.',
+            '- If the AC closed on a narrower artifact (a unit smoke, a contract test) and that artifact is present and meaningful, say so and move on. Restating the same fidelity ask in new words across reviews is not a new finding.',
+            '',
+            '**Do not modify any files in the working directory.** Surface all findings in your review only (written to the artifact path shown below). The orchestrator does not push changes from security or test reviewers.',
+          ].join('\n');
       break;
   }
 
@@ -499,7 +520,13 @@ export async function fanoutReviewers(
   runGh?: RunGh,
   options: FanoutReviewersOptions = {},
 ): Promise<ReviewerFanoutResult> {
-  const { fetchFn, selectedCodeRepo, selectedBranchName, transformReviewComment } = options;
+  const {
+    fetchFn,
+    selectedCodeRepo,
+    selectedBranchName,
+    transformReviewComment,
+    draftArtifactKind,
+  } = options;
   const codeRepo = selectedCodeRepo ?? product.code_repos[0];
   if (!codeRepo) {
     return {
@@ -584,6 +611,7 @@ export async function fanoutReviewers(
         const params = buildReviewerParams(kind, externalId, product, workspacePath, prUrl, spec, {
           codeRepo,
           branchName,
+          draftArtifactKind,
         });
         const session = await runtime.spawn(params);
         const agentResult = await session.wait();

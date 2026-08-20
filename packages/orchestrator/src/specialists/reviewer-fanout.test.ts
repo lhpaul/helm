@@ -224,6 +224,18 @@ describe('buildReviewerParams', () => {
     expect(params.prompt).toContain('Restating the same fidelity ask in new words');
   });
 
+  it('early-loop draftArtifactKind reframes test reviewer away from apps/* coverage', () => {
+    const params = buildReviewerParams('test', 'LEA-110', product, '/tmp/ws', PR_URL, undefined, {
+      draftArtifactKind: 'spec',
+    });
+    expect(params.prompt).toContain('early-loop draft-spec review');
+    expect(params.prompt).toContain('draft-spec testability review');
+    expect(params.prompt).toContain(
+      'Do **not** CHANGES_REQUESTED solely because this knowledge PR lacks',
+    );
+    expect(params.prompt).not.toContain('Every finding must cite the acceptance criterion');
+  });
+
   it('does not put the test severity contract on the code or security reviewers', () => {
     for (const kind of ['code', 'security'] as const) {
       const params = buildReviewerParams(kind, 'HLM-42', product, '/tmp/ws', PR_URL);

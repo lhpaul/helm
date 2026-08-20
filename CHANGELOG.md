@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **GitHub `ping` acknowledged for Linear products:** `/api/webhooks/github` returned
+  `400` for `X-GitHub-Event: ping` when the primary product used Linear (AF). GitHub
+  marks those deliveries failed and can disable the hook. Ping is now a no-op `200`
+  so Linear products can still subscribe to GitHub PR/status events for the review
+  loop. Documents `LINEAR_WEBHOOK_SECRET` in `.env.example` for AF.
+
 ### Removed
 
 - **Haystack external review provider (#85, ADR-036):** Haystack is retired end-to-end. `review.external.provider` no longer accepts `haystack` and the `review.external.haystack` config block is rejected — products must use `bugbot` or `coderabbit`. Deletes `packages/orchestrator/src/external-review/haystack/**` (adapter, CLI wrapper, triage polling, category/finding-id normalization, skip-evidence probe, fixtures), the Haystack branch in `runExternalReviewIfConfigured`, and the Haystack check-run allowlist and trusted app identities in the GitHub Projects webhook parser (a `Haystack / Review` check run no longer emits `external_review_ready`). The `external_skip_evidence` stop-rule escalation reason is removed with it: only the Haystack `pr-status` probe ever produced that evidence, so behavior for the remaining providers is unchanged (`external_escalate` and `external_repeated_skip` still apply). The post-skip retry backoff, previously read from `review.external.haystack.poll_interval_sec`, is now a fixed 15s. Shared `defaultSleep` moved to `packages/orchestrator/src/lib/sleep.ts`.

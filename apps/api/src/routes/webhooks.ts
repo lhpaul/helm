@@ -171,6 +171,12 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           ? externalReviewTrustConfig(await getProductConfig())
           : undefined;
       event = parseGitHubWebhook({ eventType, payload: body }, trustConfig);
+    } else if (eventType === 'ping') {
+      // GitHub sends `ping` when a webhook is created or the "Recent Deliveries →
+      // Redeliver" button is used. Acknowledge with 200 so Linear-product hooks
+      // (which still subscribe to GitHub for PR/status events) are not marked
+      // failed for a harmless probe.
+      return c.json({ processed: true, ignored: 'ping' });
     } else {
       // issues / projects_v2_item — require the GitHub Projects
       // adapter. For a non-GitHub-Projects product (e.g. Linear) this is the wrong

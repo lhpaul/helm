@@ -207,10 +207,21 @@ export function normalizeCodeRabbitReviewPayload(
     };
   }
 
-  // Rate-limit success is not a clean bill — treat as skipped so the loop does
-  // not clear blockers based on a non-review.
+  // Rate-limit success is not a clean bill — defer so the loop waits for a real
+  // review instead of burning external_repeated_skip budget on a non-verdict.
   if (isTerminalSuccessState(statusState) && /rate\s*limit/i.test(description)) {
-    return { status: 'skipped', reason: 'unavailable' };
+    if (!config.deferWhenPending) {
+      return {
+        status: 'skipped',
+        reason: 'unavailable',
+        providerReason: 'coderabbit rate_limited',
+      };
+    }
+    return {
+      status: 'deferred',
+      reason: 'analysis_pending',
+      providerReason: 'coderabbit rate_limited',
+    };
   }
 
   const findings = { blockers: [] as NormalizedFinding[], advisories: [] as NormalizedFinding[] };

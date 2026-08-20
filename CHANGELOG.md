@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CodeRabbit commit status with null creator (LEA-246 early-loop):** GitHub Combined
+  Status often returns CodeRabbit entries with `creator: null`. The loader required a
+  trusted login and treated a miss as `unavailable`, which burned
+  `external_repeated_skip` before a pending intent could be stored (status webhooks then
+  had nothing to resume). Allowlisted contexts with a missing creator are now accepted;
+  only an explicit untrusted creator is rejected. No matching status yet yields a
+  synthetic `pending` status (defer) instead of skip. Rate-limited "Review rate limited"
+  success statuses defer when `defer_when_pending` is on, instead of counting as
+  unavailable skips.
+
 - **GitHub `ping` acknowledged for Linear products:** `/api/webhooks/github` returned
   `400` for `X-GitHub-Event: ping` when the primary product used Linear (AF). GitHub
   marks those deliveries failed and can disable the hook. Ping is now a no-op `200`

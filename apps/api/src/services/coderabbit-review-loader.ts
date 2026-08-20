@@ -105,6 +105,19 @@ function isTrustedCodeRabbitStatusContext(context: string | undefined, product: 
   return contexts.has(normalize(context));
 }
 
+/**
+ * Combined-status entries from CodeRabbit often omit `creator` (null). Trust an
+ * allowlisted context alone when the creator is absent; still reject an explicit
+ * untrusted creator so a forged status cannot spoof the context name.
+ */
+function isAcceptableCodeRabbitStatusCreator(
+  login: string | undefined | null,
+  product: Product,
+): boolean {
+  if (!login) return true;
+  return isTrustedCodeRabbitIdentity(login, product);
+}
+
 async function fetchGitHubJson<T>(url: string, token: string): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
@@ -300,9 +313,22 @@ export function createGitHubCodeRabbitReviewLoader(input: {
       const status = (combined.statuses ?? []).find(
         (candidate) =>
           isTrustedCodeRabbitStatusContext(candidate.context, input.product) &&
-          isTrustedCodeRabbitIdentity(candidate.creator?.login, input.product),
+          isAcceptableCodeRabbitStatusCreator(candidate.creator?.login, input.product),
       );
-      if (!status) return { unavailable: true };
+      if (!status) {
+        // No allowlisted status yet — defer (pending) instead of skip/unavailable so
+        // the review loop persists an intent and can resume from the status webhook.
+        // Immediate unavailable here caused external_repeated_skip on AF early-loop
+        // (LEA-246) while CodeRabbit was still posting / when creator was null.
+        return {
+          status: {
+            context:
+              input.product.review?.external?.coderabbit?.status_contexts?.[0] ?? 'CodeRabbit',
+            state: 'pending',
+            description: 'awaiting CodeRabbit status',
+          },
+        };
+      }
 
       const [reviewComments, reviewThreads] = await Promise.all([
         fetchPaginatedGitHubJson<GitHubReviewCommentResponse>(

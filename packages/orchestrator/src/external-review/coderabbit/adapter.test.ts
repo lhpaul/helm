@@ -110,11 +110,27 @@ describe('CodeRabbitExternalReviewAdapter', () => {
     }
   });
 
-  it('skips rate-limited success statuses', () => {
+  it('defers rate-limited success statuses when deferWhenPending', () => {
     const result = normalizeCodeRabbitReviewPayload(
       loadFixture('status-rate-limited.json'),
       resolveCodeRabbitReviewConfig(baseProduct),
     );
-    expect(result).toEqual({ status: 'skipped', reason: 'unavailable' });
+    expect(result).toEqual({
+      status: 'deferred',
+      reason: 'analysis_pending',
+      providerReason: 'coderabbit rate_limited',
+    });
+  });
+
+  it('skips rate-limited success statuses when deferWhenPending is false', () => {
+    const result = normalizeCodeRabbitReviewPayload(loadFixture('status-rate-limited.json'), {
+      ...resolveCodeRabbitReviewConfig(baseProduct),
+      deferWhenPending: false,
+    });
+    expect(result).toEqual({
+      status: 'skipped',
+      reason: 'unavailable',
+      providerReason: 'coderabbit rate_limited',
+    });
   });
 });

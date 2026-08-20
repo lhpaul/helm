@@ -184,6 +184,34 @@ describe('POST /api/webhooks/linear', () => {
       const res = await post(body);
       expect(res.status).toBe(200);
     });
+
+    it('ACKs HTTP 200 before slow create/replay finishes (Linear 5s deadline)', async () => {
+      const body = JSON.stringify({});
+      mockParseWebhook.mockReturnValue({
+        type: 'item_created',
+        externalId: 'MOM-slow',
+        timestamp: 't',
+      });
+      let releaseCreate!: () => void;
+      mockCreate.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseCreate = () => resolve({ history: [] });
+          }),
+      );
+
+      const started = Date.now();
+      const res = await post(body);
+      const ackMs = Date.now() - started;
+
+      expect(res.status).toBe(200);
+      expect(ackMs).toBeLessThan(1000);
+      expect(mockReplayPendingReviewDispatchForItem).not.toHaveBeenCalled();
+      releaseCreate();
+      await vi.waitFor(() => {
+        expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalled();
+      });
+    });
   });
 
   describe('dispatch: item_updated with subStage', () => {
@@ -275,7 +303,7 @@ describe('POST /api/webhooks/linear', () => {
       expect(mockReplayPendingReviewDispatchForItem).toHaveBeenCalled();
     });
 
-    it('returns 500 on unexpected transition error', async () => {
+    it('ACKs HTTP 200 even when transition fails unexpectedly (errors stay in background)', async () => {
       const body = JSON.stringify({});
       mockParseWebhook.mockReturnValue({
         type: 'item_updated',
@@ -284,9 +312,15 @@ describe('POST /api/webhooks/linear', () => {
         timestamp: 't',
       });
       mockTransition.mockRejectedValue(new Error('DB exploded'));
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       const res = await post(body);
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => {
+        expect(mockTransition).toHaveBeenCalled();
+        expect(errorSpy).toHaveBeenCalled();
+      });
+      errorSpy.mockRestore();
     });
   });
 

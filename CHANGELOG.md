@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Linear webhook ACK within 5s deadline:** `POST /api/webhooks/linear` verified the
+  signature and then awaited create/transition plus `replayPendingReviewDispatch`
+  (GitHub lookups) on the request path. Linear disables webhooks that exceed a 5s
+  response window — observed as “Helm Mac Mini” auto-disabled on the AF Mini Funnel
+  during busy early-loop bursts. After a valid signature, Helm now returns `200`
+  immediately and runs side effects in the background (idempotent create / no-op
+  invalid transitions). Misconfiguration (`503`) and bad signatures (`401`) still
+  fail closed on the request path.
+
 - **CodeRabbit commit status with null creator (LEA-246 early-loop):** GitHub Combined
   Status often returns CodeRabbit entries with `creator: null`. The loader required a
   trusted login and treated a miss as `unavailable`, which burned

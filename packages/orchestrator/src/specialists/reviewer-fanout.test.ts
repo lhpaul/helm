@@ -217,6 +217,20 @@ describe('buildReviewerParams', () => {
     expect(params.prompt).toContain('Do not modify any files in the working directory');
   });
 
+  it('caps fidelity asks beyond the AC at LOW for the test reviewer (ADR-043 §5)', () => {
+    const params = buildReviewerParams('test', 'HLM-42', product, '/tmp/ws', PR_URL);
+    expect(params.prompt).toContain('Every finding must cite the acceptance criterion');
+    expect(params.prompt).toContain('Cap it at **LOW** unless an AC names that artifact');
+    expect(params.prompt).toContain('Restating the same fidelity ask in new words');
+  });
+
+  it('does not put the test severity contract on the code or security reviewers', () => {
+    for (const kind of ['code', 'security'] as const) {
+      const params = buildReviewerParams(kind, 'HLM-42', product, '/tmp/ws', PR_URL);
+      expect(params.prompt).not.toContain('Every finding must cite the acceptance criterion');
+    }
+  });
+
   it('includes ## Spec section and spec content when spec is provided', () => {
     const specContent = 'AC1: users can log in\nAC2: users can log out';
     const params = buildReviewerParams('code', 'HLM-42', product, '/tmp/ws', PR_URL, specContent);

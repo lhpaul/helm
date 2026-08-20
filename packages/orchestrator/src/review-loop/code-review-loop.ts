@@ -287,12 +287,31 @@ async function suppressFalsePositiveExternalFindings(
   return { blockers, suppressed };
 }
 
+/**
+ * Severities a catalogue match may demote on a code PR (ADR-043 §1).
+ *
+ * ADR-041 §4 declined catalogued gate suppression on code PRs entirely, because
+ * catalogue matching is heuristic token overlap and silently clearing a real
+ * security HIGH is worse than one extra deferral cycle. That reasoning holds at
+ * CRITICAL/HIGH and only there — the LEA-246 churn was a MEDIUM coverage
+ * opinion. The cap is what makes ADR-043 an amendment rather than an override.
+ *
+ * `early-artifact` mode stays uncapped: a draft spec or plan carries no shipping
+ * code to protect (ADR-040).
+ */
+const CODE_REVIEW_SUPPRESSIBLE_SEVERITIES: ReadonlySet<NormalizedFinding['severity']> = new Set([
+  'medium',
+  'low',
+  'info',
+]);
+
 function suppressFalsePositiveReviewerComment(
   input: ReviewCommentTransformInput,
   catalog: FalsePositiveEntry[],
   stage: WorkflowStage,
 ): ReviewCommentTransformResult {
   const findings = { ...input.findings };
+  const capped = stage === 'code-review';
   let suppressedCount = 0;
   const reviewContentWithSuppressedFindings = input.reviewContent.replace(
     /\*\*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\*\*\s*·\s*([^\n]+)/g,
@@ -300,6 +319,8 @@ function suppressFalsePositiveReviewerComment(
       if (summary.startsWith('Catalogued false positive:')) return line;
 
       const severity = rawSeverity.toLowerCase() as NormalizedFinding['severity'];
+      if (capped && !CODE_REVIEW_SUPPRESSIBLE_SEVERITIES.has(severity)) return line;
+
       const finding: NormalizedFinding = {
         id: `${input.kind}:${summary}`,
         severity,
@@ -336,24 +357,32 @@ function rewriteReviewStatus(reviewContent: string, status: 'APPROVED' | 'CHANGE
   return `${reviewContent.trimEnd()}\n\n## Status\n${status}`;
 }
 
+/**
+ * Reviewer-comment transform that demotes catalogued findings before the comment
+ * is posted. Runs in every mode as of ADR-043 §1 — the severity cap that keeps
+ * a code PR safe lives in the transform, not in a mode guard.
+ */
 async function buildFalsePositiveReviewerCommentTransform(
   params: RunCodeReviewLoopParams,
   catalog: FalsePositiveEntry[],
 ): Promise<ReviewCommentTransform | undefined> {
-  if (params.mode !== 'early-artifact') return undefined;
-
   const stage = stageForLoopParams(params);
   if (catalog.length === 0) return undefined;
 
   return (input) => suppressFalsePositiveReviewerComment(input, catalog, stage);
 }
 
+/**
+ * Applies the catalogue transform to the fan-out results the gate reads, so a
+ * catalogued finding stops driving `shouldRemediate`, the blocker count, and the
+ * sticky baseline — not just the PR comment text (ADR-043 §1).
+ */
 async function suppressFalsePositiveReviewerResults(
   params: RunCodeReviewLoopParams,
   results: ReviewerResult[],
   catalog: FalsePositiveEntry[],
 ): Promise<ReviewerResult[]> {
-  if (params.mode !== 'early-artifact' || results.length === 0) return results;
+  if (results.length === 0) return results;
 
   const stage = stageForLoopParams(params);
   if (catalog.length === 0) return results;

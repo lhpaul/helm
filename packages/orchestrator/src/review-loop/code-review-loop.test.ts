@@ -2592,6 +2592,228 @@ describe('runCodeReviewLoop', () => {
     expect(result.error).toBe('Review adjudication failed');
     expect(handleReviewAdjudicatorResult).not.toHaveBeenCalled();
   });
+
+  describe('catalogued suppression on code PRs (ADR-043 §1)', () => {
+    const mediumGateProduct = (): Product => ({
+      ...baseProduct,
+      review: { loop: { remediate_severity: 'medium_and_above' } },
+    });
+    /** LEA-246: the AC closed on a Vitest unit smoke; the e2e harness is separate work. */
+    const fidelityCatalogueMd = (appliesTo?: string) =>
+      [
+        '# Code-review false positives',
+        '',
+        '---',
+        '',
+        '### Unit smoke is the agreed coverage; Maestro/Expo Router runtime is separate work',
+        '',
+        '**Pattern:** Maestro end-to-end flow or Expo Router runtime rendering demanded when the unit smoke is the agreed coverage.',
+        '',
+        ...(appliesTo ? [`**Applies to:** ${appliesTo}`, ''] : []),
+        "**Why it's a false positive:** The AC checklist closed on the unit smoke; the end-to-end harness is tracked as separate work (LEA-246).",
+        '',
+      ].join('\n');
+
+    const fidelityCatalogue = () => parseFalsePositivesCatalog(fidelityCatalogueMd('code-review'));
+    const unscopedFidelityCatalogue = () => parseFalsePositivesCatalog(fidelityCatalogueMd());
+
+    const fanoutWithTestFinding = (severity: 'HIGH' | 'MEDIUM'): ReviewerFanoutResult =>
+      makeFanout({
+        reviewerResults: [
+          {
+            kind: 'test',
+            status: 'done',
+            costUsd: 0.01,
+            durationMs: 50,
+            commentPosted: true,
+            findings:
+              severity === 'HIGH'
+                ? { critical: 0, high: 1, medium: 0, low: 0, info: 0 }
+                : { critical: 0, high: 0, medium: 1, low: 0, info: 0 },
+            commentBody: [
+              '# Test Review',
+              '',
+              '## Findings',
+              `- **${severity}** · Maestro end-to-end flow and Expo Router runtime coverage missing; the unit smoke is not enough`,
+              '',
+              '## Status',
+              'CHANGES_REQUESTED',
+            ].join('\n'),
+          },
+        ],
+      });
+
+    beforeEach(() => {
+      vi.mocked(shouldRemediate).mockImplementation((results, severity) =>
+        results.some((result) => {
+          if (result.findings === undefined) return false;
+          const criticalHigh = result.findings.critical + result.findings.high;
+          return severity === 'medium_and_above'
+            ? criticalHigh + result.findings.medium > 0
+            : criticalHigh > 0;
+        }),
+      );
+    });
+
+    it('demotes a catalogued MEDIUM before the gate so no remediation runs', async () => {
+      vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(fidelityCatalogue());
+      vi.mocked(fanoutReviewers).mockResolvedValue(fanoutWithTestFinding('MEDIUM'));
+
+      const result = await runCodeReviewLoop({
+        externalId: 'issue_1',
+        product: mediumGateProduct(),
+        prUrl: PR_URL,
+        codeRepo: baseProduct.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe('done');
+      expect(shouldRemediate).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            findings: { critical: 0, high: 0, medium: 0, low: 0, info: 1 },
+            commentBody: expect.stringContaining('**INFO** · Catalogued false positive'),
+          }),
+        ],
+        'medium_and_above',
+      );
+      expect(buildRemediationParams).not.toHaveBeenCalled();
+    });
+
+    it('never demotes a catalogued HIGH on a code PR', async () => {
+      vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(fidelityCatalogue());
+      vi.mocked(fanoutReviewers)
+        .mockResolvedValueOnce(fanoutWithTestFinding('HIGH'))
+        .mockResolvedValue(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+
+      const result = await runCodeReviewLoop({
+        externalId: 'issue_1',
+        product: baseProduct,
+        prUrl: PR_URL,
+        codeRepo: baseProduct.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe('done');
+      expect(shouldRemediate).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+            commentBody: expect.stringContaining('**HIGH** · Maestro end-to-end flow'),
+          }),
+        ],
+        'critical_high',
+      );
+      expect(buildRemediationParams).toHaveBeenCalled();
+    });
+
+    it('still demotes a catalogued HIGH in early-artifact mode (cap is code-PR only)', async () => {
+      vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(unscopedFidelityCatalogue());
+      vi.mocked(fanoutReviewers).mockResolvedValue(fanoutWithTestFinding('HIGH'));
+
+      const result = await runEarlyArtifactReviewLoop({
+        kind: 'spec',
+        externalId: 'issue_1',
+        product: baseProduct,
+        prUrl: 'https://github.com/o/k/pull/7',
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe('done');
+      expect(shouldRemediate).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            findings: { critical: 0, high: 0, medium: 0, low: 0, info: 1 },
+          }),
+        ],
+        'critical_high',
+      );
+      expect(buildRemediationParams).not.toHaveBeenCalled();
+    });
+
+    it('does not apply a code-review-scoped entry to a spec-draft review', async () => {
+      vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(fidelityCatalogue());
+      vi.mocked(fanoutReviewers)
+        .mockResolvedValueOnce(fanoutWithTestFinding('HIGH'))
+        .mockResolvedValue(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+
+      await runEarlyArtifactReviewLoop({
+        kind: 'spec',
+        externalId: 'issue_1',
+        product: {
+          ...baseProduct,
+          knowledge_repo: { url: 'https://github.com/o/k', default_branch: 'main' },
+        },
+        prUrl: 'https://github.com/o/k/pull/7',
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      // `Applies to: code-review` — catalogEntriesForStage filters it out of a
+      // spec-draft run, so the finding must survive the transform untouched.
+      expect(shouldRemediate).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            commentBody: expect.stringContaining('**HIGH** · Maestro end-to-end flow'),
+          }),
+        ],
+        'critical_high',
+      );
+    });
+
+    it('preserves a CHANGES_REQUESTED code review when nothing matches', async () => {
+      vi.mocked(fetchFalsePositivesCatalog).mockResolvedValue(fidelityCatalogue());
+      let transformedBody = '';
+      vi.mocked(fanoutReviewers).mockImplementationOnce(async (...args) => {
+        const transformReviewComment = args[7]?.transformReviewComment;
+        expect(transformReviewComment).toBeTypeOf('function');
+        const transformed = await transformReviewComment!({
+          kind: 'code',
+          reviewContent: [
+            '# Code Review',
+            '',
+            '## Findings',
+            '- **MEDIUM** · totally novel domain finding',
+            '',
+            '## Status',
+            'CHANGES_REQUESTED',
+          ].join('\n'),
+          findings: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+        });
+        transformedBody = transformed.reviewContent;
+        return makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 });
+      });
+
+      await runCodeReviewLoop({
+        externalId: 'issue_1',
+        product: mediumGateProduct(),
+        prUrl: PR_URL,
+        codeRepo: baseProduct.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      expect(transformedBody).toContain('- **MEDIUM** · totally novel domain finding');
+      expect(transformedBody).toContain('## Status\nCHANGES_REQUESTED');
+      expect(transformedBody).not.toContain('Catalogued false positive');
+    });
+  });
 });
 
 describe('buildFindingsByKind', () => {

@@ -6,6 +6,61 @@ const GATE_SEVERITIES: Record<RemediateSeverity, ReadonlySet<string>> = {
   medium_and_above: new Set(['CRITICAL', 'HIGH', 'MEDIUM']),
 };
 
+/**
+ * Sticky theme *groups* (ADR-043 §2). A group describes a subject where
+ * reviewers habitually restate the same ask in different words across cycles.
+ * When a title matches any member pattern, the group id becomes the whole
+ * fingerprint — no paths, no title tokens — so a cycle-1 Expo Router ask and a
+ * cycle-2 Maestro ask read as one unresolved finding instead of two.
+ *
+ * This over-merges on purpose: every test-fidelity finding on a PR collapses to
+ * one fingerprint. That is the safe direction under ADR-038 §2 ("under-counting
+ * sticky remaining is safer than false progress") — merging can only make
+ * `no_progress` fire earlier, which is the point.
+ *
+ * Groups are Helm built-ins, not product config: a group id silently merges
+ * distinct findings, so a new one is a code change with churn evidence.
+ */
+const STICKY_THEME_GROUPS: ReadonlyArray<{
+  id: string;
+  members: ReadonlyArray<{ id: string; pattern: RegExp }>;
+}> = [
+  {
+    id: 'test-fidelity',
+    members: [
+      // Deliberately narrow: `expo` or `unit` alone must not pull an unrelated
+      // finding into the group, since the group id erases everything else.
+      { id: 'e2e-coverage', pattern: /\b(e2e|end[-\s]?to[-\s]?end)\b/i },
+      { id: 'expo-router', pattern: /\bexpo[-\s]?router\b/i },
+      { id: 'maestro', pattern: /\bmaestro\b/i },
+      {
+        id: 'unit-smoke',
+        pattern:
+          /\b(unit[-\s]?smoke|smoke[-\s]?tests?)\b|\bunit tests?\b[^.]{0,40}\b(instead of|rather than|not enough|insufficient|do(?:es)? not (?:exercise|render|cover))\b/i,
+      },
+    ],
+  },
+];
+
+export type StickyThemeMatch = { groupId: string; memberIds: string[] };
+
+/**
+ * Returns the sticky theme group a title belongs to, or `null`.
+ * Exported so callers can explain a fingerprint without re-deriving it.
+ */
+export function matchStickyThemeGroup(title: string): StickyThemeMatch | null {
+  const normalized = title.toLowerCase().replace(/\s+/g, ' ').trim();
+  for (const group of STICKY_THEME_GROUPS) {
+    const memberIds = group.members
+      .filter((member) => member.pattern.test(normalized))
+      .map((member) => member.id);
+    if (memberIds.length > 0) {
+      return { groupId: group.id, memberIds };
+    }
+  }
+  return null;
+}
+
 /** Synonym themes so sticky findings survive title rewording across cycles. */
 const THEME_PATTERNS: ReadonlyArray<{ id: string; pattern: RegExp }> = [
   {
@@ -163,6 +218,11 @@ export function recordStickyImprovement(lane: StickyLane, stickyRemaining: numbe
  */
 export function fingerprintFindingTitle(title: string): string {
   const normalized = title.toLowerCase().replace(/\s+/g, ' ').trim();
+  // Sticky theme groups short-circuit composition (ADR-043 §2): the group id is
+  // the fingerprint, so restatements that swap members still collide.
+  const stickyGroup = matchStickyThemeGroup(normalized);
+  if (stickyGroup) return stickyGroup.groupId;
+
   const themes = THEME_PATTERNS.filter((theme) => theme.pattern.test(normalized)).map(
     (theme) => theme.id,
   );

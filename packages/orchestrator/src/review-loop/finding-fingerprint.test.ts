@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ReviewerResult } from '../specialists/reviewer-fanout.js';
 import {
   collectGateFindingFingerprints,
+  matchStickyThemeGroup,
   countStickyRemaining,
   createStickyLane,
   fingerprintFindingTitle,
@@ -26,6 +27,52 @@ describe('fingerprintFindingTitle', () => {
       'Unvalidated property ID in apps/api/src/routes/debts.ts can 500',
     );
     expect(fp).toContain('apps/api/src/routes/debts.ts');
+  });
+});
+
+describe('sticky theme groups (ADR-043 §2)', () => {
+  const FIDELITY_TITLES = [
+    'No end-to-end coverage for the tenant onboarding flow',
+    'Expo Router navigation is never rendered by the tests',
+    'Add a Maestro flow that drives the real screen',
+    'The unit smoke does not exercise the router at all',
+  ];
+
+  it.each(FIDELITY_TITLES)('maps %s onto the test-fidelity group', (title) => {
+    expect(matchStickyThemeGroup(title)?.groupId).toBe('test-fidelity');
+    expect(fingerprintFindingTitle(title)).toBe('test-fidelity');
+  });
+
+  it('gives an Expo Router ask and a Maestro ask the same fingerprint', () => {
+    // LEA-246: cycle 1 asked for Expo Router runtime, cycle 2 asked for Maestro.
+    // Under ADR-038 composition these looked like different findings and the
+    // no_progress streak reset every cycle.
+    const cycle1 = fingerprintFindingTitle(
+      'Vitest smoke does not render Expo Router — no runtime navigation coverage',
+    );
+    const cycle2 = fingerprintFindingTitle(
+      'Missing Maestro flow: the suite never drives the real navigator',
+    );
+    expect(cycle1).toBe(cycle2);
+  });
+
+  it('ignores paths and tokens once a group matches', () => {
+    expect(fingerprintFindingTitle('apps/mobile/src/app/index.tsx has no e2e coverage')).toBe(
+      'test-fidelity',
+    );
+  });
+
+  it.each([
+    'Expo config is missing a bundle identifier',
+    'Unit conversion for square metres is wrong',
+    'Smoke damage report upload fails silently',
+  ])('does not pull %s into the group on a generic word', (title) => {
+    expect(matchStickyThemeGroup(title)).toBeNull();
+  });
+
+  it('leaves non-group themes composing as before', () => {
+    const fp = fingerprintFindingTitle('Missing RLS coverage on summary and properties list');
+    expect(fp.startsWith('tenant-isolation|')).toBe(true);
   });
 });
 

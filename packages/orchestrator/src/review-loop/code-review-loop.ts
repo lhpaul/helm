@@ -57,10 +57,13 @@ import {
   type ReviewLoopLedgerUpdate,
 } from './cumulative-ledger.js';
 import {
-  collectGateFindingFingerprints,
+  collectGateFindings,
   createStickyLane,
   observeStickyLane,
+  recordStickyFindings,
   recordStickyImprovement,
+  unresolvedStickyFindings,
+  type StickyFindingRecord,
 } from './finding-fingerprint.js';
 import { isEnoentError } from '../lib/fs-errors.js';
 import { type StoredResolvedProductDecision } from './adjudication.js';
@@ -626,10 +629,12 @@ export async function runCodeReviewLoop(
         gateFanoutResult.reviewerResults,
         loopConfig.remediateSeverity,
       );
-      const currentFingerprints = collectGateFindingFingerprints(
+      const currentFindings = collectGateFindings(
         gateFanoutResult.reviewerResults,
         loopConfig.remediateSeverity,
       );
+      const currentFingerprints = new Set(currentFindings.map((finding) => finding.fingerprint));
+      recordStickyFindings(internalSticky, currentFindings);
       const stickyRemaining = observeStickyLane(internalSticky, currentFingerprints);
       noProgressStreak = nextNoProgressStreak(
         bestBlockerCount,
@@ -642,6 +647,8 @@ export async function runCodeReviewLoop(
         bestBlockerCount = blockerCount;
       }
       recordStickyImprovement(internalSticky, stickyRemaining);
+      // ADR-043 §3 — findings this lane has now seen twice. Empty on cycle 1.
+      const stickyFindings = unresolvedStickyFindings(internalSticky, currentFingerprints);
 
       const stop = evaluateStopRule({
         cycle,
@@ -673,6 +680,7 @@ export async function runCodeReviewLoop(
         totalCost,
         maxDuration,
         catalogEntries: stageCatalogEntries,
+        stickyFindings,
         loopConfig,
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,
@@ -844,6 +852,14 @@ export async function runCodeReviewLoop(
 
       const blockerCount = blockers.length;
       const currentFingerprints = new Set(blockers.map((finding) => finding.id));
+      recordStickyFindings(
+        externalSticky,
+        blockers.map((finding) => ({
+          fingerprint: finding.id,
+          title: finding.summary,
+          severity: finding.severity,
+        })),
+      );
       const stickyRemaining = observeStickyLane(externalSticky, currentFingerprints);
       noProgressStreak = nextNoProgressStreak(
         bestBlockerCount,
@@ -856,6 +872,9 @@ export async function runCodeReviewLoop(
         bestBlockerCount = blockerCount;
       }
       recordStickyImprovement(externalSticky, stickyRemaining);
+      // External ids and internal fingerprints never share a baseline (ADR-038 §3),
+      // so the block handed to the prompts is the external lane's alone.
+      const stickyFindings = unresolvedStickyFindings(externalSticky, currentFingerprints);
 
       const stop = evaluateStopRule({
         cycle,
@@ -886,6 +905,7 @@ export async function runCodeReviewLoop(
         maxDuration,
         externalFindingsBody: formatExternalBlockersForRemediation(blockers),
         catalogEntries: stageCatalogEntries,
+        stickyFindings,
         loopConfig,
         fetchFn: params.fetchFn,
         resolvedProductDecisions: params.resolvedProductDecisions,
@@ -1052,6 +1072,7 @@ async function runAdjudicationPass(input: {
   fetchFn?: FetchFn;
   resolvedProductDecisions?: StoredResolvedProductDecision[];
   catalogEntries?: readonly FalsePositiveEntry[];
+  stickyFindings?: readonly StickyFindingRecord[];
 }): Promise<AdjudicationPassOutcome> {
   let workspacePath = '';
   try {
@@ -1117,6 +1138,7 @@ async function runAdjudicationPass(input: {
         draftArtifact,
         resolvedProductDecisions: input.resolvedProductDecisions,
         catalogEntries: input.catalogEntries,
+        stickyFindings: input.stickyFindings,
         codeRepo: input.codeRepo,
         branchName: input.branchName,
       },
@@ -1250,6 +1272,7 @@ async function runAdjudicationIfEnabled(input: {
   resolvedProductDecisions?: StoredResolvedProductDecision[];
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
   catalogEntries?: readonly FalsePositiveEntry[];
+  stickyFindings?: readonly StickyFindingRecord[];
 }): Promise<AdjudicationPassOutcome> {
   if (!input.loopConfig.adjudicationEnabled) {
     return { status: 'skipped' };
@@ -1316,6 +1339,7 @@ async function runRemediationPass(input: {
   resolvedProductDecisions?: StoredResolvedProductDecision[];
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
   catalogEntries?: readonly FalsePositiveEntry[];
+  stickyFindings?: readonly StickyFindingRecord[];
   stageTransitions?: 'code-review' | 'none';
 }): Promise<RemediationPassOutcome> {
   let totalCost = input.totalCost;
@@ -1342,6 +1366,7 @@ async function runRemediationPass(input: {
     resolvedProductDecisions: input.resolvedProductDecisions,
     loadResolvedProductDecisions: input.loadResolvedProductDecisions,
     catalogEntries: input.catalogEntries,
+    stickyFindings: input.stickyFindings,
   });
 
   if (adjudication.status === 'human_required') {
@@ -1424,7 +1449,7 @@ async function runRemediationPass(input: {
       adjudicationPlan,
       input.codeRepo,
       input.branchName,
-      { catalogEntries: input.catalogEntries },
+      { catalogEntries: input.catalogEntries, stickyFindings: input.stickyFindings },
     );
 
     let remediationResult: RemediationResult | undefined;

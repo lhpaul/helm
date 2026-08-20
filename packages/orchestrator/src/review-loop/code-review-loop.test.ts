@@ -282,7 +282,7 @@ describe('runCodeReviewLoop', () => {
       undefined,
       { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
       'helm/spec/issue_1',
-      { catalogEntries: [] },
+      { catalogEntries: [], stickyFindings: [] },
     );
   });
 
@@ -1166,7 +1166,7 @@ describe('runCodeReviewLoop', () => {
       undefined,
       baseProduct.code_repos[0],
       undefined,
-      { catalogEntries: [] },
+      { catalogEntries: [], stickyFindings: [] },
     );
     const findingsByKind = vi.mocked(buildRemediationParams).mock.calls.at(-1)![4] as Map<
       string,
@@ -2055,7 +2055,7 @@ describe('runCodeReviewLoop', () => {
       expect.stringContaining('SETTLED'),
       expect.any(Object),
       undefined,
-      { catalogEntries: [] },
+      { catalogEntries: [], stickyFindings: [] },
     );
   });
 
@@ -2222,7 +2222,7 @@ describe('runCodeReviewLoop', () => {
       '- **AUTO** · Add CSRF guard on POST /api/sync',
       product.code_repos[0],
       undefined,
-      { catalogEntries: [] },
+      { catalogEntries: [], stickyFindings: [] },
     );
   });
 
@@ -2316,6 +2316,7 @@ describe('runCodeReviewLoop', () => {
         spec: undefined,
         resolvedProductDecisions: [],
         catalogEntries: [],
+        stickyFindings: [],
         codeRepo: productWithAdjudicator().code_repos[0],
         branchName: undefined,
       },
@@ -2426,7 +2427,7 @@ describe('runCodeReviewLoop', () => {
         expect.stringContaining('DEFERRED'),
         expect.anything(),
         undefined,
-        { catalogEntries: catalogued },
+        { catalogEntries: catalogued, stickyFindings: [] },
       );
     });
 
@@ -2593,10 +2594,141 @@ describe('runCodeReviewLoop', () => {
     expect(handleReviewAdjudicatorResult).not.toHaveBeenCalled();
   });
 
+  describe('unresolved sticky findings in prompts (ADR-043 §3)', () => {
+    const fidelityFanout = (title: string): ReviewerFanoutResult =>
+      makeFanout({
+        reviewerResults: [
+          {
+            kind: 'test',
+            status: 'done',
+            costUsd: 0.01,
+            durationMs: 50,
+            commentPosted: true,
+            findings: { critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+            commentBody: `# Test Review\n\n## Findings\n- **HIGH** · ${title}\n`,
+          },
+        ],
+      });
+
+    const stickyOptionFor = (call: number) =>
+      (
+        vi.mocked(buildRemediationParams).mock.calls[call]?.[8] as
+          | { stickyFindings?: { fingerprint: string; cyclesSeen: number; title: string }[] }
+          | undefined
+      )?.stickyFindings;
+
+    beforeEach(() => {
+      vi.mocked(shouldRemediate).mockImplementation((results) =>
+        results.some(
+          (result) =>
+            result.findings !== undefined && result.findings.critical + result.findings.high > 0,
+        ),
+      );
+    });
+
+    it('sends nothing sticky on the first cycle', async () => {
+      vi.mocked(fanoutReviewers)
+        .mockResolvedValueOnce(fidelityFanout('No end-to-end coverage for onboarding'))
+        .mockResolvedValue(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+
+      await runCodeReviewLoop({
+        externalId: 'issue_1',
+        product: baseProduct,
+        prUrl: PR_URL,
+        codeRepo: baseProduct.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      expect(buildRemediationParams).toHaveBeenCalledTimes(1);
+      expect(stickyOptionFor(0)).toEqual([]);
+    });
+
+    it('reports a reworded fidelity ask as one sticky finding on cycle 2', async () => {
+      // LEA-246: Expo Router in cycle 1, Maestro in cycle 2 — one subject.
+      vi.mocked(fanoutReviewers)
+        .mockResolvedValueOnce(
+          fidelityFanout('Vitest smoke never renders Expo Router — no runtime coverage'),
+        )
+        .mockResolvedValueOnce(
+          fidelityFanout('Missing Maestro flow: the suite never drives the real navigator'),
+        )
+        .mockResolvedValue(makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+
+      await runCodeReviewLoop({
+        externalId: 'issue_1',
+        product: baseProduct,
+        prUrl: PR_URL,
+        codeRepo: baseProduct.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      expect(buildRemediationParams).toHaveBeenCalledTimes(2);
+      expect(stickyOptionFor(1)).toEqual([
+        expect.objectContaining({
+          fingerprint: 'test-fidelity',
+          cyclesSeen: 2,
+          severity: 'HIGH',
+          title: 'Missing Maestro flow: the suite never drives the real navigator',
+        }),
+      ]);
+    });
+
+    it('keeps the external lane sticky set separate from the internal one', async () => {
+      const product: Product = {
+        ...baseProduct,
+        review: { external: { provider: 'coderabbit' } },
+      };
+      const externalBlocker = {
+        id: 'cr-finding-1',
+        severity: 'high' as const,
+        blocking: true,
+        summary: 'End-to-end coverage is still missing',
+      };
+      vi.mocked(fanoutReviewers).mockResolvedValue(
+        makeFanout({}, { critical: 0, high: 0, medium: 0, low: 0, info: 0 }),
+      );
+      vi.mocked(runExternalReviewIfConfigured)
+        .mockResolvedValueOnce({
+          status: 'needs_fixes',
+          blockers: [externalBlocker],
+          advisories: [],
+        })
+        .mockResolvedValueOnce({
+          status: 'needs_fixes',
+          blockers: [externalBlocker],
+          advisories: [],
+        })
+        .mockResolvedValue({ status: 'clean', blockers: [], advisories: [] });
+
+      await runCodeReviewLoop({
+        externalId: 'issue_1',
+        product,
+        prUrl: PR_URL,
+        codeRepo: baseProduct.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+      });
+
+      expect(stickyOptionFor(0)).toEqual([]);
+      // The external id space is the lane's key — never the internal fingerprint.
+      expect(stickyOptionFor(1)).toEqual([
+        expect.objectContaining({ fingerprint: 'cr-finding-1', cyclesSeen: 2 }),
+      ]);
+    });
+  });
+
   describe('catalogued suppression on code PRs (ADR-043 §1)', () => {
     const mediumGateProduct = (): Product => ({
       ...baseProduct,
-      review: { loop: { remediate_severity: 'medium_and_above' } },
+      review: { loop: { max_cycles: 5, remediate_severity: 'medium_and_above' } },
     });
     /** LEA-246: the AC closed on a Vitest unit smoke; the e2e harness is separate work. */
     const fidelityCatalogueMd = (appliesTo?: string) =>

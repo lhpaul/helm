@@ -146,6 +146,19 @@ export function parseFindingFingerprints(
   return findings;
 }
 
+/** Collects every gate-severity finding across reviewer comment bodies. */
+export function collectGateFindings(
+  results: ReviewerResult[],
+  severity: RemediateSeverity = 'critical_high',
+): ParsedFinding[] {
+  const findings: ParsedFinding[] = [];
+  for (const result of results) {
+    if (!result.commentBody) continue;
+    findings.push(...parseFindingFingerprints(result.commentBody, severity));
+  }
+  return findings;
+}
+
 /** Collects unique fingerprints across reviewer comment bodies at gate severity. */
 export function collectGateFindingFingerprints(
   results: ReviewerResult[],
@@ -187,21 +200,87 @@ export function countStickyRemaining(
 export type StickyLane = {
   baseline: Set<string> | null;
   bestRemaining: number | null;
+  /** Cycles each fingerprint has been observed at gate severity, in this lane. */
+  seen: Map<string, number>;
+  /** Last-seen title/severity per fingerprint, for prompt injection (ADR-043 §3). */
+  records: Map<string, { title: string; severity: string }>;
 };
 
 export function createStickyLane(): StickyLane {
-  return { baseline: null, bestRemaining: null };
+  return { baseline: null, bestRemaining: null, seen: new Map(), records: new Map() };
 }
 
 /**
  * Observes the current fingerprint set for one lane and returns stickyRemaining.
- * Initializes the baseline on first observation.
+ * Initializes the baseline on first observation and ticks each fingerprint's
+ * cycle count, which is what makes a finding "unresolved sticky" at 2.
  */
 export function observeStickyLane(lane: StickyLane, current: ReadonlySet<string>): number {
   if (lane.baseline === null) {
     lane.baseline = new Set(current);
   }
+  for (const fingerprint of current) {
+    lane.seen.set(fingerprint, (lane.seen.get(fingerprint) ?? 0) + 1);
+  }
   return countStickyRemaining(lane.baseline, current);
+}
+
+/** A finding still open after two or more cycles of one lane (ADR-043 §3). */
+export type StickyFindingRecord = {
+  fingerprint: string;
+  title: string;
+  severity: string;
+  cyclesSeen: number;
+};
+
+const SEVERITY_RANK: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 };
+
+/**
+ * Stores the human-readable title behind each fingerprint so the remediator and
+ * adjudicator prompts can name a sticky finding rather than print a hash-like id.
+ * Last write wins: the newest wording is the one the reviewer just used.
+ */
+export function recordStickyFindings(
+  lane: StickyLane,
+  findings: readonly { fingerprint: string; title: string; severity: string }[],
+): void {
+  for (const finding of findings) {
+    lane.records.set(finding.fingerprint, {
+      title: finding.title,
+      severity: finding.severity.toUpperCase(),
+    });
+  }
+}
+
+/**
+ * Findings in the current set that this lane has now seen in two or more cycles.
+ * Empty on cycle 1 by definition — nothing is sticky the first time it appears.
+ *
+ * Per-lane by construction: internal fan-out fingerprints and external
+ * `NormalizedFinding.id`s never meet (ADR-038 §3).
+ */
+export function unresolvedStickyFindings(
+  lane: StickyLane,
+  current: ReadonlySet<string>,
+): StickyFindingRecord[] {
+  const records: StickyFindingRecord[] = [];
+  for (const fingerprint of current) {
+    const cyclesSeen = lane.seen.get(fingerprint) ?? 0;
+    if (cyclesSeen < 2) continue;
+    const record = lane.records.get(fingerprint);
+    records.push({
+      fingerprint,
+      title: record?.title ?? fingerprint,
+      severity: record?.severity ?? 'UNKNOWN',
+      cyclesSeen,
+    });
+  }
+  return records.sort(
+    (a, b) =>
+      (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9) ||
+      b.cyclesSeen - a.cyclesSeen ||
+      a.fingerprint.localeCompare(b.fingerprint),
+  );
 }
 
 /** Records a new best sticky-remaining value when improved. */

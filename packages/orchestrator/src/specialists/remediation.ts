@@ -28,6 +28,8 @@ import type { RunGit, RunGh } from './git-helpers.js';
 import { buildExtraHintsSection } from './extra-hints.js';
 import { resolveReviewLoopConfig } from '../review-loop/config.js';
 import { formatCataloguedAdjudicationSection } from '../review-loop/catalog-prompt.js';
+import { formatStickyFindingsSection } from '../review-loop/sticky-prompt.js';
+import type { StickyFindingRecord } from '../review-loop/finding-fingerprint.js';
 import type { FalsePositiveEntry } from '../review-loop/false-positives.js';
 
 // ── Timeout ───────────────────────────────────────────────────────────────────
@@ -81,6 +83,8 @@ export function buildRemediationParams(
   options: {
     /** Catalogued adjudications for this stage (issue #64 tie-breaker surface). */
     catalogEntries?: readonly FalsePositiveEntry[];
+    /** Findings still open after two or more cycles of this lane (ADR-043 §3). */
+    stickyFindings?: readonly StickyFindingRecord[];
   } = {},
 ): SpawnParams {
   const specialistCfg = product.specialists['code-remediator'];
@@ -109,6 +113,7 @@ export function buildRemediationParams(
     options.catalogEntries ?? [],
     'remediator',
   );
+  const stickySection = formatStickyFindingsSection(options.stickyFindings ?? [], 'remediator');
   const remediateSeverity = resolveReviewLoopConfig(product).remediateSeverity;
   const taskSeverityLabel =
     remediateSeverity === 'medium_and_above' ? 'CRITICAL, HIGH, and MEDIUM' : 'CRITICAL and HIGH';
@@ -131,6 +136,7 @@ export function buildRemediationParams(
     ...reviewSections,
     '',
     ...(cataloguedSection ? [cataloguedSection, ''] : []),
+    ...(stickySection ? [stickySection, ''] : []),
     ...(hintsSection ? [hintsSection] : []),
     `**Your task — remediate ${taskSeverityLabel} findings:**`,
     `- Apply mechanical, low-risk fixes to the files in the working directory that resolve the ${taskSeverityLabel} findings.`,

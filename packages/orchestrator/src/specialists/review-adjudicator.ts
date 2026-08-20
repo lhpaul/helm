@@ -20,6 +20,8 @@ import {
   type ParsedAdjudication,
 } from '../review-loop/adjudication.js';
 import { formatCataloguedAdjudicationSection } from '../review-loop/catalog-prompt.js';
+import { formatStickyFindingsSection } from '../review-loop/sticky-prompt.js';
+import type { StickyFindingRecord } from '../review-loop/finding-fingerprint.js';
 import type { FalsePositiveEntry } from '../review-loop/false-positives.js';
 
 export const REVIEW_ADJUDICATOR_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -48,6 +50,8 @@ export function buildReviewAdjudicatorParams(
     resolvedProductDecisions?: StoredResolvedProductDecision[];
     /** Catalogued adjudications for this stage (issue #64 tie-breaker surface). */
     catalogEntries?: readonly FalsePositiveEntry[];
+    /** Findings still open after two or more cycles of this lane (ADR-043 §3). */
+    stickyFindings?: readonly StickyFindingRecord[];
     codeRepo?: CodeRepo;
     branchName?: string;
   } = {},
@@ -88,6 +92,7 @@ export function buildReviewAdjudicatorParams(
     options.catalogEntries ?? [],
     'adjudicator',
   );
+  const stickySection = formatStickyFindingsSection(options.stickyFindings ?? [], 'adjudicator');
   const hintsSection = buildExtraHintsSection(specialistCfg.extra_hints);
   const artifactPath = artifactFileFor(workspacePath, 'review-adjudicator');
   const prLabel = options.draftArtifact ? 'draft artifact PR' : 'implementation PR';
@@ -118,6 +123,7 @@ export function buildReviewAdjudicatorParams(
     '- Do NOT modify source files. Do NOT commit or push.',
     settledDecisionSection,
     cataloguedSection,
+    stickySection,
     '',
     '## Output format',
     '',

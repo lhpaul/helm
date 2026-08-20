@@ -3431,6 +3431,18 @@ describe('POST /api/webhooks/github', () => {
       expect(mockTransition).not.toHaveBeenCalled();
       expect(mockCreate).not.toHaveBeenCalled();
     });
+
+    it('acknowledges GitHub ping with 200 for a Linear product (hook health)', async () => {
+      const body = JSON.stringify({ zen: 'Design for failure.', hook_id: 1 });
+
+      const res = await post(body, 'ping');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ processed: true, ignored: 'ping' });
+      expect(getGitHubAdapter).not.toHaveBeenCalled();
+      expect(mockTransition).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
   });
 
   // ── Genuine server-side adapter faults must NOT be masked as 400 ────────────

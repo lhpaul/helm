@@ -825,6 +825,91 @@ webhooksRouter.post('/webhooks/github', async (c) => {
   return c.json({ processed: true });
 });
 
+/**
+ * Side effects for a verified Linear webhook. Kept off the HTTP critical path
+ * because Linear disables endpoints that do not ACK with HTTP 200 within 5s —
+ * `replayPendingReviewDispatchForItem` may call GitHub and easily exceed that.
+ */
+async function processLinearWebhookEvent(
+  config: Awaited<ReturnType<typeof getProductConfig>>,
+  event: NormalizedEvent,
+): Promise<void> {
+  if (event.type === 'item_created') {
+    let createdOrExists = false;
+    try {
+      // webhook:linear is tracker-originated → createItem's writeback is
+      // anti-echo-skipped (the issue already exists in Linear).
+      await createItem({
+        externalId: event.externalId,
+        productSlug: config.product.slug,
+        triggeredBy: 'webhook:linear',
+      });
+      createdOrExists = true;
+    } catch (err) {
+      if (err instanceof ItemAlreadyExistsError) {
+        // Idempotent — item already exists, treat as success.
+        createdOrExists = true;
+      } else {
+        console.error('[webhooks/linear] Unexpected error creating item:', err);
+        return;
+      }
+    }
+    if (createdOrExists) {
+      try {
+        await replayPendingReviewDispatchForItem({
+          product: config,
+          productSlug: config.product.slug,
+          externalId: event.externalId,
+        });
+      } catch (err) {
+        console.error(
+          '[webhooks/linear] Pending review replay after item creation failed:',
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    return;
+  }
+
+  if (event.type === 'item_updated' && event.subStage != null) {
+    try {
+      // webhook:linear is tracker-originated → transitionItem's writeback is
+      // anti-echo-skipped, preventing a tracker→store→tracker echo loop.
+      await transitionItem({
+        externalId: event.externalId,
+        toStage: event.subStage,
+        triggeredBy: 'webhook:linear',
+      });
+    } catch (err) {
+      if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
+        // Not a delivery problem — still attempt replay below so a prior
+        // successful transition whose replay failed can recover on retry.
+        console.error('[webhooks/linear] Transition not applied:', err.message);
+      } else {
+        console.error('[webhooks/linear] Unexpected error during transition:', err);
+        return;
+      }
+    }
+    try {
+      await replayPendingReviewDispatchForItem({
+        product: config,
+        productSlug: config.product.slug,
+        externalId: event.externalId,
+      });
+    } catch (err) {
+      console.error(
+        '[webhooks/linear] Pending review replay failed:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    return;
+  }
+
+  if (event.type === 'comment_added') {
+    console.info(`[webhooks/linear] comment_added on ${event.externalId} — no action in v0`);
+  }
+}
+
 // ── POST /api/webhooks/linear ─────────────────────────────────────────────────
 
 webhooksRouter.post('/webhooks/linear', async (c) => {
@@ -874,75 +959,16 @@ webhooksRouter.post('/webhooks/linear', async (c) => {
     }
   }
 
-  // g. Dispatch.
-  if (event.type === 'item_created') {
-    let createdOrExists = false;
-    try {
-      // webhook:linear is tracker-originated → createItem's writeback is
-      // anti-echo-skipped (the issue already exists in Linear).
-      await createItem({
-        externalId: event.externalId,
-        productSlug: config.product.slug,
-        triggeredBy: 'webhook:linear',
-      });
-      createdOrExists = true;
-    } catch (err) {
-      if (err instanceof ItemAlreadyExistsError) {
-        // Idempotent — item already exists, treat as success.
-        createdOrExists = true;
-      } else {
-        console.error('[webhooks/linear] Unexpected error creating item:', err);
-        return c.json({ error: 'Internal server error' }, 500);
-      }
-    }
-    if (createdOrExists) {
-      try {
-        await replayPendingReviewDispatchForItem({
-          product: config,
-          productSlug: config.product.slug,
-          externalId: event.externalId,
-        });
-      } catch (err) {
-        console.error(
-          '[webhooks/linear] Pending review replay after item creation failed:',
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-    }
-  } else if (event.type === 'item_updated' && event.subStage != null) {
-    try {
-      // webhook:linear is tracker-originated → transitionItem's writeback is
-      // anti-echo-skipped, preventing a tracker→store→tracker echo loop.
-      await transitionItem({
-        externalId: event.externalId,
-        toStage: event.subStage,
-        triggeredBy: 'webhook:linear',
-      });
-    } catch (err) {
-      if (err instanceof WorkflowTransitionError || err instanceof ItemNotFoundError) {
-        // Not a delivery problem — still attempt replay below so a prior
-        // successful transition whose replay failed can recover on retry.
-        console.error('[webhooks/linear] Transition not applied:', err.message);
-      } else {
-        console.error('[webhooks/linear] Unexpected error during transition:', err);
-        return c.json({ error: 'Internal server error' }, 500);
-      }
-    }
-    try {
-      await replayPendingReviewDispatchForItem({
-        product: config,
-        productSlug: config.product.slug,
-        externalId: event.externalId,
-      });
-    } catch (err) {
-      console.error(
-        '[webhooks/linear] Pending review replay failed:',
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-  } else if (event.type === 'comment_added') {
-    console.info(`[webhooks/linear] comment_added on ${event.externalId} — no action in v0`);
-  }
+  // g. ACK immediately, then process. Linear disables webhooks that exceed a 5s
+  //    response deadline; create/transition/replay (GitHub lookups) must not run
+  //    on the request path. Side effects are idempotent (create exists, invalid
+  //    transitions no-op) so dropping Linear retries after ACK is safe.
+  void processLinearWebhookEvent(config, event).catch((err) => {
+    console.error(
+      '[webhooks/linear] Background processing failed:',
+      err instanceof Error ? err.message : String(err),
+    );
+  });
 
   return c.json({ processed: true });
 });

@@ -101,7 +101,7 @@ describe('createGitHubCodeRabbitReviewLoader', () => {
     );
   });
 
-  it('returns unavailable when an allowed status context has an untrusted creator', async () => {
+  it('rejects untrusted creator and returns synthetic pending until a trusted status appears', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const requestUrl = typeof url === 'string' ? url : url.toString();
       if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
@@ -122,7 +122,80 @@ describe('createGitHubCodeRabbitReviewLoader', () => {
 
     const loader = createGitHubCodeRabbitReviewLoader({ product, githubToken: 'token' });
 
-    await expect(loader(ctx)).resolves.toEqual({ unavailable: true });
+    // Untrusted creator is rejected; with no trusted/null-creator match we defer
+    // (synthetic pending) rather than skip/unavailable.
+    await expect(loader(ctx)).resolves.toEqual({
+      status: {
+        context: 'CodeRabbit Custom',
+        state: 'pending',
+        description: 'awaiting CodeRabbit status',
+      },
+    });
+  });
+
+  it('accepts allowlisted status context when creator is null', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = typeof url === 'string' ? url : url.toString();
+      if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.endsWith('/commits/abc1234/status?per_page=100')) {
+        return jsonResponse({
+          statuses: [
+            {
+              context: 'CodeRabbit Custom',
+              state: 'success',
+              description: 'Review completed',
+              target_url: 'https://coderabbit.ai/review',
+              creator: null,
+            },
+          ],
+        });
+      }
+      if (requestUrl.endsWith('/pulls/42/comments?per_page=100')) {
+        return jsonResponse([]);
+      }
+      if (requestUrl.includes('api.github.com/graphql')) {
+        return emptyThreadsResponse();
+      }
+      throw new Error(`unexpected URL ${requestUrl}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const loader = createGitHubCodeRabbitReviewLoader({ product, githubToken: 'token' });
+    const result = await loader(ctx);
+
+    expect(result).toMatchObject({
+      status: {
+        context: 'CodeRabbit Custom',
+        state: 'success',
+        description: 'Review completed',
+      },
+      reviewComments: [],
+    });
+    expect(result).not.toHaveProperty('unavailable');
+  });
+
+  it('returns synthetic pending when no CodeRabbit status exists yet', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = typeof url === 'string' ? url : url.toString();
+      if (requestUrl.endsWith('/pulls/42')) return jsonResponse({ head: { sha: 'abc1234' } });
+      if (requestUrl.endsWith('/commits/abc1234/status?per_page=100')) {
+        return jsonResponse({
+          statuses: [{ context: 'ci', state: 'success', creator: { login: 'github' } }],
+        });
+      }
+      throw new Error(`unexpected URL ${requestUrl}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const loader = createGitHubCodeRabbitReviewLoader({ product, githubToken: 'token' });
+
+    await expect(loader(ctx)).resolves.toEqual({
+      status: {
+        context: 'CodeRabbit Custom',
+        state: 'pending',
+        description: 'awaiting CodeRabbit status',
+      },
+    });
   });
 
   it('filters REST comments that belong to resolved CodeRabbit threads', async () => {

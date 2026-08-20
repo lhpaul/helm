@@ -35,6 +35,13 @@ const BUILT_IN_FALSE_POSITIVES: readonly Omit<FalsePositiveEntry, 'matchesSummar
     rationale:
       'Helm creates and reviews spec and plan artifacts sequentially; the paired artifact can be absent during early review by design.',
   },
+  {
+    title: 'Impl tests demanded on draft artifact PR',
+    pattern: 'missing required test coverage',
+    appliesTo: ['spec-draft', 'plan-draft'],
+    rationale:
+      'Early-loop reviews knowledge specs/plans, not implementation. Ticket ACs that require automated tests are enforced on the later impl PR — demanding apps/* test files on a docs-only draft is out of scope (LEA-110).',
+  },
 ];
 
 /** Parses `helm-knowledge/false-positives.md` sections into matchable entries. */

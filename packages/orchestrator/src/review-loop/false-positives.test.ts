@@ -106,6 +106,9 @@ describe('parseFalsePositivesCatalog', () => {
     const specPlanEntry = entries.find(
       (entry) => entry.pattern === 'plan file is missing while spec remains in spec-draft',
     );
+    const implTestsOnDocs = entries.find(
+      (entry) => entry.pattern === 'missing required test coverage',
+    );
 
     expect(pairEntry).toBeDefined();
     expect(pairEntry?.appliesTo).toEqual(['spec-draft', 'plan-draft']);
@@ -121,6 +124,12 @@ describe('parseFalsePositivesCatalog', () => {
     expect(specPlanEntry?.matchesSummary('plan file is missing a webhook persistence guard')).toBe(
       false,
     );
+    expect(implTestsOnDocs).toBeDefined();
+    expect(implTestsOnDocs?.appliesTo).toEqual(['spec-draft', 'plan-draft']);
+    expect(implTestsOnDocs?.matchesSummary('Missing required auth-client test coverage')).toBe(
+      true,
+    );
+    expect(implTestsOnDocs?.matchesSummary('Required auth tests are absent')).toBe(false);
   });
 
   it('matches catalog entries against structured finding fields', () => {

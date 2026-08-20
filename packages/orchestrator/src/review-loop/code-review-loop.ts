@@ -684,6 +684,8 @@ export async function runCodeReviewLoop(
           selectedCodeRepo: params.codeRepo,
           selectedBranchName: params.branchName,
           transformReviewComment,
+          draftArtifactKind:
+            params.mode === 'early-artifact' && params.kind ? params.kind : undefined,
         },
       );
       lastFanout = fanoutResult;

@@ -66,7 +66,23 @@ describe('buildReviewAdjudicatorParams', () => {
     expect(params.prompt).toContain('Code Review');
     expect(params.prompt).toContain('Vacate literally on empty search');
     expect(params.prompt).toContain('Do NOT modify source files');
+    expect(params.prompt).toContain('On the first review pass');
     expect(params.permissionMode).toBe('acceptEdits');
+  });
+
+  it('freezes newly invented MEDIUM/HIGH on a subsequent review pass (ADR-044)', () => {
+    const findings = new Map([['code', '# Code Review\n\n## Status\nCHANGES_REQUESTED'] as const]);
+    const params = buildReviewAdjudicatorParams(
+      'LEA-110',
+      product,
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      findings,
+      { subsequentReviewPass: true },
+    );
+    expect(params.prompt).toContain('Subsequent review pass');
+    expect(params.prompt).toContain('Contract drift §4');
+    expect(params.prompt).not.toContain('On the first review pass');
   });
 
   it('instructs the adjudicator to auto-remediate generic secure defaults without hardcoding product doctrine', () => {

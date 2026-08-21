@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mechanical review-scope gates (ADR-044, LEA-110):** fan-out lists the PR's
+  changed paths and injects a computed §4 skip when none are schema/migration
+  files. Off-diff `Contract drift §4` findings are demoted to INFO (including
+  HIGH) before `shouldRemediate()`. Subsequent review passes freeze brand-new
+  quality themes to LOW/INFO and instruct the adjudicator to DEFER them instead
+  of AUTO_REMEDIATE.
+
 - **Early-loop: do not demand impl tests on docs drafts (LEA-110):** built-in
   false-positive `missing required test coverage` for `spec-draft` /
   `plan-draft`, plus `draftArtifactKind` on reviewer fan-out so the test

@@ -271,12 +271,11 @@ describe('runCodeReviewLoop', () => {
       expect.any(MockAgentRuntime),
       runGit,
       undefined,
-      {
-        fetchFn: undefined,
+      expect.objectContaining({
         selectedCodeRepo: { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
         selectedBranchName: 'helm/spec/issue_1',
-        transformReviewComment: undefined,
-      },
+        subsequentReviewPass: false,
+      }),
     );
     expect(buildRemediationParams).toHaveBeenCalledWith(
       'issue_1',
@@ -1291,12 +1290,11 @@ describe('runCodeReviewLoop', () => {
       expect.any(MockAgentRuntime),
       runGit,
       undefined,
-      {
-        fetchFn: undefined,
+      expect.objectContaining({
         selectedCodeRepo: { url: 'https://github.com/o/k', default_branch: 'main', role: 'docs' },
         selectedBranchName: 'helm/spec/issue_1',
-        transformReviewComment: expect.any(Function),
-      },
+        subsequentReviewPass: false,
+      }),
     );
     expect(upsertReviewLoopSummaryComment).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2324,6 +2322,7 @@ describe('runCodeReviewLoop', () => {
         stickyFindings: [],
         codeRepo: productWithAdjudicator().code_repos[0],
         branchName: undefined,
+        subsequentReviewPass: false,
       },
     );
   });

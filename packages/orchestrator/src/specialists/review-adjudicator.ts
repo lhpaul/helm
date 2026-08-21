@@ -54,6 +54,8 @@ export function buildReviewAdjudicatorParams(
     stickyFindings?: readonly StickyFindingRecord[];
     codeRepo?: CodeRepo;
     branchName?: string;
+    /** True when this item already had a prior code-review fan-out (ADR-044). */
+    subsequentReviewPass?: boolean;
   } = {},
 ): SpawnParams {
   const specialistCfg = product.specialists['review-adjudicator'];
@@ -119,6 +121,10 @@ export function buildReviewAdjudicatorParams(
     '- Keep Helm product-agnostic: do not invent or hardcode product-specific origins, URLs, roles, or allowlists. If the safe option requires product doctrine that is absent from the spec/knowledge repo, mark the missing doctrine as **product_decision** for a human.',
     '- Identify **doc_conflict** (ADR vs spec vs CLAUDE.md vs reviewer) — resolve using hierarchy ADR > spec > CLAUDE.md, or mark HUMAN_REQUIRED.',
     '- Mark findings as **DEFERRED** when they need design judgment and are not safe to auto-fix.',
+    '- **Contract drift §4** on a path that is not in the PR diff is **DEFERRED** (follow-up ticket), never AUTO. The orchestrator also suppresses these mechanically when it can prove the diff has no schema files.',
+    options.subsequentReviewPass
+      ? '- **Subsequent review pass:** if a reviewer invented a new MEDIUM/HIGH that is not a regression of the last remediator commit and not a previously open blocker, mark it **DEFERRED**. Do not AUTO_REMEDIATE a brand-new quality theme after a prior APPROVED window.'
+      : '- On the first review pass, AUTO_REMEDIATE aligned in-diff findings as usual.',
     '- Apply the reviewer disagreement policy: a finding already adjudicated in the catalogued-adjudication block (when present) is settled — defer it rather than re-opening it, and when reviewers oppose each other on the same code keep the fix that is NOT catalogued.',
     '- Do NOT modify source files. Do NOT commit or push.',
     settledDecisionSection,

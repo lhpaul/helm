@@ -671,6 +671,7 @@ export async function runCodeReviewLoop(
         falsePositiveCatalog,
         acceptedFindings,
       );
+      const subsequentReviewPass = cyclesTotal > 0 || cycle > 1;
       const fanoutResult = await fanoutReviewers(
         params.externalId,
         params.product,
@@ -686,6 +687,7 @@ export async function runCodeReviewLoop(
           transformReviewComment,
           draftArtifactKind:
             params.mode === 'early-artifact' && params.kind ? params.kind : undefined,
+          subsequentReviewPass,
         },
       );
       lastFanout = fanoutResult;
@@ -779,6 +781,7 @@ export async function runCodeReviewLoop(
         resolvedProductDecisions: params.resolvedProductDecisions,
         loadResolvedProductDecisions: params.loadResolvedProductDecisions,
         stageTransitions: params.mode === 'early-artifact' ? 'none' : 'code-review',
+        subsequentReviewPass,
       });
       ranRemediation = true;
       totalCost = remediationOutcome.totalCost;
@@ -993,6 +996,7 @@ export async function runCodeReviewLoop(
         });
       }
 
+      const subsequentReviewPass = cyclesTotal > 0 || cycle > 1;
       const remediationOutcome = await runRemediationPass({
         ...params,
         fanoutResult: fanout,
@@ -1006,6 +1010,7 @@ export async function runCodeReviewLoop(
         resolvedProductDecisions: params.resolvedProductDecisions,
         loadResolvedProductDecisions: params.loadResolvedProductDecisions,
         stageTransitions: params.mode === 'early-artifact' ? 'none' : 'code-review',
+        subsequentReviewPass,
       });
       ranRemediation = true;
       totalCost = remediationOutcome.totalCost;
@@ -1169,6 +1174,7 @@ async function runAdjudicationPass(input: {
   resolvedProductDecisions?: StoredResolvedProductDecision[];
   catalogEntries?: readonly FalsePositiveEntry[];
   stickyFindings?: readonly StickyFindingRecord[];
+  subsequentReviewPass?: boolean;
 }): Promise<AdjudicationPassOutcome> {
   let workspacePath = '';
   try {
@@ -1237,6 +1243,7 @@ async function runAdjudicationPass(input: {
         stickyFindings: input.stickyFindings,
         codeRepo: input.codeRepo,
         branchName: input.branchName,
+        subsequentReviewPass: input.subsequentReviewPass,
       },
     );
     const session = await input.runtime.spawn(params);
@@ -1369,6 +1376,7 @@ async function runAdjudicationIfEnabled(input: {
   loadResolvedProductDecisions?: () => Promise<StoredResolvedProductDecision[]>;
   catalogEntries?: readonly FalsePositiveEntry[];
   stickyFindings?: readonly StickyFindingRecord[];
+  subsequentReviewPass?: boolean;
 }): Promise<AdjudicationPassOutcome> {
   if (!input.loopConfig.adjudicationEnabled) {
     return { status: 'skipped' };
@@ -1437,6 +1445,7 @@ async function runRemediationPass(input: {
   catalogEntries?: readonly FalsePositiveEntry[];
   stickyFindings?: readonly StickyFindingRecord[];
   stageTransitions?: 'code-review' | 'none';
+  subsequentReviewPass?: boolean;
 }): Promise<RemediationPassOutcome> {
   let totalCost = input.totalCost;
   let maxDuration = input.maxDuration;
@@ -1463,6 +1472,7 @@ async function runRemediationPass(input: {
     loadResolvedProductDecisions: input.loadResolvedProductDecisions,
     catalogEntries: input.catalogEntries,
     stickyFindings: input.stickyFindings,
+    subsequentReviewPass: input.subsequentReviewPass,
   });
 
   if (adjudication.status === 'human_required') {

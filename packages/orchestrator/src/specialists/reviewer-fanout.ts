@@ -30,14 +30,20 @@ import {
 } from './code-workspace.js';
 import { fetchSpecForPlan, type FetchFn } from './fetch-product-context.js';
 import { postPRComment } from './pr-helpers.js';
-import { sanitizeToken } from './git-helpers.js';
-import type { RunGit, RunGh } from './git-helpers.js';
+import { defaultRunGh, sanitizeToken, type RunGit, type RunGh } from './git-helpers.js';
 import { buildExtraHintsSection } from './extra-hints.js';
 import {
   DEFAULT_REMEDIATE_SEVERITY,
   shouldRemediateForSeverity,
   type RemediateSeverity,
 } from '../review-loop/remediate-gate.js';
+import {
+  formatContractValidationScopeBlock,
+  formatSubsequentReviewPassBlock,
+  listPullRequestChangedPaths,
+  selectContractValidationFiles,
+  suppressOffDiffContractDrift,
+} from '../review-loop/contract-validation-scope.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -104,6 +110,16 @@ export interface FanoutReviewersOptions {
   transformReviewComment?: ReviewCommentTransform;
   /** When set, reviewers treat the PR as a knowledge draft artifact (early-loop). */
   draftArtifactKind?: 'spec' | 'plan';
+  /**
+   * Schema/migration paths already computed for this PR (ADR-044).
+   * `undefined` keeps the prose scope gate; `[]` forbids Contract drift §4.
+   */
+  contractValidationFiles?: string[];
+  /**
+   * True when this is not the first code-review fan-out for the item
+   * (this dispatch cycle > 1, or prior dispatches already reviewed it).
+   */
+  subsequentReviewPass?: boolean;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -213,6 +229,8 @@ export function buildReviewerParams(
     codeRepo?: CodeRepo;
     branchName?: string;
     draftArtifactKind?: 'spec' | 'plan';
+    contractValidationFiles?: string[];
+    subsequentReviewPass?: boolean;
   } = {},
 ): SpawnParams {
   const specialistCfg = product.specialists[SPECIALIST_CONFIG_KEY[kind]];
@@ -291,7 +309,8 @@ export function buildReviewerParams(
         '5. If the diff is consistent with the canonical contract, do not emit any contract drift findings — silence is pass.',
         '6. **Findings-only — never auto-apply.** A `Contract drift §4` finding MUST be surfaced for review only. Do NOT edit schema, migration, or entity-type files to apply the fix yourself, no matter how mechanical the rename looks. These divergences route through the HIGH-severity remediation path on purpose; auto-fixing one short-circuits that path, and editing an already-committed migration file is itself a contract violation (migrations are immutable post-apply — the fix is a new forward migration, not an edit). Leave contract drift to the remediator.',
         '',
-        '**Scope gate:** Only invoke contract validation when the diff includes at least one file matching schema/migration/entity-type globs. If the diff is purely application code with no schema impact, skip contract validation entirely (no Pass/Fail line needed).',
+        formatContractValidationScopeBlock(options.contractValidationFiles),
+        formatSubsequentReviewPassBlock(options.subsequentReviewPass === true),
         '',
         '**Applying mechanical fixes (code reviewer only):**',
         'If you identify mechanical, low-risk fixes (typos, formatting, dead-code removal, obvious simplifications without logic changes), apply them directly to the files in the working directory. The orchestrator will commit and push. For non-mechanical or invasive changes, surface them as findings only — do NOT modify files. **This mechanical-fix permission never extends to schema, migration, or entity-type files: contract drift (see above) is findings-only regardless of how simple the change appears.**',
@@ -526,6 +545,7 @@ export async function fanoutReviewers(
     selectedBranchName,
     transformReviewComment,
     draftArtifactKind,
+    subsequentReviewPass = false,
   } = options;
   const codeRepo = selectedCodeRepo ?? product.code_repos[0];
   if (!codeRepo) {
@@ -604,6 +624,28 @@ export async function fanoutReviewers(
   // All workspaces provisioned — spawn all 3 agents in parallel.
   const reviewerResults: ReviewerResult[] = [];
 
+  let contractValidationFiles = options.contractValidationFiles;
+  if (contractValidationFiles === undefined && !draftArtifactKind) {
+    try {
+      const changed = await listPullRequestChangedPaths(prUrl, githubToken, runGh ?? defaultRunGh);
+      contractValidationFiles = selectContractValidationFiles(changed);
+    } catch (err) {
+      console.warn(
+        '[fanout] Could not compute schema-file scope from PR files; keeping prose gate:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  const scopedTransform: ReviewCommentTransform = async (input) => {
+    const scoped =
+      input.kind === 'code'
+        ? suppressOffDiffContractDrift(input.reviewContent, input.findings, contractValidationFiles)
+        : input;
+    if (!transformReviewComment) return scoped;
+    return transformReviewComment({ ...input, ...scoped });
+  };
+
   try {
     const spawnResults = await Promise.allSettled(
       REVIEWER_KINDS.map(async (kind) => {
@@ -612,6 +654,8 @@ export async function fanoutReviewers(
           codeRepo,
           branchName,
           draftArtifactKind,
+          contractValidationFiles,
+          subsequentReviewPass,
         });
         const session = await runtime.spawn(params);
         const agentResult = await session.wait();
@@ -626,7 +670,7 @@ export async function fanoutReviewers(
           runGh,
           runGit,
           branchName,
-          transformReviewComment,
+          scopedTransform,
         );
         return reviewerResult;
       }),

@@ -175,6 +175,7 @@ describe('buildReviewerParams', () => {
     expect(code.prompt).toContain(tagFormat);
     // The scope gate instruction must be present so non-schema diffs are skipped.
     expect(code.prompt).toContain('Scope gate:');
+    expect(code.prompt).toContain('HIGH and MEDIUM findings must cite a path');
     // Findings-only guard: contract drift must never be auto-applied/pushed, so it
     // cannot short-circuit the HIGH → shouldRemediate → code-remediator path.
     expect(code.prompt).toContain('Findings-only — never auto-apply.');
@@ -306,6 +307,24 @@ describe('buildReviewerParams', () => {
   it('omits the ## Hints section for a reviewer with no extra_hints', () => {
     const params = buildReviewerParams('code', 'HLM-42', makeProduct(), '/tmp/ws', PR_URL);
     expect(params.prompt).not.toContain('## Hints');
+  });
+
+  it('injects a computed empty schema-file skip instead of the prose gate (ADR-044)', () => {
+    const params = buildReviewerParams('code', 'HLM-42', product, '/tmp/ws', PR_URL, undefined, {
+      contractValidationFiles: [],
+    });
+    expect(params.prompt).toContain('Schema files in this diff: none');
+    expect(params.prompt).toContain('Do **not** emit any `Contract drift §4` finding');
+    expect(params.prompt).not.toContain('Subsequent review pass');
+  });
+
+  it('lists computed schema files and freezes new themes on a subsequent pass', () => {
+    const params = buildReviewerParams('code', 'HLM-42', product, '/tmp/ws', PR_URL, undefined, {
+      contractValidationFiles: ['packages/db/src/schema/foo.ts'],
+      subsequentReviewPass: true,
+    });
+    expect(params.prompt).toContain('`packages/db/src/schema/foo.ts`');
+    expect(params.prompt).toContain('Subsequent review pass');
   });
 });
 

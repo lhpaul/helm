@@ -10,6 +10,7 @@ const {
   mockGetIssueTrackerAdapter,
   mockUpdateJob,
   mockCreateJobIfNoRunning,
+  mockGetRunningJobForItem,
   mockResolveOpenPrMetadata,
   mockResolveOpenPrMetadataForRepo,
 } = vi.hoisted(() => ({
@@ -17,6 +18,7 @@ const {
   mockGetIssueTrackerAdapter: vi.fn(),
   mockUpdateJob: vi.fn(),
   mockCreateJobIfNoRunning: vi.fn(),
+  mockGetRunningJobForItem: vi.fn().mockResolvedValue(null),
   mockResolveOpenPrMetadata: vi.fn(),
   mockResolveOpenPrMetadataForRepo: vi.fn(),
 }));
@@ -26,6 +28,7 @@ vi.mock('./index.js', () => ({
   getJobStore: vi.fn().mockResolvedValue({
     updateJob: mockUpdateJob,
     createJobIfNoRunning: mockCreateJobIfNoRunning,
+    getRunningJobForItem: mockGetRunningJobForItem,
   }),
   getProductRegistry: vi.fn(),
   getItemStore: vi.fn(),
@@ -1443,6 +1446,144 @@ describe('pending external review readiness cleanup', () => {
     await expect(
       outbox.get('test-product', 'LEA-1', 'pending_external_review'),
     ).resolves.toBeNull();
+  });
+
+  // LEA-258 / TD-002. The readiness webhook is fired in the gap the ticket
+  // names: after the loop parks its provisional intent (it is "about to defer")
+  // and before `onExternalReviewDeferred` writes the final one. Before the fix
+  // the webhook found no intent for the revision and the signal was dropped.
+  it('resumes when readiness fires between the provisional park and the intent write', async () => {
+    const intent = {
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'reviewer-fanout',
+      provider: 'bugbot',
+      reason: 'analysis_pending' as const,
+      prNumber: 42,
+      targetRevision: 'sha-1',
+      maxDeferSec: 600,
+    };
+    let readinessOutcome: unknown;
+
+    // The job holding sha-1 is this one — still running, still inside its poll.
+    mockGetRunningJobForItem.mockResolvedValue({
+      jobId: 'job-current',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'reviewer-fanout',
+      status: 'running',
+      targetRevision: 'sha-1',
+      startedAt: '2026-07-22T10:00:00.000Z',
+    });
+    // Both calls report an existing job so the replay stops at the scheduler
+    // boundary: what this test asserts is that the readiness signal survives the
+    // job exit and reaches `scheduleItemDispatch` with the right identity, and
+    // returning a fresh job here would fork a background dispatch that races the
+    // temp-dir cleanup.
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      duplicate: true,
+      existingJobId: 'job-current',
+    });
+    mockResolveOpenPrMetadata.mockResolvedValue({
+      headRef: 'helm/impl/LEA-1',
+      headSha: 'sha-1',
+    });
+    vi.mocked(dispatchStageHandler).mockImplementation((async (
+      _item: unknown,
+      _product: unknown,
+      _runtime: unknown,
+      _transition: unknown,
+      options: {
+        onExternalReviewPending?: (i: typeof intent) => Promise<void>;
+        onExternalReviewDeferred?: (i: typeof intent) => Promise<void>;
+      },
+    ) => {
+      await options.onExternalReviewPending?.(intent);
+      // ← the race: the provider finished and GitHub delivered readiness here.
+      readinessOutcome = await resumePendingExternalReviewByRevision({
+        productSlug: 'test-product',
+        provider: 'bugbot',
+        targetRevision: 'sha-1',
+        triggeredBy: 'webhook:external-review-ready',
+      });
+      await options.onExternalReviewDeferred?.(intent);
+      return { status: 'deferred', deferredExternalReview: intent };
+    }) as never);
+
+    await runDispatchJob({ jobId: 'job-current' } as never, {
+      product: baseProduct as never,
+      item: {
+        externalId: 'LEA-1',
+        productSlug: 'test-product',
+        currentStage: 'code-review',
+      } as never,
+      workdir: '/tmp/ws',
+      dataRoot,
+      specialistId: 'reviewer-fanout',
+      feedback: undefined,
+      githubToken: 'test-github-token',
+    });
+
+    // The signal was held, not dropped: parked for the post-job replay...
+    expect(readinessOutcome).toEqual({
+      scheduled: false,
+      reason: 'Job already running — queued review dispatch for replay after exit',
+      externalId: 'LEA-1',
+    });
+    // ...and the replay after the job exited carried it back to the scheduler.
+    expect(mockCreateJobIfNoRunning).toHaveBeenCalledTimes(2);
+    expect(mockCreateJobIfNoRunning).toHaveBeenLastCalledWith({
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'reviewer-fanout',
+      targetRevision: 'sha-1',
+    });
+    // No dispatch forked inside this test, so nothing writes after the assertions.
+    expect(dispatchStageHandler).toHaveBeenCalledTimes(1);
+    const outbox = await getReviewDispatchOutbox(dataRoot);
+    await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toBeNull();
+  });
+
+  it('parks a review_dispatch intent when readiness duplicates the running job revision', async () => {
+    const { outbox } = await putPending();
+    mockCreateJobIfNoRunning.mockResolvedValue({
+      duplicate: true,
+      existingJobId: 'job-running',
+    });
+    mockGetRunningJobForItem.mockResolvedValue({
+      jobId: 'job-running',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'reviewer-fanout',
+      status: 'running',
+      targetRevision: 'sha-1',
+      startedAt: '2026-07-22T10:00:00.000Z',
+    });
+
+    await expect(
+      resumePendingExternalReview({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        provider: 'bugbot',
+        prNumber: 42,
+        targetRevision: 'sha-1',
+        triggeredBy: 'test:ready',
+      }),
+    ).resolves.toEqual({
+      scheduled: false,
+      reason: 'Job already running — queued review dispatch for replay after exit',
+    });
+
+    await expect(
+      outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+    ).resolves.toBeNull();
+    expect(await outbox.get('test-product', 'LEA-1', 'review_dispatch')).toMatchObject({
+      kind: 'review_dispatch',
+      specialistId: 'reviewer-fanout',
+      targetRevision: 'sha-1',
+      prNumber: 42,
+      triggeredBy: 'test:ready:awaiting-job-exit',
+    });
   });
 
   it('parks a review_dispatch intent when readiness races a running job', async () => {

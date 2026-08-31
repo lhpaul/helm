@@ -299,7 +299,25 @@ export async function clearPendingExternalReview(input: {
   prNumber?: number;
   targetRevision: string;
 }): Promise<boolean> {
-  const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
+  return clearPendingExternalReviewIn(await getReviewDispatchOutbox(dataRootFromEnv()), input);
+}
+
+/**
+ * Same clear, against an explicit outbox. The in-job hook that drops a
+ * provisional intent runs with the dispatch context's `dataRoot`, matching the
+ * write side, instead of re-reading the environment.
+ */
+async function clearPendingExternalReviewIn(
+  outbox: Awaited<ReturnType<typeof getReviewDispatchOutbox>>,
+  input: {
+    productSlug: string;
+    externalId?: string;
+    specialistId?: string;
+    provider: string;
+    prNumber?: number;
+    targetRevision: string;
+  },
+): Promise<boolean> {
   const intent =
     input.externalId !== undefined && input.prNumber !== undefined
       ? await outbox.findPendingExternalReview({
@@ -345,6 +363,24 @@ async function maybeSweepExpiredPendingExternalReviews(): Promise<void> {
   await sweepExpiredPendingExternalReviews();
 }
 
+/**
+ * True when the "duplicate target revision" the scheduler reported is a job
+ * that is *still running* on that revision — i.e. the dispatch that parked this
+ * pending intent, currently sitting in its external-review wait. A duplicate
+ * against a job that already finished means the readiness signal is spent; a
+ * duplicate against the running job does not.
+ */
+async function isRevisionHeldByRunningJob(intent: PendingExternalReviewIntent): Promise<boolean> {
+  try {
+    const jobStore = await getJobStore();
+    const running = await jobStore.getRunningJobForItem(intent.productSlug, intent.externalId);
+    return running?.targetRevision === intent.targetRevision;
+  } catch (err) {
+    logErrorMetadata('dispatch running job lookup', err);
+    return false;
+  }
+}
+
 async function finalizePendingExternalReviewResume(
   outbox: Awaited<ReturnType<typeof getReviewDispatchOutbox>>,
   intent: PendingExternalReviewIntent,
@@ -374,7 +410,17 @@ async function finalizePendingExternalReviewResume(
     prNumber: intent.prNumber,
     triggeredBy,
   });
-  if (outcome.scheduled || outcome.reason === DUPLICATE_TARGET_REVISION) {
+  if (outcome.scheduled) {
+    await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
+    return outcome;
+  }
+  // Readiness that arrives while the deferring job is still running is reported
+  // as a duplicate revision, because that job already holds this revision. It is
+  // not spent work — it is the signal that job is waiting for — so it is routed
+  // to the same park-and-replay path as a different-revision conflict below.
+  const heldByRunningJob =
+    outcome.reason === DUPLICATE_TARGET_REVISION && (await isRevisionHeldByRunningJob(intent));
+  if (outcome.reason === DUPLICATE_TARGET_REVISION && !heldByRunningJob) {
     await outbox.removeIfMatches(intent.productSlug, intent.externalId, pendingIntentMatch);
     return outcome;
   }
@@ -407,7 +453,7 @@ async function finalizePendingExternalReviewResume(
   // Readiness arrived while another job is still running (often the deferred
   // job exiting). Park a review_dispatch intent so the post-job replay path
   // schedules fanout after the conflict clears — do not drop the signal.
-  if (outcome.reason === DISPATCH_UNAVAILABLE) {
+  if (outcome.reason === DISPATCH_UNAVAILABLE || heldByRunningJob) {
     await persistPendingReviewDispatch({
       dataRoot: dataRootFromEnv(),
       productSlug: intent.productSlug,
@@ -799,6 +845,28 @@ export async function runDispatchJob(
             lane,
             update,
             triggeredBy: 'review-loop:cumulative-budget',
+          });
+        },
+        // Provisional park: written before the loop's first provider poll so a
+        // readiness webhook that lands mid-poll has an intent to match. Same
+        // outbox slot as the defer write below, so that one is an upsert.
+        onExternalReviewPending: async (intent) => {
+          await persistPendingExternalReview({
+            dataRoot: ctx.dataRoot,
+            intent,
+            triggeredBy: 'external-review:analysis-wait',
+          });
+        },
+        onExternalReviewSettled: async (intent) => {
+          const targetRevision = intent.targetRevision;
+          if (!targetRevision) return;
+          await clearPendingExternalReviewIn(await getReviewDispatchOutbox(ctx.dataRoot), {
+            productSlug: intent.productSlug,
+            externalId: intent.externalId,
+            specialistId: intent.specialistId,
+            provider: intent.provider,
+            prNumber: intent.prNumber,
+            targetRevision,
           });
         },
         onExternalReviewDeferred: async (intent) => {

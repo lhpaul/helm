@@ -1455,6 +1455,10 @@ describe('dispatchStageHandler > early-stage remediators', () => {
         },
         selectedBranchName: 'helm/spec/issue_1',
         transformReviewComment: expect.any(Function),
+        // Early-artifact lane (#110): reviewers are told this is a draft-spec PR.
+        draftArtifactKind: 'spec',
+        // First fan-out of the loop (#111): nothing is frozen yet.
+        subsequentReviewPass: false,
       },
     );
     expect(runExternalReviewIfConfigured).toHaveBeenCalledWith(

@@ -146,6 +146,10 @@ export type DispatchOptions = {
   /** Live loader for accepted findings, so a mid-run accept lands next cycle. */
   loadAcceptedFindings?: () => Promise<StoredAcceptedFinding[]>;
   targetRevision?: string;
+  /** Parks a provisional pending-external-review intent before the first poll. */
+  onExternalReviewPending?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
+  /** Clears that provisional intent when the wait ends without a defer. */
+  onExternalReviewSettled?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
   onExternalReviewDeferred?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
   externalReviewDeps?: RunExternalReviewDeps;
   /**
@@ -655,6 +659,8 @@ export async function dispatchStageHandler(
       acceptedFindings: options.acceptedFindings,
       loadAcceptedFindings: options.loadAcceptedFindings,
       targetRevision: options.targetRevision,
+      onExternalReviewPending: options.onExternalReviewPending,
+      onExternalReviewSettled: options.onExternalReviewSettled,
       onExternalReviewDeferred: options.onExternalReviewDeferred,
       externalReviewDeps: options.externalReviewDeps,
       reviewLoopLedgerEntry: options.reviewLoopLedger?.['code-review'],
@@ -742,6 +748,8 @@ export async function dispatchStageHandler(
       acceptedFindings: options.acceptedFindings,
       loadAcceptedFindings: options.loadAcceptedFindings,
       targetRevision: options.targetRevision,
+      onExternalReviewPending: options.onExternalReviewPending,
+      onExternalReviewSettled: options.onExternalReviewSettled,
       onExternalReviewDeferred: options.onExternalReviewDeferred,
       externalReviewDeps: options.externalReviewDeps,
       reviewLoopLedgerEntry: options.reviewLoopLedger?.[`${kind}-draft`],

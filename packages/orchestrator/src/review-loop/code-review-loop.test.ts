@@ -1074,6 +1074,154 @@ describe('runCodeReviewLoop', () => {
     expect(onExternalReviewDeferred).toHaveBeenCalledWith(result.deferredExternalReview);
   });
 
+  // LEA-258: the provider can finish, and GitHub can deliver readiness, while
+  // the loop is still inside its first poll. Parking the intent before the poll
+  // is what gives that webhook something to match.
+  describe('provisional pending external-review intent', () => {
+    const externalProduct = (): Product =>
+      ({
+        ...baseProduct,
+        review: { external: { provider: 'coderabbit', max_defer_sec: 600 } },
+      }) as Product;
+
+    const runWithHooks = (
+      overrides: Partial<Parameters<typeof runCodeReviewLoop>[0]> = {},
+      product: Product = externalProduct(),
+    ) =>
+      runCodeReviewLoop({
+        externalId: 'issue_1',
+        product,
+        prUrl: PR_URL,
+        codeRepo: product.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+        targetRevision: 'sha-42',
+        ...overrides,
+      });
+
+    it('parks the intent before the first provider poll', async () => {
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'deferred',
+        reason: 'analysis_pending',
+        providerReason: 'pending_timeout',
+      });
+      const onExternalReviewPending = vi.fn();
+
+      await runWithHooks({ onExternalReviewPending, onExternalReviewDeferred: vi.fn() });
+
+      expect(onExternalReviewPending).toHaveBeenCalledTimes(1);
+      expect(onExternalReviewPending).toHaveBeenCalledWith({
+        productSlug: 'test',
+        externalId: 'issue_1',
+        specialistId: 'reviewer-fanout',
+        provider: 'coderabbit',
+        reason: 'analysis_pending',
+        providerReason: undefined,
+        prNumber: 42,
+        targetRevision: 'sha-42',
+        maxDeferSec: 600,
+      });
+      // The park has to land before the poll, or the window it closes is still open.
+      expect(onExternalReviewPending.mock.invocationCallOrder[0]!).toBeLessThan(
+        vi.mocked(runExternalReviewIfConfigured).mock.invocationCallOrder[0]!,
+      );
+    });
+
+    it('keeps the parked intent and upserts it into the same slot on defer', async () => {
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'deferred',
+        reason: 'analysis_pending',
+        providerReason: 'pending_timeout',
+      });
+      const onExternalReviewPending = vi.fn();
+      const onExternalReviewSettled = vi.fn();
+      const onExternalReviewDeferred = vi.fn();
+
+      const result = await runWithHooks({
+        onExternalReviewPending,
+        onExternalReviewSettled,
+        onExternalReviewDeferred,
+      });
+
+      expect(result.status).toBe('deferred');
+      expect(onExternalReviewSettled).not.toHaveBeenCalled();
+      // Same identity as the provisional row — only the provider reason is new.
+      expect(onExternalReviewDeferred).toHaveBeenCalledWith({
+        ...onExternalReviewPending.mock.calls[0]![0],
+        providerReason: 'pending_timeout',
+      });
+    });
+
+    it('clears the parked intent when external review completes without deferring', async () => {
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'clean',
+        blockers: [],
+        advisories: [],
+      });
+      const onExternalReviewPending = vi.fn();
+      const onExternalReviewSettled = vi.fn();
+
+      const result = await runWithHooks({ onExternalReviewPending, onExternalReviewSettled });
+
+      expect(result.status).toBe('done');
+      expect(onExternalReviewSettled).toHaveBeenCalledWith(
+        onExternalReviewPending.mock.calls[0]![0],
+      );
+    });
+
+    it('clears the parked intent when external review escalates', async () => {
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'escalate',
+        reason: 'coderabbit pending_timeout',
+      });
+      const onExternalReviewSettled = vi.fn();
+
+      const result = await runWithHooks({
+        onExternalReviewPending: vi.fn(),
+        onExternalReviewSettled,
+      });
+
+      expect(result).toMatchObject({ status: 'error', escalationReason: 'external_escalate' });
+      expect(onExternalReviewSettled).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not park an intent when the review identity is incomplete', async () => {
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'deferred',
+        reason: 'analysis_pending',
+      });
+      const onExternalReviewPending = vi.fn();
+
+      const result = await runWithHooks({
+        targetRevision: undefined,
+        onExternalReviewPending,
+        onExternalReviewDeferred: vi.fn(),
+      });
+
+      expect(onExternalReviewPending).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        status: 'error',
+        error: 'External review deferred but target revision was not recorded',
+      });
+    });
+
+    it('does not fail the pass when parking the provisional intent throws', async () => {
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'clean',
+        blockers: [],
+        advisories: [],
+      });
+      const onExternalReviewPending = vi.fn().mockRejectedValue(new Error('outbox unavailable'));
+
+      const result = await runWithHooks({ onExternalReviewPending });
+
+      expect(onExternalReviewPending).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe('done');
+    });
+  });
+
   it('escalates after repeated external skips', async () => {
     const product: Product = {
       ...baseProduct,

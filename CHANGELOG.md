@@ -62,6 +62,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **External-review readiness no longer races the pending intent (LEA-258, TD-002):**
+  the review loop wrote its pending-external-review intent only after the provider poll
+  returned `analysis_pending`. A fast provider (CodeRabbit on a small PR) could finish
+  and have GitHub deliver `external_review_ready` inside that window, so the webhook
+  logged `no pending intent for revision` and dropped the resume — the loop only
+  recovered on a later poll, which stretched cycles and hid the race. The loop now parks
+  a provisional intent _before_ the first poll (every persisted field is already known
+  at that point, so nothing is invented), and the defer callback upserts the same outbox
+  slot; the row is cleared when the wait ends without deferring. Readiness that lands
+  while the deferring job is still running is no longer discarded as a duplicate
+  revision — a duplicate against a _running_ job is now parked as a `review_dispatch`
+  for the post-job replay, the same as a different-revision conflict.
+
 - **Linear webhook ACK within 5s deadline:** `POST /api/webhooks/linear` verified the
   signature and then awaited create/transition plus `replayPendingReviewDispatch`
   (GitHub lookups) on the request path. Linear disables webhooks that exceed a 5s

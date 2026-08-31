@@ -129,6 +129,21 @@ export type RunCodeReviewLoopParams = {
    */
   loadAcceptedFindings?: () => Promise<StoredAcceptedFinding[]>;
   targetRevision?: string;
+  /**
+   * Parks a *provisional* pending-external-review intent before the first
+   * provider poll (LEA-258). The provider can finish — and GitHub can deliver
+   * readiness — while this pass is still deciding, so waiting for the defer
+   * branch to write the intent leaves a window where the readiness webhook has
+   * nothing to match and drops the resume. Every persisted field is already
+   * known here, so the provisional row is identical to the deferred one and
+   * `onExternalReviewDeferred` becomes an upsert over the same slot.
+   */
+  onExternalReviewPending?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
+  /**
+   * Clears the provisional intent when the external wait ended without
+   * deferring, so a completed pass cannot be resumed by a late readiness signal.
+   */
+  onExternalReviewSettled?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
   onExternalReviewDeferred?: (intent: DeferredExternalReviewIntent) => Promise<void> | void;
   mode?: 'code' | 'early-artifact';
   /**
@@ -176,6 +191,71 @@ const EXTERNAL_REVIEW_RETRY_DELAY_MS = 15_000;
 
 function externalMaxDeferSec(product: Product): number {
   return product.review?.external?.max_defer_sec ?? 30 * 60;
+}
+
+/**
+ * Builds the pending-external-review intent for this pass, or `null` when the
+ * review identity is incomplete. Shared by the provisional park (before the
+ * first provider poll) and the defer branch, so both write the same row into
+ * the same outbox slot and the second write is a plain upsert.
+ */
+function buildDeferredExternalReviewIntent(
+  params: RunCodeReviewLoopParams,
+): DeferredExternalReviewIntent | null {
+  const provider = params.product.review?.external?.provider;
+  const prRef = parsePullRequestRef(params.prUrl);
+  if (!provider || !prRef || !params.targetRevision) return null;
+  return {
+    productSlug: params.product.product.slug,
+    externalId: params.externalId,
+    specialistId:
+      params.mode === 'early-artifact' && params.kind
+        ? `${params.kind}-draft-reviewer`
+        : 'reviewer-fanout',
+    provider,
+    reason: 'analysis_pending',
+    prNumber: prRef.prNumber,
+    targetRevision: params.targetRevision,
+    maxDeferSec: externalMaxDeferSec(params.product),
+  };
+}
+
+/**
+ * Parks the provisional intent before the wait starts. Best effort on purpose:
+ * the defer branch writes the same row again and reports its own failure, so a
+ * transient outbox error here must not fail a review that is otherwise fine.
+ */
+async function parkProvisionalExternalReviewIntent(
+  params: RunCodeReviewLoopParams,
+  intent: DeferredExternalReviewIntent | null,
+): Promise<void> {
+  if (!intent || !params.onExternalReviewPending) return;
+  try {
+    await params.onExternalReviewPending(intent);
+  } catch (err) {
+    console.error(
+      `[review-loop] provisional external-review intent not parked: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+/** Drops the provisional intent once the wait ends without a defer. */
+async function clearProvisionalExternalReviewIntent(
+  params: RunCodeReviewLoopParams,
+  intent: DeferredExternalReviewIntent | null,
+): Promise<void> {
+  if (!intent || !params.onExternalReviewSettled) return;
+  try {
+    await params.onExternalReviewSettled(intent);
+  } catch (err) {
+    console.error(
+      `[review-loop] provisional external-review intent not cleared: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }
 
 /**
@@ -815,7 +895,16 @@ export async function runCodeReviewLoop(
     }
 
     const fanout = lastFanout!;
+    // Park the pending intent *before* the first provider poll: the provider can
+    // complete and GitHub can deliver readiness while this poll is still in
+    // flight, and a readiness signal that finds no intent for the revision is
+    // dropped (LEA-258). Everything the outbox row stores is already known
+    // here, so nothing about the wait is guessed.
+    const provisionalIntent = buildDeferredExternalReviewIntent(params);
+    await parkProvisionalExternalReviewIntent(params, provisionalIntent);
     const externalOutcome = await runExternalReviewWithStopRule(params, loopConfig);
+    // Every branch below returns, so reaching past this block means the wait
+    // ended without deferring.
     if (externalOutcome.kind === 'defer') {
       const provider = params.product.review?.external?.provider;
       const prRef = parsePullRequestRef(params.prUrl);
@@ -849,6 +938,8 @@ export async function runCodeReviewLoop(
           error: 'External review deferred but persistence hook is not configured',
         };
       }
+      // Same outbox slot the provisional park already wrote, so this is an
+      // upsert: identical identity, plus the provider reason the poll just saw.
       const deferredExternalReview: DeferredExternalReviewIntent = {
         productSlug: params.product.product.slug,
         externalId: params.externalId,
@@ -886,6 +977,10 @@ export async function runCodeReviewLoop(
         deferredExternalReview,
       };
     }
+
+    // The wait ended without a defer — drop the provisional row so a late
+    // readiness signal cannot resume a pass that already finished.
+    await clearProvisionalExternalReviewIntent(params, provisionalIntent);
 
     if (externalOutcome.kind === 'escalate') {
       await postEscalationCommentBestEffort(params, {

@@ -62,6 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`dispatcher.test.ts` fan-out expectation caught up with its call site:** the
+  early-loop `spec-draft` wiring test asserted the `fanoutReviewers` options bag as an
+  exact literal, so the two options added to the call site afterwards —
+  `draftArtifactKind` (#110) and `subsequentReviewPass` (#111) — made it fail on
+  `develop`. The options themselves are correct for that lane (`'spec'` on the
+  draft-spec path, `false` on the first fan-out); only the expectation was stale. It now
+  asserts both fields explicitly.
+
 - **External-review readiness no longer races the pending intent (LEA-258, TD-002):**
   the review loop wrote its pending-external-review intent only after the provider poll
   returned `analysis_pending`. A fast provider (CodeRabbit on a small PR) could finish

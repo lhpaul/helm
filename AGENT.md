@@ -10,25 +10,22 @@ Persona objetivo: CTO de startup chica que sostiene calidad con poco equipo + ag
 
 ## Diseño y decisiones (fuente de verdad)
 
-Los documentos de diseño viven fuera del repo en:
+La visión, el diagnóstico, la arquitectura, el scope de v0, el setup y el roadmap son notas privadas del maintainer. No están en este repo. Quien tenga acceso a esas notas debe leerlas antes de tomar decisiones técnicas. Cubren:
 
-`/Users/lhpaul/Documents/LH/Negocios/Proyectos/Helm/`
+- visión del producto
+- diagnóstico: análisis cruzado de agent-hq, ai-dev-framework-template y Zeki UX Lab
+- arquitectura: componentes, modelo de dominio, máquina de estados, capas de persistencia
+- scope exacto de v0: qué entra, qué no, decisiones cerradas
+- setup: credenciales y software requeridos
+- roadmap: estado vivo y pending
 
-Leé estos antes de tomar decisiones técnicas:
-
-- `00-VISION.md` — visión del producto
-- `01-DIAGNOSTICO.md` — análisis cruzado de agent-hq, ai-dev-framework-template, Zeki UX Lab
-- `02-ARQUITECTURA.md` — componentes, modelo de dominio, máquina de estados, capas de persistencia
-- `05-V0-SCOPE.md` — scope exacto de v0: qué entra, qué no, decisiones cerradas
-- `06-SETUP.md` — credenciales y software requeridos
-- `agent-comms/ROADMAP.md` — **estado vivo** y pending (el plan Session-1 está archivado)
-- `04-ROADMAP.md` — pointer al roadmap vivo + archive note
+`00-VISION.md`, `01-DIAGNOSTICO.md`, `02-ARQUITECTURA.md`, `05-V0-SCOPE.md` y `06-SETUP.md` quedaron como stubs. `agent-comms/` (incluido `ROADMAP.md`) se retiró el 2026-10-06; `04-ROADMAP.md` era solo un puntero a ese roadmap.
 
 ## Repositorios relacionados (referencias)
 
-- `/Users/lhpaul/Git/MOME/agent-hq` — herramienta existente en MOME. Fuente de patrones técnicos a heredar (orquestador, terminal bridge, fan-out reviewers, cost tracking). Leer su `CLAUDE.md` antes de implementar cualquier patrón que ya esté resuelto ahí.
-- `/Users/lhpaul/Git/ai-dev-framework-template` — template del que Helm hereda Spec → Plan → Code, REVIEW.md, branch naming, CHANGELOG. Leer su `AGENTS.md` para entender la filosofía protocol-first.
-- `/Users/lhpaul/Git/Helm/helm-knowledge` — knowledge repo del propio Helm: `.helm/product.yaml`, specs, plans, ADRs, retrospectivas.
+- `agent-hq` (checkout hermano) — herramienta existente en MOME. Fuente de patrones técnicos a heredar (orquestador, terminal bridge, fan-out reviewers, cost tracking). Leer su `CLAUDE.md` antes de implementar cualquier patrón que ya esté resuelto ahí.
+- [ai-dev-framework-template](https://github.com/lhpaul/ai-dev-framework-template) — template del que Helm hereda Spec → Plan → Code, REVIEW.md, branch naming, CHANGELOG. Leer su `AGENTS.md` para entender la filosofía protocol-first.
+- [helm-knowledge](https://github.com/lhpaul/helm-knowledge) — knowledge repo del propio Helm: `.helm/product.yaml`, specs, plans, ADRs, retrospectivas. En local, checkout hermano `helm-knowledge/`.
 
 ## Backlog oficial (GitHub Project #3)
 

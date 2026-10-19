@@ -231,7 +231,9 @@ export const ProductSchema = z
           .optional(),
         external: z
           .object({
-            provider: z.enum(['bugbot', 'coderabbit', 'codex-github']).optional(),
+            provider: z
+              .enum(['bugbot', 'coderabbit', 'codex-github', 'local-ai-reviewer'])
+              .optional(),
             defer_when_pending: z.boolean().optional(),
             resume_on_check_run: z.boolean().optional(),
             max_defer_sec: z.number().int().positive().optional(),
@@ -266,6 +268,15 @@ export const ProductSchema = z
                   .array(ExternalReviewSeveritySchema)
                   .min(1)
                   .default([...DEFAULT_CODERABBIT_BLOCKING_SEVERITIES]),
+              })
+              .strict()
+              .optional(),
+            local_ai_reviewer: z
+              .object({
+                command: z.string().trim().min(1).default('local-ai-reviewer.sh'),
+                backend: z.enum(['codex', 'http']).default('codex'),
+                timeout_sec: z.number().int().positive().max(3600).default(900),
+                mode: z.enum(['ordinary', 'strict']).default('ordinary'),
               })
               .strict()
               .optional(),

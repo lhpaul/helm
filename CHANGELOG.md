@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- On-demand `local-ai-reviewer` external provider using the ADF companion with
+  Codex by default, bounded execution and exact current-head evidence validation.
+
 - **Mechanical review-scope gates (ADR-044, LEA-110):** fan-out lists the PR's
   changed paths and injects a computed §4 skip when none are schema/migration
   files. Off-diff `Contract drift §4` findings are demoted to INFO (including
@@ -33,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next pass.
 
 ### Changed
+
+- Disable CodeRabbit automatic reviews and use the local reviewer terminal signal
+  in the contributor review loop (#108).
 
 - **Catalogued suppression now runs on code PRs, capped at MEDIUM (ADR-043 §1, amends
   ADR-041 §4):** `false-positives.md` already documented `Applies to: code-review`, but

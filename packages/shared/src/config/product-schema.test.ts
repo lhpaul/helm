@@ -648,3 +648,38 @@ describe('ProductSchema — review loop (ADR-036)', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('ProductSchema — local AI reviewer', () => {
+  const raw = (config: Record<string, unknown>) => ({
+    ...makeRawProduct(KEBAB_SPECIALISTS),
+    review: { external: { provider: 'local-ai-reviewer', local_ai_reviewer: config } },
+  });
+  it('defaults to Codex with a bounded ordinary review', () => {
+    const result = ProductSchema.parse(raw({}));
+    expect(result.review?.external?.local_ai_reviewer).toEqual({
+      command: 'local-ai-reviewer.sh',
+      backend: 'codex',
+      timeout_sec: 900,
+      mode: 'ordinary',
+    });
+  });
+  it('accepts an operator command and HTTP backend without embedding credentials', () => {
+    expect(
+      ProductSchema.safeParse(
+        raw({ command: 'review-wrapper', backend: 'http', timeout_sec: 120, mode: 'strict' }),
+      ).success,
+    ).toBe(true);
+  });
+  it.each([
+    { extra: true },
+    { command: ' ' },
+    { backend: 'other' },
+    { mode: 'other' },
+    { timeout_sec: 0 },
+    { timeout_sec: -1 },
+    { timeout_sec: 1.5 },
+    { timeout_sec: 3601 },
+  ])('rejects invalid config %j', (config) => {
+    expect(ProductSchema.safeParse(raw(config)).success).toBe(false);
+  });
+});

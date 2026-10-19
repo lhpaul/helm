@@ -136,10 +136,10 @@ Para reducir round-trips humanos en cada bloque de sesión, Claude Code tiene au
 - Aplicar fixes de CodeRabbit que caen en categorías ya catched antes (path traversal en inputs externos, info leak de paths/tokens en error responses, race conditions en singletons o init, validación estricta con Zod `.strict()`, sanitización de inputs). Si el fix es claramente uno de estos patrones, aplicalo y commitea con `fix(...)` + "Addresses CodeRabbit review comment on PR #N".
 - Cuando LH aprueba un hito de limpieza de PR/reviewer-loop, esa aprobación autoriza el ciclo completo sobre ese PR: inspeccionar threads accionables, aplicar fixes puntuales, commitear, pushear a la misma branch, pedir re-review, esperar checks, volver a leer threads y repetir hasta estado terminal.
 - Resolver manualmente threads de CodeRabbit/Bugbot/PR-Agent si el fix está presente en el `headRefOid` actual y existe evidencia local o CI. Si el finding es stale o false positive, dejar un comentario breve con la evidencia antes de resolverlo.
-- Esperar a CodeRabbit después de cada push usando polling (ver sección "Reviewer loop básico" abajo).
+- Ejecutar el reviewer local después de cada push y verificar evidencia del head actual (ver "Reviewer loop básico" abajo).
 - Mergear el PR con `gh pr merge N --merge --delete-branch` después de:
   1. Confirmar que tests, build y lint están verdes localmente.
-  2. Confirmar que CodeRabbit reportó "No actionable comments" o solo nitpicks dismissables.
+  2. Confirmar `RESULT=clean` del reviewer local con evidencia del head actual y cero blockers.
   3. Pull del develop y switch a develop después del merge.
 
 ### Claude Code DEBE parar y pedir input humano si:
@@ -167,38 +167,33 @@ Debe escalar a LH (no mergear) si el PR:
 
 Nunca force-push, nunca tocar ramas/PRs ajenos. Helm AF se actualiza solo a mano por LH.
 
-### Reviewer loop básico para CodeRabbit
+### Reviewer loop básico para local AI reviewer
 
-Después de cada push a la feature branch, esperá a CodeRabbit con polling:
+Después de cada push, ejecutá el companion de ADF instalado en `PATH` desde el
+checkout del PR (requiere `codex`, login activo, `gh`, `jq` y `REVIEW.md`):
 
 ```bash
-PR_NUMBER=N  # El número del PR
-SINCE=$(date -u +%s)  # Timestamp del push
-
-# Trigger explícito de review (después de fixes; al primer push CodeRabbit lo hace automático)
-# gh pr comment $PR_NUMBER --body "@coderabbitai review"
-
-# Poll cada 30s hasta que aparezca nuevo comentario del bot
-while true; do
-  LAST_BOT_COMMENT=$(gh api "repos/lhpaul/helm/issues/$PR_NUMBER/comments" \
-    --jq "[.[] | select(.user.login == \"coderabbitai[bot]\") | .created_at] | last")
-  LAST_TS=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$LAST_BOT_COMMENT" +%s 2>/dev/null || echo 0)
-  if [ "$LAST_TS" -gt "$SINCE" ]; then
-    echo "CodeRabbit respondió. Leyendo comentarios..."
-    gh pr view $PR_NUMBER --comments
-    break
-  fi
-  sleep 30
-done
+PR_NUMBER=N
+REVIEW_EVIDENCE=$(mktemp)
+export LOCAL_AI_REVIEWER_EVIDENCE_FILE="$REVIEW_EVIDENCE"
+LOCAL_AI_REVIEWER_BACKEND=codex local-ai-reviewer.sh "$PR_NUMBER" lhpaul helm \
+  --repo-root "$PWD" --timeout 900
 ```
 
-Reglas del loop:
-
-- Timeout máximo: 10 minutos. Si CodeRabbit no responde en 10 min, parar y pedir input humano (probablemente hit rate limit).
-- Si el último comentario es "No actionable comments were generated" o equivalente, considerar el PR clean.
-- Si hay actionable comments, evaluá cada uno: si cae en categoría auto-fixable (ver lista arriba), aplicar; si no, parar y pedir input humano.
-- El estado terminal de limpieza es evidencia del head actual: checks de reviewer en estado success/neutral aceptable, `UNRESOLVED_THREAD_COUNT=0` para threads accionables no outdated, validación local relevante ejecutada, branch pusheada y workspace limpio.
-- No dejar un PR como "limpio" sólo porque el check del reviewer está verde: siempre re-leer `reviewThreads` por GraphQL y distinguir threads abiertos actuales de threads outdated/resueltos.
+- Configuración y contrato: [local AI reviewer](docs/local-ai-reviewer.md).
+- `RESULT=clean`, `BLOCKING_COUNT=0` y `REVIEWED_HEAD` igual al SHA completo del
+  head actual son la señal terminal; el archivo de evidencia debe confirmar ese
+  mismo SHA y resultado. Un resultado previo a un push no limpia el head nuevo.
+- `RESULT=needs_fixes`: evaluar cada blocker y aplicar fixes puntuales dentro del
+  alcance aprobado; luego commit, push y nueva revisión del head actual.
+- Timeout, evidencia ausente/obsoleta o resultado ambiguo no significan clean.
+  Reportar indisponibilidad; nunca depender de una reacción o check verde aislado.
+- Mantener validación local, CI, branch pusheada y workspace limpio. Releer por
+  GraphQL los threads accionables actuales; los threads abiertos no outdated deben
+  quedar resueltos con evidencia del fix, aunque el reviewer local no publique
+  comentarios en GitHub. CodeRabbit auto-review queda desactivado (#108).
+- Las referencias históricas a CodeRabbit en las categorías de fixes de este
+  archivo también se aplican a findings equivalentes del reviewer local.
 
 ### Categorías auto-fixables (lista viva)
 

@@ -218,3 +218,36 @@ describe('runExternalReviewIfConfigured', () => {
     );
   });
 });
+
+it('runs local AI review with defaults and exact target revision', async () => {
+  const targetRevision = 'a'.repeat(40);
+  const product: Product = {
+    ...baseProduct,
+    review: { external: { provider: 'local-ai-reviewer' } },
+  };
+  const executeLocalAiReview = vi.fn().mockResolvedValue({
+    exitCode: 0,
+    stdout: `RESULT=clean\nREVIEWED_HEAD=${targetRevision}\nBLOCKING_COUNT=0\n`,
+    evidence: {
+      schema_version: 'local_ai_reviewer_evidence.v1',
+      owner: 'o',
+      repo: 'r',
+      pr_number: 42,
+      result: 'clean',
+      reviewed_head: targetRevision,
+      counts: { blocking: 0 },
+    },
+  });
+  await expect(
+    runExternalReviewIfConfigured(product, PR_URL, { executeLocalAiReview }, targetRevision),
+  ).resolves.toMatchObject({ status: 'clean' });
+  expect(executeLocalAiReview).toHaveBeenCalledWith(
+    expect.objectContaining({
+      command: 'local-ai-reviewer.sh',
+      backend: 'codex',
+      mode: 'ordinary',
+      timeoutSec: 900,
+      ctx: expect.objectContaining({ targetRevision }),
+    }),
+  );
+});

@@ -9,6 +9,10 @@ import {
   createCodexGitHubExternalReviewAdapter,
   type CodexGitHubAdapterDeps,
 } from './codex-github/adapter.js';
+import {
+  createLocalAiReviewerAdapter,
+  type LocalAiReviewerDeps,
+} from './local-ai-reviewer/adapter.js';
 import type { ExternalReviewContext, ExternalReviewResult } from './types.js';
 
 /** Parses `owner/repo#N` from a GitHub PR URL. */
@@ -22,7 +26,8 @@ export function parsePullRequestRef(
 
 export type RunExternalReviewDeps = BugbotAdapterDeps &
   CodeRabbitAdapterDeps &
-  CodexGitHubAdapterDeps;
+  CodexGitHubAdapterDeps &
+  LocalAiReviewerDeps;
 
 /**
  * Runs the configured external reviewer when `review.external.provider` is set.
@@ -57,6 +62,10 @@ export async function runExternalReviewIfConfigured(
     defaultBranch: codeRepo.default_branch,
     ...(targetRevision ? { targetRevision } : {}),
   };
+
+  if (provider === 'local-ai-reviewer') {
+    return createLocalAiReviewerAdapter(product, deps).reviewPullRequest(ctx);
+  }
 
   if (provider === 'bugbot') {
     const adapter = createBugbotExternalReviewAdapter(product, deps);

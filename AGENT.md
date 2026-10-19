@@ -151,7 +151,21 @@ Para reducir round-trips humanos en cada bloque de sesión, Claude Code tiene au
 - El plan de un Bloque excede 90 minutos de tiempo estimado.
 - Surge una limitación técnica que requiere agregar/cambiar dependencias significativas no previstas.
 - La acción requerida es destructiva o cambia la autoridad externa del repo: force-push, cambio de branch base, modificación de branch protection, rotación de secrets, permisos, credenciales o ownership.
-- El siguiente paso es mergear y LH no autorizó explícitamente mergear en este hito.
+- El siguiente paso es mergear y LH no autorizó explícitamente mergear en este hito (salvo la autorización permanente de Helm Dev, ver abajo).
+
+### Autorización permanente de auto-merge: agente Helm Dev
+
+El agente Helm Dev (sesiones `devsession` del proyecto `helm`, desde su clon aparte, no desde el checkout que sirve Helm AF) tiene autorización permanente de LH para mergear sus propios PRs a `develop` con `gh pr merge N --merge --delete-branch` cuando el riesgo es **low o medium** y se cumplen las condiciones de merge de arriba más CI verde.
+
+Debe escalar a LH (no mergear) si el PR:
+
+- es de riesgo **high** (cambios arquitectónicos, de modelo de datos/persistencia, migraciones, seguridad/auth, o de comportamiento amplio del orquestador);
+- apunta a `main` o a `release/*`, o es un `hotfix/*`;
+- toca `.github/workflows/`, branch protection/rulesets o permisos del repo;
+- toca secretos, `.env*`, credenciales o scripts de sync de secretos;
+- toca prod/deploy: Helm AF, LaunchAgents, tunnel, o cualquier despliegue.
+
+Nunca force-push, nunca tocar ramas/PRs ajenos. Helm AF se actualiza solo a mano por LH.
 
 ### Reviewer loop básico para local AI reviewer
 

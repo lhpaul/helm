@@ -251,3 +251,168 @@ it('runs local AI review with defaults and exact target revision', async () => {
     }),
   );
 });
+
+describe('runExternalReviewIfConfigured — knowledge artifact PRs (#120)', () => {
+  const targetRevision = 'a'.repeat(40);
+  const KNOWLEDGE_PR = 'https://github.com/o/k/pull/7';
+  const withArtifacts = (artifacts?: { enabled: boolean; command?: string }): Product => ({
+    ...baseProduct,
+    review: {
+      external: {
+        provider: 'local-ai-reviewer',
+        local_ai_reviewer: {
+          command: 'impl-cmd',
+          backend: 'codex',
+          timeout_sec: 900,
+          mode: 'ordinary',
+          ...(artifacts
+            ? { artifacts: { enabled: artifacts.enabled, command: artifacts.command } }
+            : {}),
+        },
+      },
+    },
+  });
+  const clean = (pr: number, owner = 'o', repo = 'k') =>
+    vi.fn().mockResolvedValue({
+      exitCode: 0,
+      stdout: `RESULT=clean\nREVIEWED_HEAD=${targetRevision}\nBLOCKING_COUNT=0\n`,
+      evidence: {
+        schema_version: 'local_ai_reviewer_evidence.v1',
+        owner,
+        repo,
+        pr_number: pr,
+        result: 'clean',
+        reviewed_head: targetRevision,
+        counts: { blocking: 0 },
+      },
+    });
+
+  it('runs the artifact command on the knowledge repo when enabled', async () => {
+    const executeLocalAiReview = clean(7);
+    const checkReviewMd = vi.fn().mockResolvedValue('present');
+    await expect(
+      runExternalReviewIfConfigured(
+        withArtifacts({ enabled: true, command: 'knowledge-cmd' }),
+        KNOWLEDGE_PR,
+        { executeLocalAiReview, checkReviewMd },
+        targetRevision,
+        'spec',
+      ),
+    ).resolves.toMatchObject({ status: 'clean' });
+    expect(executeLocalAiReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'knowledge-cmd',
+        ctx: expect.objectContaining({ artifactKind: 'spec', owner: 'o', repo: 'k' }),
+      }),
+    );
+    expect(checkReviewMd).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to the base command when no artifact command is set', async () => {
+    const executeLocalAiReview = clean(7);
+    await runExternalReviewIfConfigured(
+      withArtifacts({ enabled: true }),
+      KNOWLEDGE_PR,
+      { executeLocalAiReview, checkReviewMd: async () => 'unknown' },
+      targetRevision,
+      'plan',
+    );
+    expect(executeLocalAiReview).toHaveBeenCalledWith(
+      expect.objectContaining({ command: 'impl-cmd' }),
+    );
+  });
+
+  it.each([undefined, { enabled: false }])(
+    'skips artifact PRs unless enabled (%j)',
+    async (cfg) => {
+      const executeLocalAiReview = clean(7);
+      await expect(
+        runExternalReviewIfConfigured(
+          withArtifacts(cfg),
+          KNOWLEDGE_PR,
+          { executeLocalAiReview },
+          targetRevision,
+          'spec',
+        ),
+      ).resolves.toEqual({ status: 'skipped', reason: 'not_configured' });
+      expect(executeLocalAiReview).not.toHaveBeenCalled();
+    },
+  );
+
+  it('skips disabled artifact review even without a target revision', async () => {
+    const executeLocalAiReview = clean(7);
+    await expect(
+      runExternalReviewIfConfigured(
+        withArtifacts(),
+        KNOWLEDGE_PR,
+        { executeLocalAiReview },
+        undefined,
+        'spec',
+      ),
+    ).resolves.toEqual({ status: 'skipped', reason: 'not_configured' });
+    expect(executeLocalAiReview).not.toHaveBeenCalled();
+  });
+
+  it('reports review_md_missing for the codex backend without running the companion', async () => {
+    const executeLocalAiReview = clean(7);
+    await expect(
+      runExternalReviewIfConfigured(
+        withArtifacts({ enabled: true }),
+        KNOWLEDGE_PR,
+        { executeLocalAiReview, checkReviewMd: async () => 'missing' },
+        targetRevision,
+        'spec',
+      ),
+    ).resolves.toMatchObject({
+      status: 'skipped',
+      reason: 'unavailable',
+      providerReason: 'review_md_missing',
+    });
+    expect(executeLocalAiReview).not.toHaveBeenCalled();
+  });
+
+  it('does not check REVIEW.md for the http backend', async () => {
+    const product = withArtifacts({ enabled: true });
+    product.review!.external!.local_ai_reviewer!.backend = 'http';
+    const checkReviewMd = vi.fn();
+    await runExternalReviewIfConfigured(
+      product,
+      KNOWLEDGE_PR,
+      { executeLocalAiReview: clean(7), checkReviewMd },
+      targetRevision,
+      'spec',
+    );
+    expect(checkReviewMd).not.toHaveBeenCalled();
+  });
+
+  it('refuses an artifact PR outside the configured knowledge repo', async () => {
+    const executeLocalAiReview = clean(42);
+    await expect(
+      runExternalReviewIfConfigured(
+        withArtifacts({ enabled: true }),
+        PR_URL,
+        { executeLocalAiReview },
+        targetRevision,
+        'spec',
+      ),
+    ).resolves.toMatchObject({ status: 'skipped', reason: 'unavailable' });
+    expect(executeLocalAiReview).not.toHaveBeenCalled();
+  });
+
+  it('leaves implementation PRs unchanged even with artifacts enabled', async () => {
+    const executeLocalAiReview = clean(42, 'o', 'r');
+    const checkReviewMd = vi.fn();
+    await expect(
+      runExternalReviewIfConfigured(
+        withArtifacts({ enabled: true, command: 'knowledge-cmd' }),
+        PR_URL,
+        { executeLocalAiReview, checkReviewMd },
+        targetRevision,
+      ),
+    ).resolves.toMatchObject({ status: 'clean' });
+    expect(executeLocalAiReview).toHaveBeenCalledWith(
+      expect.objectContaining({ command: 'impl-cmd' }),
+    );
+    expect(checkReviewMd).not.toHaveBeenCalled();
+  });
+});

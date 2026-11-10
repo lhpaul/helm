@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **External review on knowledge-repo spec/plan PRs (#120):** opt-in
+  `review.external.local_ai_reviewer.artifacts` (`enabled`, optional `command`)
+  runs local-ai-reviewer from the early artifact loop on knowledge-repo PRs, with
+  a `REVIEW.md` preflight for the Codex backend (`review_md_missing`). Without the
+  opt-in, artifact PRs get internal review only instead of running the companion
+  in the wrong checkout. Implementation PRs are unchanged.
+
 - **Per-specialist Claude permissions (#119):** optional
   `specialists.<id>.permissions` (`add_dirs`, `allowed_tools`,
   `gh_api_read_only`) applied per spawn via `--add-dir` / `--allowedTools` /

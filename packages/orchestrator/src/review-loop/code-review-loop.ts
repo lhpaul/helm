@@ -643,6 +643,7 @@ async function runExternalReviewWithStopRule(
       params.prUrl,
       params.externalReviewDeps,
       targetRevision,
+      params.mode === 'early-artifact' ? params.kind : undefined,
     );
 
     // A push during the review (e.g. remediation) makes the result stale. Retry

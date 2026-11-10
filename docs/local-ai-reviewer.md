@@ -53,6 +53,37 @@ passing the gate. Output is bounded to 1 MiB; expiry aborts the process group.
 Temporary artifacts are removed after parsing. The local reviewer posts no
 GitHub comments; operators can persist separate review artifacts for PR evidence.
 
+## Knowledge-repo spec and plan PRs
+
+With `review.early_loop.enabled: true`, the early artifact loop reviews draft
+spec/plan PRs in the knowledge repo. Opt in to the local external reviewer there:
+
+```yaml
+review:
+  early_loop:
+    enabled: true
+  external:
+    provider: local-ai-reviewer
+    local_ai_reviewer:
+      artifacts:
+        enabled: true # default false
+        command: local-ai-reviewer-knowledge.sh # optional; defaults to `command`
+```
+
+The companion checks origin and HEAD, so artifact PRs need a command that runs in
+the knowledge checkout: configure an operator wrapper (same rules as `command`,
+no machine-specific paths in public config). Helm only reviews PRs of the
+configured `knowledge_repo`; other repos are refused as unavailable. In the happy
+path nothing is triggered by hand. When `artifacts.enabled` is false or omitted,
+artifact PRs get internal review only (`skipped:not_configured`).
+
+With `backend: codex` the companion needs a `REVIEW.md` in the reviewed repo. Helm
+checks for it at the PR head (read-only, via `gh api`); if it is absent the result
+is `skipped:unavailable` with provider reason `review_md_missing`. Add the file to
+your own knowledge repo yourself; Helm never creates files in reviewed repos, and
+for repos you do not own use a different backend or review the PR elsewhere.
+Implementation PRs keep using `command` and are not affected.
+
 Rollback: select `codex-github` or `coderabbit` in product config (their adapters
 and settings remain available). For CodeRabbit, also re-enable
 `.coderabbit.yaml` `reviews.auto_review.enabled` if automatic reviews are wanted.

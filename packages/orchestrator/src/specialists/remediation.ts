@@ -20,6 +20,7 @@
 import { readFile } from 'node:fs/promises';
 import { implBranchName, type CodeRepo, type Product } from '@helm/shared';
 import type { AgentResult, SpawnParams } from '../runtime.js';
+import { resolveSpecialistPermissions } from './permissions.js';
 import { resolveSpecialistTimeoutMs } from './timeout.js';
 import type { ReviewerKind } from './reviewer-fanout.js';
 import { pushReviewerPatches, artifactFileFor } from './code-workspace.js';
@@ -176,6 +177,7 @@ export function buildRemediationParams(
     model: specialistCfg.model,
     permissionMode: 'bypassPermissions',
     timeoutMs: resolveSpecialistTimeoutMs(product, 'code-remediator', REMEDIATION_TIMEOUT_MS),
+    permissions: resolveSpecialistPermissions(product, 'code-remediator'),
   };
 }
 

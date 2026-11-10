@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-specialist Claude permissions (#119):** optional
+  `specialists.<id>.permissions` (`add_dirs`, `allowed_tools`,
+  `gh_api_read_only`) applied per spawn via `--add-dir` / `--allowedTools` /
+  `--disallowedTools`, with no reliance on global CLI settings. Opt-in, no
+  bypass, gh mutations need explicit `allow_gh_mutations`. Helm now also
+  guarantees `USER`/`LOGNAME` in the Claude runtime env.
+
 - **Configurable specialist timeout (#118):** optional `specialists.<id>.timeout_sec`
   in `product.yaml` (1–7200 s) overrides the per-spawn timeout, so long
   spec/plan writers on Claude no longer get cut at the 5 min runtime default.

@@ -44,6 +44,65 @@ const WorkflowStageSchema = z.enum(WORKFLOW_STAGES);
 // ── Specialists ──────────────────────────────────────────────────────────────
 // runtime enum (v0: claude_code | codex); extended to deepseek | anthropic_api | ollama in v1+
 
+/**
+ * Per-specialist Claude CLI permissions (#119). Opt-in: absent means the CLI
+ * args are unchanged. Never grants `bypassPermissions`.
+ */
+const UNRESTRICTED_TOOL_RULE = /^(?:\*|Bash|Bash\(\s*\*?\s*\)|Bash\(\s*:?\*\s*\))$/;
+const GH_TOOL_RULE = /^Bash\(\s*gh(?:\s|:|\*|\))/;
+
+const SpecialistPermissionsSchema = z
+  .object({
+    /** Extra directories the agent may read (`--add-dir`). Absolute paths only. */
+    add_dirs: z
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .max(1024)
+          .refine((p) => /^(?:\/|[A-Za-z]:[\\/])/.test(p), 'must be an absolute path')
+          .refine((p) => !p.split(/[\\/]/).includes('..'), "must not contain '..' segments")
+          .refine((p) => !p.includes('\0'), 'must not contain NUL'),
+      )
+      .max(20)
+      .optional(),
+    /** Claude tool rules passed as `--allowedTools` (e.g. `Read`, `Bash(pnpm test:*)`). */
+    allowed_tools: z
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .max(300)
+          .refine((t) => !t.includes(','), "must not contain ','")
+          .refine(
+            (t) => !UNRESTRICTED_TOOL_RULE.test(t),
+            'unrestricted shell/tool rules are not allowed',
+          ),
+      )
+      .max(50)
+      .optional(),
+    /** Allow read-only `gh api` calls (GET only; method/body flags and graphql are denied). */
+    gh_api_read_only: z.boolean().optional(),
+    /** Explicit opt-in required for any `gh` rule in `allowed_tools`. */
+    allow_gh_mutations: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((perms, ctx) => {
+    if (perms.allow_gh_mutations) return;
+    perms.allowed_tools?.forEach((rule, i) => {
+      if (GH_TOOL_RULE.test(rule)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['allowed_tools', i],
+          message:
+            "'gh' rules in allowed_tools can mutate GitHub state; use gh_api_read_only or set allow_gh_mutations: true explicitly",
+        });
+      }
+    });
+  });
+
 const SpecialistSchema = z
   .object({
     runtime: z.enum(['claude_code', 'codex']),
@@ -66,8 +125,23 @@ const SpecialistSchema = z
      * keep their own constants). Capped at 2 hours.
      */
     timeout_sec: z.number().int().positive().max(7200).optional(),
+    /**
+     * Optional Claude CLI permissions for this specialist (#119): extra
+     * readable directories and allowed tools, applied per spawn instead of the
+     * operator's global CLI settings. `claude_code` runtime only.
+     */
+    permissions: SpecialistPermissionsSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((spec, ctx) => {
+    if (spec.permissions && spec.runtime !== 'claude_code') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['permissions'],
+        message: "'permissions' is only supported for the claude_code runtime",
+      });
+    }
+  });
 
 const SpecialistsSchema = z
   .object({

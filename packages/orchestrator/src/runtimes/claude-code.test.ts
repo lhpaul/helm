@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { ClaudeCodeRuntime, buildSubprocessEnv } from './claude-code.js';
+import { ensureUserIdentityEnv } from './_env.js';
 import type { SubprocessLike, SpawnFn } from './claude-code.js';
 import type { AgentMessage, SpawnParams } from '../runtime.js';
 
@@ -611,5 +612,86 @@ describe('ClaudeCodeRuntime', () => {
     const env = buildSubprocessEnv({ GITHUB_TOKEN: 'injected-token', GH_TOKEN: 'other-token' });
     expect(env['GITHUB_TOKEN']).toBeUndefined();
     expect(env['GH_TOKEN']).toBeUndefined();
+  });
+});
+
+describe('ClaudeCodeRuntime — permissions and identity env (#119)', () => {
+  const capture = async (
+    params: SpawnParams,
+  ): Promise<{ args: string[]; env: Record<string, string> }> => {
+    let captured: { args: string[]; env: Record<string, string> } | undefined;
+    const spawnFn: SpawnFn = (args, _cwd, env) => {
+      captured = { args: [...args], env };
+      return makeFakeProcess(loadFixture('write-success.jsonl'));
+    };
+    const session = await new ClaudeCodeRuntime(spawnFn).spawn(params);
+    await session.wait();
+    return captured!;
+  };
+
+  it('adds no permission flags by default and keeps acceptEdits', async () => {
+    const { args } = await capture(makeParams());
+    expect(args).not.toContain('--add-dir');
+    expect(args).not.toContain('--allowedTools');
+    expect(args).not.toContain('--disallowedTools');
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('acceptEdits');
+  });
+
+  it('emits --add-dir, --allowedTools and --disallowedTools from params.permissions', async () => {
+    const { args } = await capture({
+      ...makeParams(),
+      permissions: {
+        addDirs: ['/srv/a', '/srv/b'],
+        allowedTools: ['Read', 'Bash(gh api:*)'],
+        disallowedTools: ['Bash(gh api -X*)'],
+      },
+    });
+    expect(args.filter((a) => a === '--add-dir')).toHaveLength(2);
+    expect(args[args.indexOf('--add-dir') + 1]).toBe('/srv/a');
+    expect(args[args.indexOf('--allowedTools') + 1]).toBe('Read,Bash(gh api:*)');
+    expect(args[args.indexOf('--disallowedTools') + 1]).toBe('Bash(gh api -X*)');
+    expect(args).not.toContain('bypassPermissions');
+  });
+
+  it('fills USER and LOGNAME from each other', async () => {
+    const saved = { USER: process.env['USER'], LOGNAME: process.env['LOGNAME'] };
+    try {
+      delete process.env['USER'];
+      process.env['LOGNAME'] = 'svc';
+      const { env } = await capture(makeParams());
+      expect(env['USER']).toBe('svc');
+      expect(env['LOGNAME']).toBe('svc');
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+});
+
+describe('ensureUserIdentityEnv (#119)', () => {
+  it('derives both from the OS account when both are missing', () => {
+    expect(ensureUserIdentityEnv({}, () => 'osuser')).toEqual({
+      USER: 'osuser',
+      LOGNAME: 'osuser',
+    });
+  });
+
+  it('treats blank values as missing and keeps existing ones', () => {
+    expect(ensureUserIdentityEnv({ USER: ' ', LOGNAME: 'x' }, () => 'os')).toEqual({
+      USER: 'x',
+      LOGNAME: 'x',
+    });
+    expect(ensureUserIdentityEnv({ USER: 'a', LOGNAME: 'b' })).toEqual({ USER: 'a', LOGNAME: 'b' });
+  });
+
+  it('throws when no identity can be resolved', () => {
+    expect(() => ensureUserIdentityEnv({}, () => undefined)).toThrow(/Not logged in/);
+    expect(() =>
+      ensureUserIdentityEnv({}, () => {
+        throw new Error('no passwd entry');
+      }),
+    ).toThrow(/Cannot determine the OS user/);
   });
 });

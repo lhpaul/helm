@@ -1,6 +1,7 @@
 export type {
   IAgentRuntime,
   SpawnParams,
+  SpawnPermissions,
   AgentSession,
   AgentStatus,
   AgentMessage,

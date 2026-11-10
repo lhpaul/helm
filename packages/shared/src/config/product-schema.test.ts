@@ -709,3 +709,67 @@ describe('ProductSchema — specialists.<id>.timeout_sec (#118)', () => {
     expect(ProductSchema.safeParse(withTimeout(value)).success).toBe(false);
   });
 });
+
+describe('ProductSchema — specialists.<id>.permissions (#119)', () => {
+  const withPerms = (permissions: unknown, runtime = 'claude_code') =>
+    makeRawProduct({
+      ...KEBAB_SPECIALISTS,
+      'spec-writer': { ...KEBAB_SPECIALISTS['spec-writer'], runtime, permissions },
+    });
+
+  it('is optional and undefined when absent', () => {
+    const result = ProductSchema.safeParse(makeRawProduct(KEBAB_SPECIALISTS));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.specialists['spec-writer'].permissions).toBeUndefined();
+  });
+
+  it('accepts add_dirs, scoped tools and gh_api_read_only', () => {
+    const result = ProductSchema.safeParse(
+      withPerms({
+        add_dirs: ['/srv/context', 'C:\\ctx'],
+        allowed_tools: ['Read', 'Bash(pnpm test:*)'],
+        gh_api_read_only: true,
+      }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it.each([
+    [{ add_dirs: ['relative/dir'] }],
+    [{ add_dirs: ['/srv/../etc'] }],
+    [{ add_dirs: [''] }],
+    [{ allowed_tools: ['Bash'] }],
+    [{ allowed_tools: ['Bash(*)'] }],
+    [{ allowed_tools: ['*'] }],
+    [{ allowed_tools: ['Read,Write'] }],
+    [{ allowed_tools: ['Bash(gh api:*)'] }],
+    [{ allowed_tools: ['Bash(gh pr merge:*)'] }],
+    [{ bypass: true }],
+    [{ gh_api_read_only: 'yes' }],
+  ])('rejects %j', (permissions) => {
+    expect(ProductSchema.safeParse(withPerms(permissions)).success).toBe(false);
+  });
+
+  it('allows gh rules only with explicit allow_gh_mutations', () => {
+    expect(
+      ProductSchema.safeParse(
+        withPerms({ allowed_tools: ['Bash(gh pr comment:*)'], allow_gh_mutations: true }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('rejects permissions on a codex specialist', () => {
+    const raw = makeRawProduct({
+      'spec-writer': { runtime: 'codex', model: 'm', permissions: { add_dirs: ['/x'] } },
+      'plan-writer': { runtime: 'codex', model: 'm' },
+      implementer: { runtime: 'codex', model: 'm' },
+      'code-reviewer': { runtime: 'codex', model: 'm' },
+      'security-reviewer': { runtime: 'codex', model: 'm' },
+      'test-reviewer': { runtime: 'codex', model: 'm' },
+      'spec-remediator': { runtime: 'codex', model: 'm' },
+      'plan-remediator': { runtime: 'codex', model: 'm' },
+      'code-remediator': { runtime: 'codex', model: 'm' },
+    });
+    expect(ProductSchema.safeParse(raw).success).toBe(false);
+  });
+});

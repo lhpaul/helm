@@ -5,6 +5,7 @@
 import { readFile } from 'node:fs/promises';
 import type { CodeRepo, Product } from '@helm/shared';
 import type { AgentResult, SpawnParams } from '../runtime.js';
+import { resolveSpecialistTimeoutMs } from './timeout.js';
 import type { ReviewerKind } from './reviewer-fanout.js';
 import { artifactFileFor } from './code-workspace.js';
 import { postPRComment } from './pr-helpers.js';
@@ -150,7 +151,11 @@ export function buildReviewAdjudicatorParams(
     externalId,
     model: specialistCfg.model,
     permissionMode: 'acceptEdits',
-    timeoutMs: REVIEW_ADJUDICATOR_TIMEOUT_MS,
+    timeoutMs: resolveSpecialistTimeoutMs(
+      product,
+      'review-adjudicator',
+      REVIEW_ADJUDICATOR_TIMEOUT_MS,
+    ),
   };
 }
 

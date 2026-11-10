@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Configurable specialist timeout (#118):** optional `specialists.<id>.timeout_sec`
+  in `product.yaml` (1–7200 s) overrides the per-spawn timeout, so long
+  spec/plan writers on Claude no longer get cut at the 5 min runtime default.
+  Omitted keeps the previous defaults (documented in `docs/product-config.md`).
+
 - On-demand `local-ai-reviewer` external provider using the ADF companion with
   Codex by default, bounded execution and exact current-head evidence validation.
 

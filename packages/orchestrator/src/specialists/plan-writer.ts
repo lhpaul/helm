@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { WorkflowStage } from '@helm/workflow';
 import type { Product } from '@helm/shared';
 import type { AgentResult, SpawnParams } from '../runtime.js';
+import { resolveSpecialistTimeoutMs } from './timeout.js';
 import type { ProductContext } from './fetch-product-context.js';
 import type { ItemTransitionFn } from './spec-writer.js';
 import type { PublishPlanOpts, RunGit, RunGh } from './spec-publisher.js';
@@ -132,6 +133,7 @@ export function buildPlanWriterParams(
     productSlug: product.product.slug,
     externalId,
     model: product.specialists['plan-writer'].model,
+    timeoutMs: resolveSpecialistTimeoutMs(product, 'plan-writer'),
   };
 }
 

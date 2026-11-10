@@ -683,3 +683,29 @@ describe('ProductSchema — local AI reviewer', () => {
     expect(ProductSchema.safeParse(raw(config)).success).toBe(false);
   });
 });
+
+describe('ProductSchema — specialists.<id>.timeout_sec (#118)', () => {
+  const withTimeout = (timeout: unknown) =>
+    makeRawProduct({
+      ...KEBAB_SPECIALISTS,
+      'plan-writer': { ...KEBAB_SPECIALISTS['plan-writer'], timeout_sec: timeout },
+    });
+
+  it('is optional and undefined when absent', () => {
+    const result = ProductSchema.safeParse(makeRawProduct(KEBAB_SPECIALISTS));
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.specialists['plan-writer'].timeout_sec).toBeUndefined();
+    }
+  });
+
+  it('accepts a positive integer number of seconds', () => {
+    const result = ProductSchema.safeParse(withTimeout(1800));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.specialists['plan-writer'].timeout_sec).toBe(1800);
+  });
+
+  it.each([0, -5, 1.5, 7201, '600'])('rejects invalid value %p', (value) => {
+    expect(ProductSchema.safeParse(withTimeout(value)).success).toBe(false);
+  });
+});

@@ -17,6 +17,7 @@ import { isEnoentError } from '../lib/fs-errors.js';
 import {
   ADJUDICATION_MD_FORMAT,
   parseAdjudicationBody,
+  resolveHierarchyDocConflicts,
   suppressSettledConflicts,
   type StoredResolvedProductDecision,
   type ParsedAdjudication,
@@ -122,6 +123,11 @@ export function buildReviewAdjudicatorParams(
     '- Preserve human override: if a maintainer posts an explicit product decision, treat it as authoritative even when it chooses a less conservative option.',
     '- Keep Helm product-agnostic: do not invent or hardcode product-specific origins, URLs, roles, or allowlists. If the safe option requires product doctrine that is absent from the spec/knowledge repo, mark the missing doctrine as **product_decision** for a human.',
     '- Identify **doc_conflict** (ADR vs spec vs CLAUDE.md vs reviewer) — resolve using hierarchy ADR > spec > CLAUDE.md, or mark HUMAN_REQUIRED.',
+    ...(options.draftArtifact
+      ? [
+          '- **Draft artifact review (spec/plan):** the draft is editable, so most findings are edits, not decisions. Wording, clarity, structure, missing detail, internal inconsistency, and reviewer taste are **AUTO** (or **DEFERRED**) in the unified plan — never Conflicts. When a draft contradicts an accepted ADR, the item spec (for a plan), or CLAUDE.md, list it as **doc_conflict** with a line `Resolved by: <ADR-NNN | spec | CLAUDE.md>` and put the fix in the plan as **AUTO**; the orchestrator then does not escalate it. Only list a **product_decision** (HUMAN_REQUIRED) when the choice changes user-visible behavior, scope, or acceptance criteria and no accepted ADR, spec, or settled decision already decides it. Reviewer opinion alone never makes a conflict.',
+        ]
+      : []),
     '- Mark findings as **DEFERRED** when they need design judgment and are not safe to auto-fix.',
     '- **Contract drift §4** on a path that is not in the PR diff is **DEFERRED** (follow-up ticket), never AUTO. The orchestrator also suppresses these mechanically when it can prove the diff has no schema files.',
     options.subsequentReviewPass
@@ -206,6 +212,7 @@ export async function handleReviewAdjudicatorResult(
   githubToken: string,
   runGh?: RunGh,
   settledDecisions: StoredResolvedProductDecision[] = [],
+  options: { artifactReview?: boolean } = {},
 ): Promise<ReviewAdjudicatorResult> {
   const baseResult = {
     costUsd: agentResult.totalCostUsd,
@@ -240,7 +247,10 @@ export async function handleReviewAdjudicatorResult(
 
   // Suppress settled conflicts before publishing so the PR comment never
   // re-asks a decision the human already recorded.
-  const parsed = suppressSettledConflicts(parseAdjudicationBody(body), settledDecisions);
+  const settled = suppressSettledConflicts(parseAdjudicationBody(body), settledDecisions);
+  // Early artifact review only (#125): doc conflicts the adjudicator resolved by
+  // the ADR > spec > CLAUDE.md hierarchy are draft edits, not human decisions.
+  const parsed = options.artifactReview ? resolveHierarchyDocConflicts(settled) : settled;
 
   try {
     await postPRComment({ prUrl, body: parsed.body, githubToken }, runGh);

@@ -25,6 +25,7 @@ export {
   parseAdjudicationBody,
   parseHumanProductDecisionComment,
   suppressSettledConflicts,
+  resolveHierarchyDocConflicts,
 } from './review-loop/adjudication.js';
 export type {
   AdjudicationConflict,

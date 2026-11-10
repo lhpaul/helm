@@ -324,6 +324,40 @@ describe('handleReviewAdjudicatorResult', () => {
     expect(vi.mocked(postPRComment).mock.calls[0]?.[0].body).toContain('## Status\nAUTO_REMEDIATE');
   });
 
+  it('combines hierarchy resolution with a settled product decision (#125)', async () => {
+    vi.mocked(readFile).mockResolvedValue(
+      hierarchyBody.replace(
+        '## Unified',
+        '- **product_decision** · Pick direction\n  Affected paths: src/a.ts\n  Scope markers: api\n  A: keep\n\n## Unified',
+      ),
+    );
+    vi.mocked(postPRComment).mockResolvedValue(undefined);
+
+    const result = await handleReviewAdjudicatorResult(
+      'LEA-192',
+      doneResult,
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      'token',
+      undefined,
+      [
+        {
+          fingerprint: 'kind=product_decision|title=pick direction|paths=src/a.ts|markers=api',
+          conflictKind: 'product_decision',
+          conflictTitle: 'Pick direction',
+          scope: { paths: ['src/a.ts'], markers: ['api'] },
+          chosenOption: 'A',
+          recordedAt: '2026-07-22T12:00:00.000Z',
+          source: { provider: 'github', owner: 'o', repo: 'r', prNumber: 1, authorLogin: 'm' },
+        },
+      ],
+      { artifactReview: true },
+    );
+
+    expect(result.parsed?.status).toBe('AUTO_REMEDIATE');
+    expect(result.parsed?.conflicts).toHaveLength(0);
+  });
+
   it('still escalates the same doc conflict on implementation review (#125)', async () => {
     vi.mocked(readFile).mockResolvedValue(hierarchyBody);
     vi.mocked(postPRComment).mockResolvedValue(undefined);

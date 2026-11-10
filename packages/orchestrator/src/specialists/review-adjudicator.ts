@@ -247,10 +247,15 @@ export async function handleReviewAdjudicatorResult(
 
   // Suppress settled conflicts before publishing so the PR comment never
   // re-asks a decision the human already recorded.
-  const settled = suppressSettledConflicts(parseAdjudicationBody(body), settledDecisions);
   // Early artifact review only (#125): doc conflicts the adjudicator resolved by
   // the ADR > spec > CLAUDE.md hierarchy are draft edits, not human decisions.
-  const parsed = options.artifactReview ? resolveHierarchyDocConflicts(settled) : settled;
+  // Runs before settled-decision suppression so it still sees the status the
+  // adjudicator declared (suppression rewrites the body status).
+  const parsedBody = parseAdjudicationBody(body);
+  const parsed = suppressSettledConflicts(
+    options.artifactReview ? resolveHierarchyDocConflicts(parsedBody) : parsedBody,
+    settledDecisions,
+  );
 
   try {
     await postPRComment({ prUrl, body: parsed.body, githubToken }, runGh);

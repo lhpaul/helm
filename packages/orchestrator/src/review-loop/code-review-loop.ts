@@ -575,6 +575,8 @@ async function suppressFalsePositiveReviewerResults(
 
 /** Head-change retries per external pass before the normal stop rule applies (#117). */
 const MAX_HEAD_CHANGE_RETRIES = 3;
+/** Upper bound for one head lookup; on timeout the recorded revision is used. */
+const HEAD_LOOKUP_TIMEOUT_MS = 20_000;
 
 /**
  * Resolves the PR's current head SHA. Best effort: any failure returns
@@ -583,15 +585,28 @@ const MAX_HEAD_CHANGE_RETRIES = 3;
 async function resolveCurrentHeadRevision(
   params: RunCodeReviewLoopParams,
 ): Promise<string | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const { stdout } = await (params.runGh ?? defaultRunGh)(
-      ['pr', 'view', params.prUrl, '--json', 'headRefOid', '--jq', '.headRefOid'],
-      { env: { GITHUB_TOKEN: params.githubToken } },
-    );
+    // `timeoutMs` kills the default runner's subprocess; the race also bounds
+    // injected runners that ignore it, so a stalled lookup never blocks the loop.
+    const { stdout } = await Promise.race([
+      (params.runGh ?? defaultRunGh)(
+        ['pr', 'view', params.prUrl, '--json', 'headRefOid', '--jq', '.headRefOid'],
+        { env: { GITHUB_TOKEN: params.githubToken }, timeoutMs: HEAD_LOOKUP_TIMEOUT_MS },
+      ),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('head lookup timed out')),
+          HEAD_LOOKUP_TIMEOUT_MS,
+        );
+      }),
+    ]);
     const sha = stdout.trim();
     return /^[a-f\d]{40}$/.test(sha) ? sha : undefined;
   } catch {
     return undefined;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

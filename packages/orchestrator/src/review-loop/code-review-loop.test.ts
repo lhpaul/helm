@@ -1232,6 +1232,23 @@ describe('runCodeReviewLoop', () => {
       ]);
     });
 
+    it('does not hang on a stalled head lookup and uses the recorded revision', async () => {
+      vi.useFakeTimers();
+      try {
+        vi.mocked(runExternalReviewIfConfigured).mockResolvedValue(clean);
+        const runGh = vi.fn(() => new Promise<{ stdout: string }>(() => {}));
+
+        const pending = run({ runGh });
+        await vi.advanceTimersByTimeAsync(60_000);
+        const result = await pending;
+
+        expect(result.status).toBe('done');
+        expect(vi.mocked(runExternalReviewIfConfigured).mock.calls[0]![3]).toBe(SHA_A);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('still escalates a real reviewer failure when the head is unchanged', async () => {
       vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
         status: 'escalate',

@@ -2408,6 +2408,7 @@ describe('runCodeReviewLoop', () => {
           fingerprint: 'kind=product_decision|title=vacancy semantics|paths=|markers=',
         }),
       ]),
+      { artifactReview: false },
     );
     expect(buildRemediationParams).toHaveBeenCalledWith(
       expect.any(String),
@@ -2489,6 +2490,7 @@ describe('runCodeReviewLoop', () => {
       'token',
       undefined,
       [liveDecision],
+      { artifactReview: false },
     );
   });
 

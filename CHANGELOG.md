@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Fewer unnecessary `adjudication_conflict` escalations on spec/plan review (#125):**
+  in the early artifact loop the review-adjudicator is told that draft edits
+  (wording, clarity, structure) are AUTO plan items, not conflicts, and that a
+  `doc_conflict` it resolves by the ADR > spec > CLAUDE.md hierarchy
+  (`Resolved by: …`) goes to the remediator instead of a human. Real
+  `product_decision` conflicts, unresolved `doc_conflict`s, implementation
+  review and explicit `HUMAN_REQUIRED` still escalate (ADR-037).
+
 ### Added
 
 - **External review on knowledge-repo spec/plan PRs (#120):** opt-in

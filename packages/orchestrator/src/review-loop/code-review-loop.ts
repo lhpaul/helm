@@ -1440,6 +1440,7 @@ async function runAdjudicationPass(input: {
       input.githubToken,
       input.runGh,
       input.resolvedProductDecisions ?? [],
+      { artifactReview: draftArtifact !== undefined },
     );
 
     const totalCost = input.totalCost + adjudicationResult.costUsd;

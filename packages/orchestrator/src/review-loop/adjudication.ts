@@ -151,6 +151,71 @@ export function decisionMatchesLatestAdjudication(input: {
   });
 }
 
+/**
+ * Hierarchy sources that may settle a `doc_conflict` (ADR-037 §2): accepted ADR,
+ * item spec, CLAUDE.md / project contract. Reviewer opinion is the weakest
+ * source and never settles a conflict.
+ */
+const HIERARCHY_SOURCE_RE = /^(?:adr[-\s]?\d+|spec|claude\.md)(?:\s*(?:§|\(|:)[^]*)?$/i;
+
+/** The whole value must be a document reference; reviewer opinion never counts. */
+function isHierarchySource(value: string): boolean {
+  const source = value.trim();
+  return HIERARCHY_SOURCE_RE.test(source) && !/\b(?:review(?:er)?s?|opinion)\b/i.test(source);
+}
+
+/**
+ * Early artifact review only (#125): a `doc_conflict` the adjudicator itself
+ * resolved by the ADR > spec > CLAUDE.md hierarchy (`Resolved by: …` line) is
+ * mechanical editing of the draft, not a human decision. It moves to the
+ * unified plan as AUTO instead of forcing HUMAN_REQUIRED.
+ *
+ * `product_decision` entries, `doc_conflict` entries without a hierarchy
+ * `Resolved by` line, and any adjudication that declares HUMAN_REQUIRED keep escalating. Implementation review never calls this.
+ */
+export function resolveHierarchyDocConflicts(parsed: ParsedAdjudication): ParsedAdjudication {
+  if (parsed.conflicts.length === 0) return parsed;
+  // An explicit HUMAN_REQUIRED (or missing/garbled status) is the adjudicator's
+  // own human stop: never lift it, whatever else is settled or resolved later.
+  if (parsed.body.match(STATUS_RE)?.[1]?.toUpperCase() !== 'AUTO_REMEDIATE') return parsed;
+
+  const isResolved = (conflict: AdjudicationConflict): boolean => {
+    if (conflict.conflictKind !== 'doc_conflict') return false;
+    const source = fieldFromDecisionBody(conflict.body, ['Resolved by']);
+    return source !== null && isHierarchySource(source);
+  };
+  const resolved = parsed.conflicts.filter(isResolved);
+  if (resolved.length === 0) return parsed;
+
+  const remainingConflicts = parsed.conflicts.filter((conflict) => !isResolved(conflict));
+  const resolvedNotes = resolved
+    .map((conflict) => {
+      const source = fieldFromDecisionBody(conflict.body, ['Resolved by']) ?? 'hierarchy';
+      return `- **AUTO** · Align draft with ${source} — ${conflict.conflictTitle}`;
+    })
+    .join('\n');
+
+  // The declared status is AUTO_REMEDIATE (checked above); parseAdjudicationBody
+  // forced HUMAN_REQUIRED only because conflict entries existed.
+  const status: AdjudicationStatus =
+    remainingConflicts.length === 0 ? 'AUTO_REMEDIATE' : 'HUMAN_REQUIRED';
+  const conflictsSection = remainingConflicts.map((conflict) => conflict.body).join('\n\n');
+  const unifiedPlan = [parsed.unifiedPlan, resolvedNotes].filter(Boolean).join('\n');
+
+  let body = replaceSection(parsed.body, 'Conflicts', conflictsSection);
+  body = replaceSection(body, 'Unified remediation plan', unifiedPlan);
+  body = replaceSection(body, 'Status', status);
+
+  return {
+    ...parsed,
+    body,
+    conflicts: remainingConflicts,
+    conflictsSection,
+    status,
+    unifiedPlan,
+  };
+}
+
 export function suppressSettledConflicts(
   parsed: ParsedAdjudication,
   settledDecisions: readonly { fingerprint: string; chosenOption: string }[],

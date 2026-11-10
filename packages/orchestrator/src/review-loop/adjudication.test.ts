@@ -4,6 +4,7 @@ import {
   decisionMatchesLatestAdjudication,
   parseAdjudicationBody,
   parseHumanProductDecisionComment,
+  resolveHierarchyDocConflicts,
   suppressSettledConflicts,
 } from './adjudication.js';
 
@@ -542,5 +543,85 @@ HUMAN_REQUIRED`);
     ]);
     expect(suppressedWrongScope.status).toBe('HUMAN_REQUIRED');
     expect(suppressedWrongScope.conflicts).toHaveLength(1);
+  });
+});
+
+describe('resolveHierarchyDocConflicts (#125)', () => {
+  const adjudication = (conflicts: string, status = 'AUTO_REMEDIATE') => `# Review Adjudication: X-1
+
+## Conflicts
+${conflicts}
+
+## Unified remediation plan
+- **AUTO** · Tighten wording
+
+## Status
+${status}`;
+
+  it('turns a hierarchy-resolved doc_conflict into an AUTO plan entry', () => {
+    const parsed = parseAdjudicationBody(
+      adjudication(
+        '- **doc_conflict** · Draft contradicts ADR-037\n  Resolved by: ADR-037\n  Draft says X; ADR says Y.',
+      ),
+    );
+    expect(parsed.status).toBe('HUMAN_REQUIRED');
+
+    const resolved = resolveHierarchyDocConflicts(parsed);
+    expect(resolved.status).toBe('AUTO_REMEDIATE');
+    expect(resolved.conflicts).toHaveLength(0);
+    expect(resolved.unifiedPlan).toContain('Align draft with ADR-037 — Draft contradicts ADR-037');
+    expect(resolved.body).toContain('## Status\nAUTO_REMEDIATE');
+    expect(resolved.body).not.toContain('doc_conflict');
+  });
+
+  it('keeps product_decision escalating even with a Resolved by line', () => {
+    const parsed = parseAdjudicationBody(
+      adjudication('- **product_decision** · Pick scope\n  Resolved by: ADR-037'),
+    );
+    const resolved = resolveHierarchyDocConflicts(parsed);
+    expect(resolved.status).toBe('HUMAN_REQUIRED');
+    expect(resolved.conflicts).toHaveLength(1);
+  });
+
+  it('keeps doc_conflict escalating without a hierarchy source', () => {
+    for (const line of [
+      '',
+      '  Resolved by: reviewer opinion',
+      '  Resolved by: code reviewer',
+      '  Resolved by: spec reviewer opinion',
+      '  Resolved by: ADR reviewer opinion',
+      '  Resolved by: ADR',
+    ]) {
+      const parsed = parseAdjudicationBody(adjudication(`- **doc_conflict** · Mismatch\n${line}`));
+      expect(resolveHierarchyDocConflicts(parsed).status).toBe('HUMAN_REQUIRED');
+    }
+  });
+
+  it('accepts document references with a section or note', () => {
+    for (const source of ['ADR-037 §2', 'spec (Acceptance Criteria)', 'CLAUDE.md', 'adr 037']) {
+      const parsed = parseAdjudicationBody(
+        adjudication(`- **doc_conflict** · Stale ref\n  Resolved by: ${source}`),
+      );
+      expect(resolveHierarchyDocConflicts(parsed).status).toBe('AUTO_REMEDIATE');
+    }
+  });
+
+  it('only resolves the hierarchy-settled entries when others remain', () => {
+    const parsed = parseAdjudicationBody(
+      adjudication(
+        '- **doc_conflict** · Stale ref\n  Resolved by: spec\n- **product_decision** · Pick scope\n  A: narrow. B: wide.',
+      ),
+    );
+    const resolved = resolveHierarchyDocConflicts(parsed);
+    expect(resolved.status).toBe('HUMAN_REQUIRED');
+    expect(resolved.conflicts.map((c) => c.conflictTitle)).toEqual(['Pick scope']);
+    expect(resolved.unifiedPlan).toContain('Align draft with spec — Stale ref');
+  });
+
+  it('does not lift an explicit HUMAN_REQUIRED status', () => {
+    const parsed = parseAdjudicationBody(
+      adjudication('- **doc_conflict** · Stale ref\n  Resolved by: CLAUDE.md', 'HUMAN_REQUIRED'),
+    );
+    expect(resolveHierarchyDocConflicts(parsed).status).toBe('HUMAN_REQUIRED');
   });
 });

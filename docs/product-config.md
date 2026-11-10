@@ -304,3 +304,19 @@ When enabled, the early loop applies only to knowledge-repo draft artifact PRs:
 The loop runs on supported draft PR open/synchronize webhooks from the canonical
 knowledge repo. It does not change implementation PR review, merge
 reconciliation, or explicit operator remediation commands.
+
+### Adjudication in the early loop (#125)
+
+When `review.loop.adjudication` is active, the `review-adjudicator` also runs in
+the early loop and escalates with `adjudication_conflict` on `HUMAN_REQUIRED`
+(ADR-037). Because a draft spec or plan is editable, the adjudicator is told to
+treat wording, clarity and structure findings as `AUTO`/`DEFERRED` plan items,
+not conflicts. A `doc_conflict` that it resolves by the ADR > spec > `CLAUDE.md`
+hierarchy must carry a `Resolved by: <ADR-NNN | spec | CLAUDE.md>` line; Helm
+then moves it to the unified plan as `AUTO` and does not escalate it, provided
+the adjudicator declares `AUTO_REMEDIATE` (an explicit `HUMAN_REQUIRED` is never lifted).
+
+Still escalating to a human: `product_decision` conflicts (behavior, scope or
+acceptance criteria not decided by an ADR, spec or settled decision), `doc_conflict`
+entries without a hierarchy `Resolved by` line (reviewer opinion never counts),
+and an explicit `HUMAN_REQUIRED` status. Implementation-PR review is unchanged.

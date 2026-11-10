@@ -240,6 +240,26 @@ describe('buildReviewAdjudicatorParams', () => {
   });
 });
 
+describe('buildReviewAdjudicatorParams draft artifact guidance (#125)', () => {
+  it('adds the draft-artifact escalation guidance only for artifact review', () => {
+    const args = [
+      'LEA-192',
+      product,
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      new Map(),
+    ] as const;
+    const artifact = buildReviewAdjudicatorParams(...args, {
+      draftArtifact: { kind: 'spec', content: '# spec' },
+    });
+    const impl = buildReviewAdjudicatorParams(...args);
+
+    expect(artifact.prompt).toContain('Draft artifact review (spec/plan)');
+    expect(artifact.prompt).toContain('Resolved by:');
+    expect(impl.prompt).not.toContain('Draft artifact review');
+  });
+});
+
 describe('handleReviewAdjudicatorResult', () => {
   beforeEach(() => {
     vi.mocked(readFile).mockReset();
@@ -268,6 +288,124 @@ describe('handleReviewAdjudicatorResult', () => {
       commentPosted: true,
       parsed: { status: 'HUMAN_REQUIRED' },
     });
+  });
+
+  const hierarchyBody = [
+    '# Review Adjudication: LEA-192',
+    '',
+    '## Conflicts',
+    '- **doc_conflict** · Draft contradicts ADR',
+    '  Resolved by: ADR-037',
+    '',
+    '## Unified remediation plan',
+    '- **AUTO** · Fix wording',
+    '',
+    '## Status',
+    'AUTO_REMEDIATE',
+  ].join('\n');
+  const doneResult = { status: 'done', finalOutput: '', totalCostUsd: 0, durationMs: 1 } as const;
+
+  it('does not escalate hierarchy-resolved doc conflicts for artifact review (#125)', async () => {
+    vi.mocked(readFile).mockResolvedValue(hierarchyBody);
+    vi.mocked(postPRComment).mockResolvedValue(undefined);
+
+    const result = await handleReviewAdjudicatorResult(
+      'LEA-192',
+      doneResult,
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      'token',
+      undefined,
+      [],
+      { artifactReview: true },
+    );
+
+    expect(result.parsed?.status).toBe('AUTO_REMEDIATE');
+    expect(vi.mocked(postPRComment).mock.calls[0]?.[0].body).toContain('## Status\nAUTO_REMEDIATE');
+  });
+
+  it('combines hierarchy resolution with a settled product decision (#125)', async () => {
+    vi.mocked(readFile).mockResolvedValue(
+      hierarchyBody.replace(
+        '## Unified',
+        '- **product_decision** · Pick direction\n  Affected paths: src/a.ts\n  Scope markers: api\n  A: keep\n\n## Unified',
+      ),
+    );
+    vi.mocked(postPRComment).mockResolvedValue(undefined);
+
+    const result = await handleReviewAdjudicatorResult(
+      'LEA-192',
+      doneResult,
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      'token',
+      undefined,
+      [
+        {
+          fingerprint: 'kind=product_decision|title=pick direction|paths=src/a.ts|markers=api',
+          conflictKind: 'product_decision',
+          conflictTitle: 'Pick direction',
+          scope: { paths: ['src/a.ts'], markers: ['api'] },
+          chosenOption: 'A',
+          recordedAt: '2026-07-22T12:00:00.000Z',
+          source: { provider: 'github', owner: 'o', repo: 'r', prNumber: 1, authorLogin: 'm' },
+        },
+      ],
+      { artifactReview: true },
+    );
+
+    expect(result.parsed?.status).toBe('AUTO_REMEDIATE');
+    expect(result.parsed?.conflicts).toHaveLength(0);
+  });
+
+  it('keeps an explicit HUMAN_REQUIRED even when a settled decision also applies (#125)', async () => {
+    vi.mocked(readFile).mockResolvedValue(
+      hierarchyBody
+        .replace('AUTO_REMEDIATE', 'HUMAN_REQUIRED')
+        .replace(
+          '## Unified',
+          '- **product_decision** · Pick direction\n  Affected paths: src/a.ts\n  Scope markers: api\n  A: keep\n\n## Unified',
+        ),
+    );
+    vi.mocked(postPRComment).mockResolvedValue(undefined);
+
+    const result = await handleReviewAdjudicatorResult(
+      'LEA-192',
+      doneResult,
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      'token',
+      undefined,
+      [
+        {
+          fingerprint: 'kind=product_decision|title=pick direction|paths=src/a.ts|markers=api',
+          conflictKind: 'product_decision',
+          conflictTitle: 'Pick direction',
+          scope: { paths: ['src/a.ts'], markers: ['api'] },
+          chosenOption: 'A',
+          recordedAt: '2026-07-22T12:00:00.000Z',
+          source: { provider: 'github', owner: 'o', repo: 'r', prNumber: 1, authorLogin: 'm' },
+        },
+      ],
+      { artifactReview: true },
+    );
+
+    expect(result.parsed?.status).toBe('HUMAN_REQUIRED');
+  });
+
+  it('still escalates the same doc conflict on implementation review (#125)', async () => {
+    vi.mocked(readFile).mockResolvedValue(hierarchyBody);
+    vi.mocked(postPRComment).mockResolvedValue(undefined);
+
+    const result = await handleReviewAdjudicatorResult(
+      'LEA-192',
+      doneResult,
+      '/tmp/ws',
+      'https://github.com/o/r/pull/1',
+      'token',
+    );
+
+    expect(result.parsed?.status).toBe('HUMAN_REQUIRED');
   });
 
   it('surfaces non-ENOENT read failures instead of masking them', async () => {

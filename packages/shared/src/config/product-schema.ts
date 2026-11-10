@@ -48,7 +48,7 @@ const WorkflowStageSchema = z.enum(WORKFLOW_STAGES);
  * Per-specialist Claude CLI permissions (#119). Opt-in: absent means the CLI
  * args are unchanged. Never grants `bypassPermissions`.
  */
-const UNRESTRICTED_TOOL_RULE = /^(?:\*|Bash|Bash\(\s*\*?\s*\)|Bash\(\s*:?\*\s*\))$/;
+const UNRESTRICTED_TOOL_RULE = /^(?:\*|Bash|Bash\(\s*[*:\s]*\))$/;
 /**
  * True when `rule` is exactly one tool rule: a tool name with an optional
  * single parenthesised specifier that closes at the very end. The CLI splits

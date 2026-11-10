@@ -339,6 +339,20 @@ describe('runExternalReviewIfConfigured — knowledge artifact PRs (#120)', () =
     },
   );
 
+  it('skips disabled artifact review even without a target revision', async () => {
+    const executeLocalAiReview = clean(7);
+    await expect(
+      runExternalReviewIfConfigured(
+        withArtifacts(),
+        KNOWLEDGE_PR,
+        { executeLocalAiReview },
+        undefined,
+        'spec',
+      ),
+    ).resolves.toEqual({ status: 'skipped', reason: 'not_configured' });
+    expect(executeLocalAiReview).not.toHaveBeenCalled();
+  });
+
   it('reports review_md_missing for the codex backend without running the companion', async () => {
     const executeLocalAiReview = clean(7);
     await expect(

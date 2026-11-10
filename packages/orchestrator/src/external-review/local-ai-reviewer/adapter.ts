@@ -230,17 +230,18 @@ export function createLocalAiReviewerAdapter(
   return {
     provider: 'local-ai-reviewer',
     async reviewPullRequest(ctx) {
+      // #120: knowledge-repo spec/plan PRs are opt-in. Without it the companion
+      // would run in the code checkout and fail closed, so skip cleanly instead
+      // (before any revision validation, so a missing head cannot escalate).
+      if (ctx.artifactKind && config?.artifacts?.enabled !== true) {
+        return { status: 'skipped', reason: 'not_configured' };
+      }
       if (!ctx.targetRevision || !/^[a-f\d]{40}$/.test(ctx.targetRevision))
         return unavailable('missing_target_revision');
       const backend = config?.backend ?? 'codex';
       let command = config?.command ?? 'local-ai-reviewer.sh';
       if (ctx.artifactKind) {
-        // #120: knowledge-repo spec/plan PRs are opt-in. Without it the companion
-        // would run in the code checkout and fail closed, so skip cleanly instead.
-        if (config?.artifacts?.enabled !== true) {
-          return { status: 'skipped', reason: 'not_configured' };
-        }
-        command = config.artifacts.command ?? command;
+        command = config?.artifacts?.command ?? command;
         if (backend === 'codex') {
           const state = await (deps?.checkReviewMd ?? checkReviewMdAtHead)(ctx).catch(
             (): ReviewMdState => 'unknown',

@@ -1179,13 +1179,57 @@ describe('runCodeReviewLoop', () => {
       // The head moves on every lookup, so every attempt is superseded.
       let n = 0;
       const runGh = vi.fn(async () => ({
-        stdout: `${String.fromCharCode(100 + (n++ % 20)).repeat(40)}\n`,
+        stdout: `${(0x1000 + n++).toString(16).padStart(40, '0')}
+`,
       }));
 
       const result = await run({ runGh });
 
       expect(result.escalated).toBe(true);
       expect(result.escalationReason).toBe('external_repeated_skip');
+    });
+
+    it('never accepts a clean verdict for a superseded head after retries are spent', async () => {
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue(clean);
+      let n = 0;
+      const runGh = vi.fn(async () => ({
+        stdout: `${(0x1000 + n++).toString(16).padStart(40, '0')}
+`,
+      }));
+
+      const result = await run({ runGh });
+
+      expect(result.status).toBe('error');
+      expect(result.escalationReason).toBe('external_repeated_skip');
+    });
+
+    it('moves the parked intent to the new head before the retry poll starts', async () => {
+      const order: string[] = [];
+      vi.mocked(runExternalReviewIfConfigured).mockImplementation(async (...args) => {
+        order.push(`poll:${args[3]}`);
+        return order.length === 1 ? unavailable : clean;
+      });
+      const onExternalReviewPending = vi.fn(
+        async (i) => void order.push(`park:${i.targetRevision}`),
+      );
+      const onExternalReviewSettled = vi.fn(
+        async (i) => void order.push(`clear:${i.targetRevision}`),
+      );
+
+      await run({
+        runGh: heads(SHA_A, SHA_B, SHA_B),
+        onExternalReviewPending,
+        onExternalReviewSettled,
+        onExternalReviewDeferred: vi.fn(),
+      });
+
+      expect(order.slice(0, 5)).toEqual([
+        `park:${SHA_A}`,
+        `poll:${SHA_A}`,
+        `clear:${SHA_A}`,
+        `park:${SHA_B}`,
+        `poll:${SHA_B}`,
+      ]);
     });
 
     it('still escalates a real reviewer failure when the head is unchanged', async () => {

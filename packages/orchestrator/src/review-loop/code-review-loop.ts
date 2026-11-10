@@ -614,6 +614,7 @@ type ExternalReviewLoopOutcome =
 async function runExternalReviewWithStopRule(
   params: RunCodeReviewLoopParams,
   loopConfig: ReturnType<typeof resolveReviewLoopConfig>,
+  onRevisionChange?: (to: string) => Promise<void>,
 ): Promise<ExternalReviewLoopOutcome> {
   const sleepFn = params.sleep ?? defaultSleep;
   let skipAttempt = 0;
@@ -631,18 +632,25 @@ async function runExternalReviewWithStopRule(
 
     // A push during the review (e.g. remediation) makes the result stale. Retry
     // on the new head without spending the skip budget or escalating (#117).
-    if (targetRevision && headChangeRetries < MAX_HEAD_CHANGE_RETRIES) {
+    // Once the free retries are spent a superseded verdict is still never
+    // accepted: it becomes a non-verdict that the normal stop rule bounds.
+    let reviewed = external;
+    if (targetRevision) {
       const head = await resolveCurrentHeadRevision(params);
       if (head && head !== targetRevision) {
-        headChangeRetries += 1;
-        skipAttempt -= 1;
         targetRevision = head;
-        continue;
+        await onRevisionChange?.(head);
+        if (headChangeRetries < MAX_HEAD_CHANGE_RETRIES) {
+          headChangeRetries += 1;
+          skipAttempt -= 1;
+          continue;
+        }
+        reviewed = { status: 'skipped', reason: 'unavailable', providerReason: 'head_changed' };
       }
     }
 
     const decision = evaluateExternalReviewStopRule({
-      result: external,
+      result: reviewed,
       skipAttempt,
       maxSkipAttempts: loopConfig.noProgressCycles,
     });
@@ -947,14 +955,23 @@ export async function runCodeReviewLoop(
     const resolvedHead = currentRevision ? await resolveCurrentHeadRevision(params) : undefined;
     if (resolvedHead) currentRevision = resolvedHead;
     const passParams: RunCodeReviewLoopParams = { ...params, targetRevision: currentRevision };
-    const provisionalIntent = buildDeferredExternalReviewIntent(passParams);
+    let provisionalIntent = buildDeferredExternalReviewIntent(passParams);
     await parkProvisionalExternalReviewIntent(passParams, provisionalIntent);
-    const externalOutcome = await runExternalReviewWithStopRule(passParams, loopConfig);
-    if (externalOutcome.targetRevision && externalOutcome.targetRevision !== currentRevision) {
-      // The head moved during the wait: drop the intent parked for the old SHA.
-      await clearProvisionalExternalReviewIntent(passParams, provisionalIntent);
-      currentRevision = externalOutcome.targetRevision;
-    }
+    const externalOutcome = await runExternalReviewWithStopRule(
+      passParams,
+      loopConfig,
+      async (to) => {
+        // Move the parked intent to the new head *before* its poll starts, so
+        // readiness for the new SHA finds a row and the old one is not stranded.
+        await clearProvisionalExternalReviewIntent(passParams, provisionalIntent);
+        provisionalIntent = buildDeferredExternalReviewIntent({
+          ...passParams,
+          targetRevision: to,
+        });
+        await parkProvisionalExternalReviewIntent(passParams, provisionalIntent);
+      },
+    );
+    if (externalOutcome.targetRevision) currentRevision = externalOutcome.targetRevision;
     // Every branch below returns, so reaching past this block means the wait
     // ended without deferring.
     if (externalOutcome.kind === 'defer') {

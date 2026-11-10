@@ -78,6 +78,7 @@ describe('transitionItem', () => {
     store.transition.mockResolvedValue(itemAt('spec-ready'));
 
     const result = await transitionItem({
+      productSlug: 'helm',
       externalId: 'HLM-1',
       toStage: 'spec-ready',
       triggeredBy: 'agent:spec-writer',
@@ -98,6 +99,7 @@ describe('transitionItem', () => {
       store.transition.mockResolvedValue(itemAt('spec-ready'));
 
       const result = await transitionItem({
+        productSlug: 'helm',
         externalId: 'HLM-1',
         toStage: 'spec-ready',
         triggeredBy,
@@ -119,7 +121,12 @@ describe('transitionItem', () => {
   ])('writes back for non-tracker trigger %s', async (triggeredBy) => {
     store.transition.mockResolvedValue(itemAt('released'));
 
-    await transitionItem({ externalId: 'HLM-1', toStage: 'released', triggeredBy });
+    await transitionItem({
+      productSlug: 'helm',
+      externalId: 'HLM-1',
+      toStage: 'released',
+      triggeredBy,
+    });
 
     expect(adapter.setSubStage).toHaveBeenCalledWith('HLM-1', 'released');
   });
@@ -132,6 +139,7 @@ describe('transitionItem', () => {
     store.transition.mockResolvedValue(itemAt('spec-ready'));
 
     const result = await transitionItem({
+      productSlug: 'helm',
       externalId: 'HLM-1',
       toStage: 'spec-ready',
       triggeredBy: 'agent:spec-writer',
@@ -150,6 +158,7 @@ describe('transitionItem', () => {
     store.transition.mockResolvedValue(itemAt('spec-ready'));
 
     const result = await transitionItem({
+      productSlug: 'helm',
       externalId: 'HLM-1',
       toStage: 'spec-ready',
       triggeredBy: 'agent:spec-writer',
@@ -167,6 +176,7 @@ describe('transitionItem', () => {
     store.transition.mockResolvedValue(itemAt('spec-ready'));
 
     const pending = transitionItem({
+      productSlug: 'helm',
       externalId: 'HLM-1',
       toStage: 'spec-ready',
       triggeredBy: 'agent:spec-writer',
@@ -185,6 +195,7 @@ describe('transitionItem', () => {
     store.transition.mockResolvedValue(itemAt('spec-ready'));
 
     const result = await transitionItem({
+      productSlug: 'helm',
       externalId: 'HLM-1',
       toStage: 'spec-ready',
       triggeredBy: 'agent:spec-writer',
@@ -198,9 +209,19 @@ describe('transitionItem', () => {
 
   it('runs ensureSubStages only once across multiple transitions on the same adapter', async () => {
     store.transition.mockResolvedValue(itemAt('spec-ready'));
-    await transitionItem({ externalId: 'HLM-1', toStage: 'spec-ready', triggeredBy: 'agent:a' });
+    await transitionItem({
+      productSlug: 'helm',
+      externalId: 'HLM-1',
+      toStage: 'spec-ready',
+      triggeredBy: 'agent:a',
+    });
     store.transition.mockResolvedValue(itemAt('plan-ready'));
-    await transitionItem({ externalId: 'HLM-1', toStage: 'plan-ready', triggeredBy: 'agent:b' });
+    await transitionItem({
+      productSlug: 'helm',
+      externalId: 'HLM-1',
+      toStage: 'plan-ready',
+      triggeredBy: 'agent:b',
+    });
 
     expect(adapter.ensureSubStages).toHaveBeenCalledTimes(1);
     expect(adapter.setSubStage).toHaveBeenCalledTimes(2);
@@ -214,9 +235,19 @@ describe('transitionItem', () => {
     store.transition.mockResolvedValue(itemAt('spec-ready'));
 
     // First transition: ensure rejects → writeback aborts before setSubStage.
-    await transitionItem({ externalId: 'HLM-1', toStage: 'spec-ready', triggeredBy: 'agent:a' });
+    await transitionItem({
+      productSlug: 'helm',
+      externalId: 'HLM-1',
+      toStage: 'spec-ready',
+      triggeredBy: 'agent:a',
+    });
     // Second transition: memo was evicted, ensure retried and succeeds.
-    await transitionItem({ externalId: 'HLM-1', toStage: 'spec-ready', triggeredBy: 'agent:b' });
+    await transitionItem({
+      productSlug: 'helm',
+      externalId: 'HLM-1',
+      toStage: 'spec-ready',
+      triggeredBy: 'agent:b',
+    });
 
     expect(adapter.ensureSubStages).toHaveBeenCalledTimes(2);
     expect(adapter.setSubStage).toHaveBeenCalledTimes(1);
@@ -255,6 +286,7 @@ describe('transitionItem — native workflow state (ADR-034)', () => {
     store.transition.mockResolvedValue(itemAt('spec-ready', 'LEA-1'));
 
     await transitionItem({
+      productSlug: 'helm',
       externalId: 'LEA-1',
       toStage: 'spec-ready',
       triggeredBy: 'agent:spec-writer',
@@ -270,6 +302,7 @@ describe('transitionItem — native workflow state (ADR-034)', () => {
       store.transition.mockResolvedValue(itemAt(stage, 'LEA-1'));
 
       await transitionItem({
+        productSlug: 'helm',
         externalId: 'LEA-1',
         toStage: stage,
         triggeredBy: 'webhook:code-repo',
@@ -285,6 +318,7 @@ describe('transitionItem — native workflow state (ADR-034)', () => {
     store.transition.mockResolvedValue(itemAt('spec-ready', 'LEA-1'));
 
     const result = await transitionItem({
+      productSlug: 'helm',
       externalId: 'LEA-1',
       toStage: 'spec-ready',
       triggeredBy: 'agent:spec-writer',
@@ -304,6 +338,7 @@ describe('transitionItem — native workflow state (ADR-034)', () => {
     store.transition.mockResolvedValue(itemAt('spec-ready', 'LEA-1'));
 
     await transitionItem({
+      productSlug: 'helm',
       externalId: 'LEA-1',
       toStage: 'spec-ready',
       triggeredBy: 'agent:spec-writer',
@@ -316,6 +351,7 @@ describe('transitionItem — native workflow state (ADR-034)', () => {
     store.transition.mockResolvedValue(itemAt('spec-ready', 'LEA-1'));
 
     await transitionItem({
+      productSlug: 'helm',
       externalId: 'LEA-1',
       toStage: 'spec-ready',
       triggeredBy: 'webhook:linear',
@@ -336,6 +372,7 @@ describe('transitionItem — native workflow state (ADR-034)', () => {
     store.transition.mockResolvedValue(itemAt('spec-ready'));
 
     await transitionItem({
+      productSlug: 'helm',
       externalId: 'HLM-1',
       toStage: 'spec-ready',
       triggeredBy: 'agent:spec-writer',
@@ -358,6 +395,7 @@ describe('transitionItem — native workflow state (ADR-034)', () => {
     store.transition.mockResolvedValue(itemAt('spec-ready', 'LEA-1'));
 
     const result = await transitionItem({
+      productSlug: 'helm',
       externalId: 'LEA-1',
       toStage: 'spec-ready',
       triggeredBy: 'agent:spec-writer',
@@ -405,6 +443,7 @@ describe('transitionItem — native state by-id override (ADR-035)', () => {
     store.transition.mockResolvedValue(itemAt('released', 'LEA-1'));
 
     await transitionItem({
+      productSlug: 'helm',
       externalId: 'LEA-1',
       toStage: 'released',
       triggeredBy: 'webhook:release',
@@ -420,6 +459,7 @@ describe('transitionItem — native state by-id override (ADR-035)', () => {
     store.transition.mockResolvedValue(itemAt('merged', 'LEA-1'));
 
     await transitionItem({
+      productSlug: 'helm',
       externalId: 'LEA-1',
       toStage: 'merged',
       triggeredBy: 'webhook:code-repo',
@@ -440,6 +480,7 @@ describe('transitionItem — native state by-id override (ADR-035)', () => {
     store.transition.mockResolvedValue(itemAt('released', 'LEA-1'));
 
     await transitionItem({
+      productSlug: 'helm',
       externalId: 'LEA-1',
       toStage: 'released',
       triggeredBy: 'webhook:release',
@@ -455,6 +496,7 @@ describe('transitionItem — native state by-id override (ADR-035)', () => {
     store.transition.mockResolvedValue(itemAt('released', 'LEA-1'));
 
     const result = await transitionItem({
+      productSlug: 'helm',
       externalId: 'LEA-1',
       toStage: 'released',
       triggeredBy: 'webhook:release',
@@ -476,6 +518,7 @@ describe('forceTransitionItem', () => {
     store.forceTransition.mockResolvedValue(itemAt('plan-ready'));
 
     const result = await forceTransitionItem({
+      productSlug: 'helm',
       externalId: 'HLM-1',
       fromStage: 'in-development',
       toStage: 'plan-ready',

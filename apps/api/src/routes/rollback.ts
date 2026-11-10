@@ -101,6 +101,7 @@ rollbackRouter.post('/items/:externalId/rollback', async (c) => {
     // writeback (ADR-033). manual:rollback is not tracker-originated → the
     // rolled-back stage (plan-ready) is mirrored to the tracker.
     const item = await forceTransitionItem({
+      productSlug,
       externalId,
       fromStage: bodyResult.data.fromStage,
       toStage: bodyResult.data.toStage,

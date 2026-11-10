@@ -13,7 +13,7 @@ let store: ItemStore;
 beforeEach(async () => {
   itemsDir = join(tmpdir(), `helm-items-${randomUUID()}`);
   await mkdir(itemsDir, { recursive: true });
-  store = new ItemStore(itemsDir);
+  store = new ItemStore(itemsDir, 'helm');
 });
 
 afterEach(async () => {
@@ -444,7 +444,7 @@ describe('upsertResolvedProductDecision', () => {
       triggeredBy: 'webhook:pr-decision-comment',
     });
 
-    const restartedStore = new ItemStore(itemsDir);
+    const restartedStore = new ItemStore(itemsDir, 'helm');
     const state = await restartedStore.get('HLM-1');
 
     expect(state?.resolvedProductDecisions?.[0]).toEqual(decision);
@@ -524,7 +524,7 @@ describe('upsertResolvedProductDecision', () => {
     });
 
     // Simulate dispatch-scheduler refreshing item state from disk at job start.
-    const dispatchRead = await new ItemStore(itemsDir).get('HLM-1');
+    const dispatchRead = await new ItemStore(itemsDir, 'helm').get('HLM-1');
     expect(dispatchRead?.currentStage).toBe('spec-draft');
     expect(dispatchRead?.resolvedProductDecisions).toEqual([decision]);
   });
@@ -616,7 +616,7 @@ describe('updateReviewLoopLedger', () => {
       triggeredBy: 'review-loop:cumulative-budget',
     });
 
-    const restartedStore = new ItemStore(itemsDir);
+    const restartedStore = new ItemStore(itemsDir, 'helm');
     const state = await restartedStore.get('HLM-1');
 
     expect(state?.reviewLoopLedger?.['code-review']?.cyclesTotal).toBe(6);

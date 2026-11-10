@@ -1,10 +1,11 @@
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ItemState } from './types.js';
 import { syncProductItems } from './sync.js';
+import { ItemStore } from './item-store.js';
 import type { SyncOptions } from './sync.js';
 import type { NormalizedItem } from '@helm/adapters';
 import type { Product } from '@helm/shared';
@@ -91,6 +92,43 @@ describe('syncProductItems', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  describe('namespacing (#126)', () => {
+    it('writes synced items where the product-scoped ItemStore reads them', async () => {
+      await syncProductItems(BASE_PRODUCT, 'token', tmpDir, {
+        _listItems: () =>
+          Promise.resolve([makeItem({ externalId: 'issue_7', subStage: 'plan-ready' })]),
+      });
+
+      const store = new ItemStore(join(tmpDir, 'items'), BASE_PRODUCT.product.slug);
+      expect((await store.get('issue_7'))?.currentStage).toBe('plan-ready');
+      // A different product with the same externalId is untouched.
+      expect(await new ItemStore(join(tmpDir, 'items'), 'other').get('issue_7')).toBeNull();
+    });
+
+    it('migrates legacy flat files before reading existing state', async () => {
+      await writeFile(
+        join(tmpDir, 'items', 'issue_7.json'),
+        JSON.stringify({
+          externalId: 'issue_7',
+          productSlug: BASE_PRODUCT.product.slug,
+          currentStage: 'plan-ready',
+          history: [],
+          createdAt: 't',
+          updatedAt: 't',
+        }),
+      );
+
+      const result = await syncProductItems(BASE_PRODUCT, 'token', tmpDir, {
+        _listItems: () =>
+          Promise.resolve([makeItem({ externalId: 'issue_7', subStage: 'plan-ready' })]),
+      });
+
+      expect(result.synced).toBe(1);
+      const store = new ItemStore(join(tmpDir, 'items'), BASE_PRODUCT.product.slug);
+      expect((await store.get('issue_7'))?.createdAt).toBe('t');
+    });
   });
 
   describe('happy path', () => {

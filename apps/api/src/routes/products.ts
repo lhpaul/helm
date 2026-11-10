@@ -83,7 +83,7 @@ productsRouter.get('/products/:slug/items/:externalId', async (c) => {
     const product = products.find((p) => p.product.slug === slug);
     if (!product) return c.json({ error: 'Product not found' }, 404);
 
-    const store = await getItemStore();
+    const store = await getItemStore(slug);
     const item = await store.get(externalId);
     // Return 404 for missing items AND for items that belong to a different
     // product — avoids leaking the existence of cross-product items.
@@ -108,7 +108,7 @@ productsRouter.get('/products/:slug/items', async (c) => {
     const product = products.find((p) => p.product.slug === slug);
     if (!product) return c.json({ error: `Product not found: ${slug}` }, 404);
 
-    const store = await getItemStore();
+    const store = await getItemStore(slug);
     const allItems = await store.list();
     const items = allItems.filter((item) => item.productSlug === slug);
     return c.json(items);

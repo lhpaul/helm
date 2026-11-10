@@ -4,6 +4,7 @@ import { ensureDataDir } from '@helm/storage';
 import type { Product } from '@helm/shared';
 import { TRACKER_WRITE_TIMEOUT_MS, withTimeout } from '../lib/with-timeout.js';
 import { ItemStore } from './item-store.js';
+import { migrateLegacyItems } from './item-store-migration.js';
 import { resolveNativeStateWrite } from './native-state-writeback.js';
 import type { ItemState } from './types.js';
 
@@ -40,7 +41,7 @@ export type BackfillResult = {
 export type BackfillOptions = {
   /** Injectable adapter — defaults to one built from `product` + `credential`. */
   _adapter?: IssueTrackerAdapter;
-  /** Injectable store item list — defaults to ItemStore(dataRoot/items).list(). */
+  /** Injectable store item list — defaults to ItemStore(dataRoot/items, slug).list(). */
   _listItems?: () => Promise<ItemState[]>;
 };
 
@@ -97,7 +98,9 @@ export async function backfillProductStages(
     options?._listItems ??
     (async () => {
       const paths = await ensureDataDir(dataRoot);
-      return new ItemStore(paths.items).list();
+      // Standalone CLI path: migrate legacy flat files before reading (ADR-004).
+      await migrateLegacyItems(paths.items);
+      return new ItemStore(paths.items, slug).list();
     });
 
   // The item store is shared across products (a single data/items/ directory),

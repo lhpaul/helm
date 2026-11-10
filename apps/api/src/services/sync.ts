@@ -2,10 +2,12 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { GitHubProjectsAdapter } from '@helm/adapters';
 import type { NormalizedItem } from '@helm/adapters';
+import { mkdir } from 'node:fs/promises';
 import { ensureDataDir, writeJsonAtomic, readJson } from '@helm/storage';
 import { INITIAL_STAGE } from '@helm/workflow';
 import type { WorkflowStage } from '@helm/workflow';
 import type { Product } from '@helm/shared';
+import { migrateLegacyItems } from './item-store-migration.js';
 import { EXTERNAL_ID_REGEX } from './types.js';
 import type { ItemState, WorkflowEvent } from './types.js';
 
@@ -54,7 +56,7 @@ export type SyncOptions = {
 
 /**
  * Reads all items from the GitHub Project configured on `product` and writes
- * them to `data/items/{externalId}.json` using the same ItemState shape that
+ * them to `data/items/{productSlug}/{externalId}.json` using the same ItemState shape that
  * the webhook handler produces.
  *
  * Idempotency: if an item file already exists, its `createdAt` is preserved
@@ -97,6 +99,10 @@ export async function syncProductItems(
 
   const items = await listItems();
   const paths = await ensureDataDir(dataRoot);
+  // Standalone CLI path: migrate legacy flat files before reading existing state (ADR-004).
+  await migrateLegacyItems(paths.items);
+  const productItemsDir = join(paths.items, slug);
+  await mkdir(productItemsDir, { recursive: true });
 
   let synced = 0;
   let skipped = 0;
@@ -110,7 +116,7 @@ export async function syncProductItems(
       continue;
     }
 
-    const filePath = join(paths.items, `${item.externalId}.json`);
+    const filePath = join(productItemsDir, `${item.externalId}.json`);
     const currentStage: WorkflowStage = item.subStage ?? INITIAL_STAGE;
 
     // Read and validate existing state — treat malformed disk data as absent (rebuild).

@@ -20,7 +20,7 @@ let store: ItemStore;
 beforeEach(async () => {
   itemsDir = join(tmpdir(), `helm-settled-redispatch-${randomUUID()}`);
   await mkdir(itemsDir, { recursive: true });
-  store = new ItemStore(itemsDir);
+  store = new ItemStore(itemsDir, 'helm');
 });
 
 afterEach(async () => {
@@ -68,7 +68,7 @@ describe('settled decision redispatch (cross-layer)', () => {
     });
 
     // dispatch-scheduler loadResolvedProductDecisions shape: fresh get + copy.
-    const latest = await new ItemStore(itemsDir).get('issue_72');
+    const latest = await new ItemStore(itemsDir, 'helm').get('issue_72');
     expect(latest).not.toBeNull();
     const reloaded = [...(latest!.resolvedProductDecisions ?? [])];
     expect(reloaded).toHaveLength(1);

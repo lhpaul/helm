@@ -2,28 +2,34 @@ import type { Product } from '@helm/shared';
 import type { SpawnPermissions } from '../runtime.js';
 
 /**
- * Deny rules paired with `gh_api_read_only` (#119). `gh api` defaults to GET but
- * becomes a mutation with a method override, any body/field flag, `--input`, or
- * the (POST-only) graphql endpoint, so those forms are denied. Deny rules take
- * precedence over allow rules in the Claude CLI.
+ * Flag fragments that turn `gh api` into a mutation (#119): method overrides,
+ * body/field flags (`-f`/`-F`, which also force POST) and `--input`. Short
+ * flags are matched as prefixes so attached values (`-fbody=x`, `-XPOST`) are
+ * denied too, and clusters led by the boolean `-i` (`-if`, `-iX`) as well.
  */
-export const GH_API_MUTATION_DENY_RULES = [
-  'Bash(gh api * --method*)',
-  'Bash(gh api * -X*)',
-  'Bash(gh api * -f *)',
-  'Bash(gh api * -F *)',
-  'Bash(gh api * --field*)',
-  'Bash(gh api * --raw-field*)',
-  'Bash(gh api * --input*)',
-  'Bash(gh api graphql*)',
-  'Bash(gh api -X*)',
-  'Bash(gh api --method*)',
-  'Bash(gh api -f *)',
-  'Bash(gh api -F *)',
-  'Bash(gh api --field*)',
-  'Bash(gh api --raw-field*)',
-  'Bash(gh api --input*)',
+const GH_API_MUTATING_FLAGS = [
+  '--method*',
+  '--field*',
+  '--raw-field*',
+  '--input*',
+  '-X*',
+  '-f*',
+  '-F*',
+  '-i*X*',
+  '-i*f*',
+  '-i*F*',
 ] as const;
+
+/**
+ * Deny rules paired with `gh_api_read_only` (#119). `gh api` defaults to GET but
+ * becomes a mutation with any flag above or the (POST-only) graphql endpoint.
+ * Deny rules take precedence over allow rules in the Claude CLI. Each flag is
+ * covered both right after `gh api` and later in the command line.
+ */
+export const GH_API_MUTATION_DENY_RULES: readonly string[] = [
+  'Bash(gh api graphql*)',
+  ...GH_API_MUTATING_FLAGS.flatMap((flag) => [`Bash(gh api ${flag})`, `Bash(gh api * ${flag})`]),
+];
 
 /**
  * Maps `product.specialists[<id>].permissions` to spawn permissions (#119).

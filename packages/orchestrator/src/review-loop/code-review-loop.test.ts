@@ -1249,6 +1249,20 @@ describe('runCodeReviewLoop', () => {
       }
     });
 
+    it('skips head lookups and keeps not_configured when external review is disabled', async () => {
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'skipped',
+        reason: 'not_configured',
+      });
+      const runGh = vi.fn(async () => ({ stdout: `${SHA_B}\n` }));
+
+      const result = await run({ runGh });
+
+      expect(result.status).toBe('done');
+      expect(result.escalated).toBeUndefined();
+      expect(runExternalReviewIfConfigured).toHaveBeenCalledTimes(1);
+    });
+
     it('still escalates a real reviewer failure when the head is unchanged', async () => {
       vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
         status: 'escalate',

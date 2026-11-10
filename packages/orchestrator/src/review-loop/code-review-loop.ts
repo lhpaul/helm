@@ -650,7 +650,8 @@ async function runExternalReviewWithStopRule(
     // Once the free retries are spent a superseded verdict is still never
     // accepted: it becomes a non-verdict that the normal stop rule bounds.
     let reviewed = external;
-    if (targetRevision) {
+    const externalDisabled = external.status === 'skipped' && external.reason === 'not_configured';
+    if (targetRevision && !externalDisabled) {
       const head = await resolveCurrentHeadRevision(params);
       if (head && head !== targetRevision) {
         targetRevision = head;
@@ -967,7 +968,10 @@ export async function runCodeReviewLoop(
     // here, so nothing about the wait is guessed.
     // Remediation pushes a new commit, so the head recorded at dispatch start
     // goes stale; review the head the PR has now (#117).
-    const resolvedHead = currentRevision ? await resolveCurrentHeadRevision(params) : undefined;
+    const resolvedHead =
+      currentRevision && params.product.review?.external?.provider
+        ? await resolveCurrentHeadRevision(params)
+        : undefined;
     if (resolvedHead) currentRevision = resolvedHead;
     const passParams: RunCodeReviewLoopParams = { ...params, targetRevision: currentRevision };
     let provisionalIntent = buildDeferredExternalReviewIntent(passParams);

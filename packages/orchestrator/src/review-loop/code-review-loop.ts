@@ -28,7 +28,7 @@ import {
   artifactsDirFor,
   EXTERNAL_ID_SAFE,
 } from '../specialists/code-workspace.js';
-import type { RunGit, RunGh } from '../specialists/git-helpers.js';
+import { defaultRunGh, type RunGit, type RunGh } from '../specialists/git-helpers.js';
 import { runExternalReviewIfConfigured, parsePullRequestRef } from '../external-review/run.js';
 import type { RunExternalReviewDeps } from '../external-review/run.js';
 import type { ExternalReviewResult, NormalizedFinding } from '../external-review/types.js';
@@ -573,18 +573,42 @@ async function suppressFalsePositiveReviewerResults(
   });
 }
 
+/** Head-change retries per external pass before the normal stop rule applies (#117). */
+const MAX_HEAD_CHANGE_RETRIES = 3;
+
+/**
+ * Resolves the PR's current head SHA. Best effort: any failure returns
+ * `undefined` so callers fall back to the recorded revision (#117).
+ */
+async function resolveCurrentHeadRevision(
+  params: RunCodeReviewLoopParams,
+): Promise<string | undefined> {
+  try {
+    const { stdout } = await (params.runGh ?? defaultRunGh)(
+      ['pr', 'view', params.prUrl, '--json', 'headRefOid', '--jq', '.headRefOid'],
+      { env: { GITHUB_TOKEN: params.githubToken } },
+    );
+    const sha = stdout.trim();
+    return /^[a-f\d]{40}$/.test(sha) ? sha : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 type ExternalReviewLoopOutcome =
-  | { kind: 'continue'; external: ExternalReviewResult }
+  | { kind: 'continue'; external: ExternalReviewResult; targetRevision?: string }
   | {
       kind: 'defer';
       reason: 'analysis_pending';
       providerReason?: string;
+      targetRevision?: string;
     }
   | {
       kind: 'escalate';
       reason: StopRuleEscalationReason;
       message: string;
       externalReason?: string;
+      targetRevision?: string;
     };
 
 async function runExternalReviewWithStopRule(
@@ -593,6 +617,8 @@ async function runExternalReviewWithStopRule(
 ): Promise<ExternalReviewLoopOutcome> {
   const sleepFn = params.sleep ?? defaultSleep;
   let skipAttempt = 0;
+  let targetRevision = params.targetRevision;
+  let headChangeRetries = 0;
 
   while (true) {
     skipAttempt += 1;
@@ -600,8 +626,20 @@ async function runExternalReviewWithStopRule(
       params.product,
       params.prUrl,
       params.externalReviewDeps,
-      params.targetRevision,
+      targetRevision,
     );
+
+    // A push during the review (e.g. remediation) makes the result stale. Retry
+    // on the new head without spending the skip budget or escalating (#117).
+    if (targetRevision && headChangeRetries < MAX_HEAD_CHANGE_RETRIES) {
+      const head = await resolveCurrentHeadRevision(params);
+      if (head && head !== targetRevision) {
+        headChangeRetries += 1;
+        skipAttempt -= 1;
+        targetRevision = head;
+        continue;
+      }
+    }
 
     const decision = evaluateExternalReviewStopRule({
       result: external,
@@ -610,7 +648,7 @@ async function runExternalReviewWithStopRule(
     });
 
     if (decision.action === 'continue') {
-      return { kind: 'continue', external: decision.result };
+      return { kind: 'continue', external: decision.result, targetRevision };
     }
 
     if (decision.action === 'defer') {
@@ -618,6 +656,7 @@ async function runExternalReviewWithStopRule(
         kind: 'defer',
         reason: decision.reason,
         providerReason: decision.providerReason,
+        targetRevision,
       };
     }
 
@@ -627,6 +666,7 @@ async function runExternalReviewWithStopRule(
         reason: decision.reason,
         message: decision.message,
         externalReason: decision.externalReason,
+        targetRevision,
       };
     }
 
@@ -727,6 +767,8 @@ export async function runCodeReviewLoop(
   const externalSticky = createStickyLane();
   let lastFanout: ReviewerFanoutResult | null = null;
   let ranRemediation = false;
+  /** Head the external review targets; follows the PR as remediation pushes. */
+  let currentRevision = params.targetRevision;
   const falsePositiveCatalog = await fetchFalsePositivesCatalog(
     params.product,
     params.githubToken,
@@ -900,9 +942,19 @@ export async function runCodeReviewLoop(
     // flight, and a readiness signal that finds no intent for the revision is
     // dropped (LEA-258). Everything the outbox row stores is already known
     // here, so nothing about the wait is guessed.
-    const provisionalIntent = buildDeferredExternalReviewIntent(params);
-    await parkProvisionalExternalReviewIntent(params, provisionalIntent);
-    const externalOutcome = await runExternalReviewWithStopRule(params, loopConfig);
+    // Remediation pushes a new commit, so the head recorded at dispatch start
+    // goes stale; review the head the PR has now (#117).
+    const resolvedHead = currentRevision ? await resolveCurrentHeadRevision(params) : undefined;
+    if (resolvedHead) currentRevision = resolvedHead;
+    const passParams: RunCodeReviewLoopParams = { ...params, targetRevision: currentRevision };
+    const provisionalIntent = buildDeferredExternalReviewIntent(passParams);
+    await parkProvisionalExternalReviewIntent(passParams, provisionalIntent);
+    const externalOutcome = await runExternalReviewWithStopRule(passParams, loopConfig);
+    if (externalOutcome.targetRevision && externalOutcome.targetRevision !== currentRevision) {
+      // The head moved during the wait: drop the intent parked for the old SHA.
+      await clearProvisionalExternalReviewIntent(passParams, provisionalIntent);
+      currentRevision = externalOutcome.targetRevision;
+    }
     // Every branch below returns, so reaching past this block means the wait
     // ended without deferring.
     if (externalOutcome.kind === 'defer') {
@@ -918,7 +970,7 @@ export async function runCodeReviewLoop(
           error: 'External review deferred but review identity could not be resolved',
         };
       }
-      if (!params.targetRevision) {
+      if (!currentRevision) {
         return {
           status: 'error',
           prUrl: fanout.prUrl,
@@ -951,7 +1003,7 @@ export async function runCodeReviewLoop(
         reason: externalOutcome.reason,
         providerReason: externalOutcome.providerReason,
         prNumber: prRef.prNumber,
-        targetRevision: params.targetRevision,
+        targetRevision: currentRevision,
         maxDeferSec: externalMaxDeferSec(params.product),
       };
       try {

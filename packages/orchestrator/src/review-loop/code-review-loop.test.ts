@@ -13,6 +13,14 @@ import {
   buildFindingsByKind,
 } from './code-review-loop.js';
 
+// Head lookups must never reach the real `gh`; default to "unresolvable" (#117).
+vi.mock('../specialists/git-helpers.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../specialists/git-helpers.js')>()),
+  defaultRunGh: vi.fn(async () => {
+    throw new Error('gh unavailable in tests');
+  }),
+}));
+
 vi.mock('../specialists/reviewer-fanout.js', () => ({
   fanoutReviewers: vi.fn(),
   shouldRemediate: vi.fn(),
@@ -1077,6 +1085,135 @@ describe('runCodeReviewLoop', () => {
   // LEA-258: the provider can finish, and GitHub can deliver readiness, while
   // the loop is still inside its first poll. Parking the intent before the poll
   // is what gives that webhook something to match.
+  describe('head changes during external review (#117)', () => {
+    const SHA_A = 'a'.repeat(40);
+    const SHA_B = 'b'.repeat(40);
+    const externalProduct = (): Product =>
+      ({
+        ...baseProduct,
+        review: { external: { provider: 'local-ai-reviewer', max_defer_sec: 600 } },
+      }) as Product;
+    const unavailable = {
+      status: 'skipped',
+      reason: 'unavailable',
+      providerReason: 'head_mismatch',
+    } as const;
+    const clean = { status: 'clean', blockers: [], advisories: [] } as const;
+    const heads = (...shas: string[]) => {
+      const queue = [...shas];
+      return vi.fn(async () => ({ stdout: `${queue.length > 1 ? queue.shift() : queue[0]}\n` }));
+    };
+    const run = (overrides: Partial<Parameters<typeof runCodeReviewLoop>[0]> = {}) => {
+      const product = externalProduct();
+      return runCodeReviewLoop({
+        externalId: 'issue_1',
+        product,
+        prUrl: PR_URL,
+        codeRepo: product.code_repos[0]!,
+        githubToken: 'token',
+        runtime: new MockAgentRuntime({ messages: [] }),
+        transition: transition as ItemTransitionFn,
+        runGit,
+        sleep: async () => {},
+        targetRevision: SHA_A,
+        ...overrides,
+      });
+    };
+
+    it('retries on the new head without escalating when the head moved mid-review', async () => {
+      vi.mocked(runExternalReviewIfConfigured)
+        .mockResolvedValueOnce(unavailable)
+        .mockResolvedValueOnce(clean);
+      // Pre-pass lookup sees A; after the failed attempt the head is B.
+      const runGh = heads(SHA_A, SHA_B, SHA_B);
+
+      const result = await run({ runGh });
+
+      expect(result.status).toBe('done');
+      expect(result.escalated).toBeUndefined();
+      const calls = vi.mocked(runExternalReviewIfConfigured).mock.calls;
+      expect(calls.map((c) => c[3])).toEqual([SHA_A, SHA_B]);
+    });
+
+    it('reviews the current head after remediation pushed a new commit', async () => {
+      vi.mocked(shouldRemediate).mockReturnValueOnce(true).mockReturnValueOnce(false);
+      vi.mocked(fanoutReviewers).mockResolvedValue(makeFanout());
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue(clean);
+      const runGh = heads(SHA_B);
+
+      await run({ runGh });
+
+      const calls = vi.mocked(runExternalReviewIfConfigured).mock.calls;
+      expect(calls.every((c) => c[3] === SHA_B)).toBe(true);
+    });
+
+    it('parks the deferred intent on the new head and clears the superseded one', async () => {
+      vi.mocked(runExternalReviewIfConfigured)
+        .mockResolvedValueOnce(unavailable)
+        .mockResolvedValueOnce({ status: 'deferred', reason: 'analysis_pending' });
+      const onExternalReviewPending = vi.fn();
+      const onExternalReviewSettled = vi.fn();
+      const onExternalReviewDeferred = vi.fn();
+
+      const result = await run({
+        runGh: heads(SHA_A, SHA_B, SHA_B),
+        onExternalReviewPending,
+        onExternalReviewSettled,
+        onExternalReviewDeferred,
+      });
+
+      expect(result.status).toBe('deferred');
+      expect(onExternalReviewPending).toHaveBeenCalledWith(
+        expect.objectContaining({ targetRevision: SHA_A }),
+      );
+      expect(onExternalReviewSettled).toHaveBeenCalledWith(
+        expect.objectContaining({ targetRevision: SHA_A }),
+      );
+      expect(onExternalReviewDeferred).toHaveBeenCalledWith(
+        expect.objectContaining({ targetRevision: SHA_B }),
+      );
+    });
+
+    it('stops retrying after the bound and applies the normal stop rule', async () => {
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue(unavailable);
+      // The head moves on every lookup, so every attempt is superseded.
+      let n = 0;
+      const runGh = vi.fn(async () => ({
+        stdout: `${String.fromCharCode(100 + (n++ % 20)).repeat(40)}\n`,
+      }));
+
+      const result = await run({ runGh });
+
+      expect(result.escalated).toBe(true);
+      expect(result.escalationReason).toBe('external_repeated_skip');
+    });
+
+    it('still escalates a real reviewer failure when the head is unchanged', async () => {
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue({
+        status: 'escalate',
+        reason: 'provider_error',
+      });
+
+      const result = await run({ runGh: heads(SHA_A) });
+
+      expect(result.escalated).toBe(true);
+      expect(result.escalationReason).toBe('external_escalate');
+      expect(runExternalReviewIfConfigured).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to the recorded revision when the head cannot be resolved', async () => {
+      vi.mocked(runExternalReviewIfConfigured).mockResolvedValue(clean);
+      const runGh = vi.fn(async () => {
+        throw new Error('gh failed');
+      });
+
+      const result = await run({ runGh });
+
+      expect(result.status).toBe('done');
+      expect(vi.mocked(runExternalReviewIfConfigured).mock.calls[0]![3]).toBe(SHA_A);
+    });
+  });
+
   describe('provisional pending external-review intent', () => {
     const externalProduct = (): Product =>
       ({

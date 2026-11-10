@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Ensure review merge-gate labels (#128):** `scripts/ensure-review-labels.sh`
+  creates the `ready-for-human-review` label when missing (idempotent, never
+  edits or deletes existing labels; `--repo`, `--dry-run`). Documented in
+  `docs/review-labels.md`. Gate behavior is unchanged.
+
 ### Fixed
 
 - **Namespace item storage by product slug (#126):** items are now persisted at

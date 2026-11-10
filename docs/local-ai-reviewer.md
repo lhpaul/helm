@@ -89,3 +89,5 @@ and settings remain available). For CodeRabbit, also re-enable
 `.coderabbit.yaml` `reviews.auto_review.enabled` if automatic reviews are wanted.
 Disabling its App auto-review is what avoids analysis on intermediate pushes;
 Helm's internal-first call order alone never controlled that billing.
+
+See also [review-labels.md](review-labels.md) for the merge-gate label.

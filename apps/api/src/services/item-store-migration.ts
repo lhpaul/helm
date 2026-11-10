@@ -1,7 +1,6 @@
-import { link, readdir, stat, unlink } from 'node:fs/promises';
+import { link, readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { readJson } from '@helm/storage';
 import { EXTERNAL_ID_REGEX } from './types.js';
 
 const SLUG_REGEX = /^[a-z0-9-]+$/;
@@ -40,9 +39,11 @@ export async function migrateLegacyItems(itemsRoot: string): Promise<LegacyMigra
     const from = join(itemsRoot, file);
     try {
       if (!(await stat(from)).isFile()) continue;
+      // Read errors (EACCES, EIO, ...) propagate; only malformed JSON is skipped.
+      const raw = await readFile(from, 'utf-8');
       let state: { externalId?: unknown; productSlug?: unknown } | null;
       try {
-        state = await readJson<{ externalId?: unknown; productSlug?: unknown }>(from);
+        state = JSON.parse(raw) as { externalId?: unknown; productSlug?: unknown } | null;
       } catch {
         report.skipped.push({ file, reason: 'unparseable' });
         continue;

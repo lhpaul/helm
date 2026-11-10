@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -95,6 +95,20 @@ describe('ItemStore namespacing (#126)', () => {
 });
 
 describe('migrateLegacyItems (#126)', () => {
+  it('propagates read failures (not treated as malformed JSON) and recovers', async () => {
+    await writeLegacy('issue_1', 'alpha');
+    await chmod(join(root, 'issue_1.json'), 0o000);
+    const canStillRead = await readFile(join(root, 'issue_1.json'), 'utf-8').then(
+      () => true,
+      () => false,
+    );
+    if (!canStillRead) {
+      await expect(migrateLegacyItems(root)).rejects.toThrow(/EACCES/);
+      await chmod(join(root, 'issue_1.json'), 0o600);
+    }
+    expect(await migrateLegacyItems(root)).toEqual({ migrated: 1, skipped: [] });
+  });
+
   it('propagates unexpected I/O failures and recovers on retry', async () => {
     await writeLegacy('issue_1', 'alpha');
     // A regular file where the product directory must go makes the move fail.

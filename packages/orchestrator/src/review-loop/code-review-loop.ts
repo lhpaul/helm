@@ -1,6 +1,7 @@
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { CodeRepo, Product } from '@helm/shared';
+import { isValidExternalId } from '@helm/shared';
 import type { IAgentRuntime } from '../runtime.js';
 import type { ItemTransitionFn } from '../specialists/spec-writer.js';
 import {
@@ -23,11 +24,7 @@ import {
   handleReviewAdjudicatorResult,
 } from '../specialists/review-adjudicator.js';
 import { fetchSpecForPlan, type FetchFn } from '../specialists/fetch-product-context.js';
-import {
-  provisionReviewerWorkspace,
-  artifactsDirFor,
-  EXTERNAL_ID_SAFE,
-} from '../specialists/code-workspace.js';
+import { provisionReviewerWorkspace, artifactsDirFor } from '../specialists/code-workspace.js';
 import { defaultRunGh, type RunGit, type RunGh } from '../specialists/git-helpers.js';
 import { runExternalReviewIfConfigured, parsePullRequestRef } from '../external-review/run.js';
 import type { RunExternalReviewDeps } from '../external-review/run.js';
@@ -1382,7 +1379,7 @@ async function runAdjudicationPass(input: {
         }
       | undefined;
     if (input.mode === 'early-artifact' && input.kind) {
-      if (!EXTERNAL_ID_SAFE.test(input.externalId)) {
+      if (!isValidExternalId(input.externalId)) {
         throw new Error('Invalid externalId for draft artifact path');
       }
       const artifactRelPath =

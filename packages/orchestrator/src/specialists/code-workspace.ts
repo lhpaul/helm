@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import type { CodeRepo } from '@helm/shared';
-import { implBranchName } from '@helm/shared';
+import { implBranchName, isValidExternalId } from '@helm/shared';
 import { parseGitHubRepoUrl } from './fetch-product-context.js';
 import {
   buildAuthenticatedUrl,
@@ -101,9 +101,6 @@ export type PushReviewerPatchesResult = {
 
 // ── EXTERNAL_ID guard ─────────────────────────────────────────────────────────
 
-const EXTERNAL_ID_SAFE = /^(?!\.)[A-Za-z0-9._-]+$/;
-export { EXTERNAL_ID_SAFE };
-
 // ── Scratch-artifact helpers (ADR-025) ─────────────────────────────────────────
 
 /**
@@ -163,7 +160,7 @@ export function artifactsDirFor(workspacePath: string): string {
  * (`code-reviewer`, `code-remediator`, …); the guard is defense in depth.
  */
 export function artifactFileFor(workspacePath: string, specialistId: string): string {
-  if (!EXTERNAL_ID_SAFE.test(specialistId)) {
+  if (!isValidExternalId(specialistId)) {
     throw new Error(`[code-workspace] Invalid specialistId for artifact path: "${specialistId}"`);
   }
   return join(artifactsDirFor(workspacePath), `${specialistId}.md`);
@@ -192,7 +189,7 @@ export async function provisionCodeWorkspace(
 ): Promise<ProvisionWorkspaceResult> {
   const { externalId, codeRepo, githubToken } = opts;
 
-  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+  if (!isValidExternalId(externalId)) {
     throw new Error(`[code-workspace] Invalid externalId: "${externalId}"`);
   }
 
@@ -326,7 +323,7 @@ export async function provisionReviewerWorkspace(
 ): Promise<ProvisionWorkspaceResult> {
   const { externalId, codeRepo, githubToken } = opts;
 
-  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+  if (!isValidExternalId(externalId)) {
     throw new Error(`[code-workspace] Invalid externalId: "${externalId}"`);
   }
 
@@ -419,7 +416,7 @@ export async function openCodePR(
 ): Promise<OpenCodePRResult> {
   const { externalId, codeRepo, workspacePath, githubToken, prTitle, prBody } = opts;
 
-  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+  if (!isValidExternalId(externalId)) {
     throw new Error(`[code-workspace] Invalid externalId: "${externalId}"`);
   }
 
@@ -591,7 +588,7 @@ export async function pushReviewerPatches(
   const commitMessage =
     opts.commitMessage ?? `chore(review): apply code-reviewer patches for ${externalId}`;
 
-  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+  if (!isValidExternalId(externalId)) {
     throw new Error(`[code-workspace] Invalid externalId: "${externalId}"`);
   }
 

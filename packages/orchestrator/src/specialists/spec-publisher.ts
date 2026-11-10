@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { Product } from '@helm/shared';
-import { specBranchName, planBranchName } from '@helm/shared';
+import { specBranchName, planBranchName, isValidExternalId } from '@helm/shared';
 import { parseGitHubRepoUrl } from './fetch-product-context.js';
 import {
   buildAuthenticatedUrl,
@@ -125,10 +125,8 @@ export async function publishArtifactToPR(
   const { externalId, product, artifactPath, githubToken, kind } = opts;
   const cfg = ARTIFACT_CONFIG[kind];
 
-  // The (?!\.) lookahead rejects dot-segment values (`.`, `..`, `.hidden`, …)
-  // in addition to the character-class restriction, preventing path traversal.
-  const EXTERNAL_ID_SAFE = /^(?!\.)[A-Za-z0-9._-]+$/;
-  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+  // Rejects dot-segment and non-path-safe values (path traversal guard).
+  if (!isValidExternalId(externalId)) {
     throw new Error(`${cfg.errorTag} Invalid externalId: "${externalId}"`);
   }
 

@@ -8,19 +8,13 @@
  * plan-publisher) and the API (webhook handler).
  */
 
+import { EXTERNAL_ID_REGEX } from './external-id.js';
+
 /**
  * Prefix used for all spec branches in the knowledge repo.
  * Example branch: `helm/spec/HLM-42`
  */
 export const SPEC_BRANCH_PREFIX = 'helm/spec/';
-
-/**
- * Valid externalId characters — must match the same constraint as
- * EXTERNAL_ID_REGEX in apps/api/src/services/types.ts and
- * EXTERNAL_ID_SAFE in packages/orchestrator/src/specialists/spec-publisher.ts.
- * Duplicated here to keep @helm/shared free of cross-package app dependencies.
- */
-const VALID_EXTERNAL_ID = /^(?!\.)[A-Za-z0-9._-]+$/;
 
 /**
  * Returns the knowledge-repo branch name for a given externalId.
@@ -94,17 +88,17 @@ export function parseArtifactBranch(
 ): { kind: ArtifactBranchKind; externalId: string } | null {
   if (ref.startsWith(SPEC_BRANCH_PREFIX)) {
     const externalId = ref.slice(SPEC_BRANCH_PREFIX.length);
-    if (!VALID_EXTERNAL_ID.test(externalId)) return null;
+    if (!EXTERNAL_ID_REGEX.test(externalId)) return null;
     return { kind: 'spec', externalId };
   }
   if (ref.startsWith(PLAN_BRANCH_PREFIX)) {
     const externalId = ref.slice(PLAN_BRANCH_PREFIX.length);
-    if (!VALID_EXTERNAL_ID.test(externalId)) return null;
+    if (!EXTERNAL_ID_REGEX.test(externalId)) return null;
     return { kind: 'plan', externalId };
   }
   if (ref.startsWith(IMPL_BRANCH_PREFIX)) {
     const externalId = ref.slice(IMPL_BRANCH_PREFIX.length);
-    if (!VALID_EXTERNAL_ID.test(externalId)) return null;
+    if (!EXTERNAL_ID_REGEX.test(externalId)) return null;
     return { kind: 'impl', externalId };
   }
   return null;

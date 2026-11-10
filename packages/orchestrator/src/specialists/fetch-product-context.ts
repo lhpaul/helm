@@ -1,6 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Product } from '@helm/shared';
+import { isValidExternalId } from '@helm/shared';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -305,15 +306,13 @@ export async function materializeProductContext(
  * @param token       GitHub personal access token (repo scope).
  * @param fetchFn     HTTP fetch function — injectable for testing.
  */
-const EXTERNAL_ID_SAFE = /^(?!\.)[A-Za-z0-9._-]+$/;
-
 export async function fetchSpecForPlan(
   product: Product,
   externalId: string,
   token: string,
   fetchFn: FetchFn = fetch,
 ): Promise<string | null> {
-  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+  if (!isValidExternalId(externalId)) {
     throw new Error(`[fetch-spec] Invalid externalId: "${externalId}"`);
   }
 
@@ -354,7 +353,7 @@ export async function fetchPlanForImplementer(
   token: string,
   fetchFn: FetchFn = fetch,
 ): Promise<string | null> {
-  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+  if (!isValidExternalId(externalId)) {
     throw new Error(`[fetch-plan] Invalid externalId: "${externalId}"`);
   }
 

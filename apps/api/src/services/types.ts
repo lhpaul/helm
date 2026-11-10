@@ -2,14 +2,11 @@ import type { ReviewLoopLedger } from '@helm/orchestrator';
 import type { WorkflowStage } from '@helm/workflow';
 
 /**
- * Validates externalId values for safe filesystem use.
- * Allows standard tracker formats: MOM-142, HLM-7, issue_3, feature.v2
- * Blocks: slashes, backslashes, spaces, leading dots, and other specials.
- *
- * Single source of truth — imported by both ItemStore and route handlers
- * so the validation stays in sync.
+ * externalId validation lives in `@helm/shared` (single source of truth, TD-001).
+ * Re-exported here so ItemStore and route handlers keep their existing import
+ * path; this is a re-export, not a copy of the regex.
  */
-export const EXTERNAL_ID_REGEX = /^(?!\.)[A-Za-z0-9._-]+$/;
+export { EXTERNAL_ID_REGEX } from '@helm/shared';
 
 /**
  * Character allowlist for filesystem path inputs — rejects spaces, shell

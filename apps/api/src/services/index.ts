@@ -5,36 +5,51 @@ import type { Product } from '@helm/shared';
 import { GitHubProjectsAdapter, LinearAdapter } from '@helm/adapters';
 import type { IssueTrackerAdapter } from '@helm/adapters';
 import { ItemStore } from './item-store.js';
+import { migrateLegacyItems } from './item-store-migration.js';
 import { JobStore } from './job-store.js';
 import { isSafeFsPath } from './types.js';
 
 // ── ItemStore singleton ───────────────────────────────────────────────────────
 
-let _itemStore: ItemStore | null = null;
-let _itemInitPromise: Promise<ItemStore> | null = null;
+const _itemStores = new Map<string, ItemStore>();
+let _itemInitPromise: Promise<void> | null = null;
+
+/** Resolves the items root, migrating legacy flat item files once per process. */
+async function ensureItemsRoot(): Promise<string> {
+  const envDataDir = process.env.HELM_DATA_DIR?.trim();
+  const dataRoot = envDataDir ? envDataDir : join(process.cwd(), 'data');
+  const paths = await ensureDataDir(dataRoot);
+  if (_itemInitPromise === null) {
+    _itemInitPromise = migrateLegacyItems(paths.items).then((report) => {
+      if (report.migrated > 0 || report.skipped.length > 0) {
+        console.warn(
+          `[item-store] legacy item migration: migrated=${report.migrated} skipped=${report.skipped.length}`,
+        );
+      }
+    });
+    _itemInitPromise.catch(() => {
+      _itemInitPromise = null; // retry on next call
+    });
+  }
+  await _itemInitPromise;
+  return paths.items;
+}
 
 /**
- * Returns the shared ItemStore instance, initializing it on first call.
- * Single-flight: concurrent calls during startup await the same promise.
+ * Returns the ItemStore scoped to `productSlug`, initializing it on first call.
+ * Items live under data/items/{productSlug}/; the first call per process also
+ * migrates legacy flat data/items/{externalId}.json files (idempotent).
  * Reads HELM_DATA_DIR from env (defaults to 'data/' relative to process CWD).
  */
-export async function getItemStore(): Promise<ItemStore> {
-  if (_itemStore !== null) return _itemStore;
-  if (_itemInitPromise !== null) return _itemInitPromise;
-
-  _itemInitPromise = (async () => {
-    const envDataDir = process.env.HELM_DATA_DIR?.trim();
-    const dataRoot = envDataDir ? envDataDir : join(process.cwd(), 'data');
-    const paths = await ensureDataDir(dataRoot);
-    _itemStore = new ItemStore(paths.items);
-    return _itemStore;
-  })();
-
-  try {
-    return await _itemInitPromise;
-  } finally {
-    _itemInitPromise = null;
-  }
+export async function getItemStore(productSlug: string): Promise<ItemStore> {
+  const cached = _itemStores.get(productSlug);
+  if (cached) return cached;
+  const itemsRoot = await ensureItemsRoot();
+  const existing = _itemStores.get(productSlug);
+  if (existing) return existing;
+  const store = new ItemStore(itemsRoot, productSlug);
+  _itemStores.set(productSlug, store);
+  return store;
 }
 
 // ── JobStore singleton ────────────────────────────────────────────────────────
@@ -261,7 +276,7 @@ export async function getProductRegistry(): Promise<Product[]> {
  * For use in tests only — do not call in production code.
  */
 export function _resetForTests(): void {
-  _itemStore = null;
+  _itemStores.clear();
   _itemInitPromise = null;
   _jobStore = null;
   _jobInitPromise = null;

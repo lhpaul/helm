@@ -260,9 +260,12 @@ webhooksRouter.post('/webhooks/github', async (c) => {
     try {
       // transitionItem applies writeback, but webhook:github-projects is
       // tracker-originated → anti-echo skips it, preventing a tracker→store→
-      // tracker echo loop. Load product config only after the transition so a
-      // config failure cannot drop a durable stage update.
+      // tracker echo loop. The item store is namespaced by product slug (ADR-004),
+      // so the product config is loaded first; a config failure surfaces as a
+      // retryable error below.
+      const config = await getProductConfig();
       await transitionItem({
+        productSlug: config.product.slug,
         externalId: event.externalId,
         toStage: event.subStage,
         triggeredBy: 'webhook:github-projects',
@@ -304,7 +307,8 @@ webhooksRouter.post('/webhooks/github', async (c) => {
       console.info('[webhooks/github] PR comment ignored — no structured Helm decision');
     } else {
       try {
-        const [config, itemStore] = await Promise.all([getProductConfig(), getItemStore()]);
+        const config = await getProductConfig();
+        const itemStore = await getItemStore(config.product.slug);
         const repo = getPrimaryCodeRepo(config);
         if (event.owner !== repo.owner || event.repo !== repo.repo) {
           console.info('[webhooks/github] PR decision ignored — repository mismatch');
@@ -441,7 +445,8 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         );
       } else {
         try {
-          const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
+          const config = await getProductConfig();
+          const itemStore = await getItemStore(config.product.slug);
           const item = await itemStore.get(parsed.externalId);
           if (item?.currentStage === 'code-review') {
             const outcome = await scheduleItemDispatch({
@@ -486,7 +491,8 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         );
       } else {
         try {
-          const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
+          const config = await getProductConfig();
+          const itemStore = await getItemStore(config.product.slug);
           if (config.review?.early_loop?.enabled !== true) {
             console.info('[webhooks/github] draft PR sync ignored — early review loop disabled');
             return c.json({ processed: true });
@@ -581,7 +587,8 @@ webhooksRouter.post('/webhooks/github', async (c) => {
     }
   } else if (event.type === 'external_review_ready') {
     try {
-      const [config, itemStore] = await Promise.all([getProductConfig(), getItemStore()]);
+      const config = await getProductConfig();
+      const itemStore = await getItemStore(config.product.slug);
       if (config.review?.external?.resume_on_check_run === false) {
         console.info('[webhooks/github] external review readiness ignored — resume disabled');
         return c.json({ processed: true });
@@ -786,7 +793,8 @@ webhooksRouter.post('/webhooks/github', async (c) => {
     // before the per-item guard, so a throw there must still produce controlled
     // logging + a clean 500 rather than escaping to the default handler.
     try {
-      const [itemStore, config] = await Promise.all([getItemStore(), getProductConfig()]);
+      const config = await getProductConfig();
+      const itemStore = await getItemStore(config.product.slug);
 
       // Opt-out: a product whose terminal stage is `merged` has no user-facing
       // release step — the release event is a no-op for it.
@@ -804,6 +812,7 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           // webhook:release is NOT tracker-originated → transitionItem writes the
           // released stage back to the tracker for each promoted item.
           await transitionItem({
+            productSlug: config.product.slug,
             externalId: item.externalId,
             toStage: 'released',
             triggeredBy: 'webhook:release',
@@ -864,7 +873,8 @@ async function handleAcceptFindingComment(
   }
 
   try {
-    const [config, itemStore] = await Promise.all([getProductConfig(), getItemStore()]);
+    const config = await getProductConfig();
+    const itemStore = await getItemStore(config.product.slug);
     const repo = getPrimaryCodeRepo(config);
     if (event.owner !== repo.owner || event.repo !== repo.repo) {
       console.info('[webhooks/github] Accept-finding ignored — repository mismatch');
@@ -1030,6 +1040,7 @@ async function processLinearWebhookEvent(
       // webhook:linear is tracker-originated → transitionItem's writeback is
       // anti-echo-skipped, preventing a tracker→store→tracker echo loop.
       await transitionItem({
+        productSlug: config.product.slug,
         externalId: event.externalId,
         toStage: event.subStage,
         triggeredBy: 'webhook:linear',

@@ -147,7 +147,7 @@ export async function reconcileMergedArtifactPullRequest(
   });
   const note = `${idempotencyKey}; source:${input.source}; branch:${input.headRef}`;
 
-  const store = await getItemStore();
+  const store = await getItemStore(config.product.slug);
   const existing = await store.get(parsed.externalId);
   if (!existing) {
     return { status: 'ignored', reason: 'item-not-found', externalId: parsed.externalId };
@@ -160,6 +160,7 @@ export async function reconcileMergedArtifactPullRequest(
   // (per-item lock). Avoid redundant unlocked pre-checks that race with overlap.
   try {
     const { item: updated, applied } = await transitionItemIfCurrentStageResult({
+      productSlug: config.product.slug,
       externalId: parsed.externalId,
       fromStage: transition.fromStage,
       toStage: transition.toStage,

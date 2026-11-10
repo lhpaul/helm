@@ -760,8 +760,9 @@ describe('POST /api/webhooks/github', () => {
         knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
         workflow: { final_stage: 'released' },
       };
-      // First call is for projects_v2_item provider gating; second is for replay.
+      // Calls: provider gating, the transition's product slug, then replay (fails).
       vi.mocked(getProductConfig)
+        .mockResolvedValueOnce(product as never)
         .mockResolvedValueOnce(product as never)
         .mockRejectedValueOnce(new Error('product config unavailable'));
 
@@ -1333,6 +1334,7 @@ describe('POST /api/webhooks/github', () => {
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
       expect(mockTransitionIfCurrentStage).toHaveBeenCalledWith({
+        productSlug: 'test-app',
         externalId: 'issue_42',
         fromStage: 'spec-draft',
         toStage: 'spec-ready',
@@ -1399,6 +1401,7 @@ describe('POST /api/webhooks/github', () => {
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
       expect(mockTransitionIfCurrentStage).toHaveBeenCalledWith({
+        productSlug: 'test-app',
         externalId: 'issue_42',
         fromStage: 'plan-draft',
         toStage: 'plan-ready',
@@ -1468,6 +1471,7 @@ describe('POST /api/webhooks/github', () => {
       const res = await post(body, 'pull_request');
       expect(res.status).toBe(200);
       expect(mockTransitionIfCurrentStage).toHaveBeenCalledWith({
+        productSlug: 'test-app',
         externalId: 'issue_42',
         fromStage: 'code-review',
         toStage: 'merged',
@@ -3452,11 +3456,13 @@ describe('POST /api/webhooks/github', () => {
       expect(res.status).toBe(200);
       expect(mockTransition).toHaveBeenCalledTimes(2);
       expect(mockTransition).toHaveBeenCalledWith({
+        productSlug: 'test-app',
         externalId: 'issue_1',
         toStage: 'released',
         triggeredBy: 'webhook:release',
       });
       expect(mockTransition).toHaveBeenCalledWith({
+        productSlug: 'test-app',
         externalId: 'issue_3',
         toStage: 'released',
         triggeredBy: 'webhook:release',
@@ -3567,6 +3573,7 @@ describe('POST /api/webhooks/github', () => {
       expect(res.status).toBe(200);
       expect(getGitHubAdapter).not.toHaveBeenCalled();
       expect(mockTransitionIfCurrentStage).toHaveBeenCalledWith({
+        productSlug: 'mome',
         externalId: 'issue_42',
         fromStage: 'code-review',
         toStage: 'merged',

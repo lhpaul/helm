@@ -89,7 +89,7 @@ dispatchRouter.post('/products/:slug/items/:externalId/dispatch', async (c) => {
   let store;
   let item;
   try {
-    store = await getItemStore();
+    store = await getItemStore(slug);
     item = await store.get(externalId);
   } catch (err) {
     console.error('[dispatch] Failed to load item:', err);

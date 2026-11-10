@@ -108,7 +108,7 @@ Granting an escalated item more budget is a human decision, by design. Two ways:
 1. **Raise the budget** — increase `review.loop.max_cycles_cumulative` in the
    product's `.helm/product.yaml`. Applies to every item of that product.
 2. **Clear one item's lane** — delete the lane key from `reviewLoopLedger` in
-   `$HELM_DATA_DIR/items/<externalId>.json` (stop the API server first, since
+   `$HELM_DATA_DIR/items/<productSlug>/<externalId>.json` (stop the API server first, since
    item writes are serialized in-process):
 
    ```jsonc

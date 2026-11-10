@@ -156,7 +156,10 @@ async function inferPendingReviewSpecialist(input: {
 }): Promise<string | undefined> {
   if (input.specialistId) return input.specialistId;
 
-  const [products, store] = await Promise.all([getProductRegistry(), getItemStore()]);
+  const [products, store] = await Promise.all([
+    getProductRegistry(),
+    getItemStore(input.productSlug),
+  ]);
   const product = products.find((p) => p.product.slug === input.productSlug);
   if (!product) return undefined;
   const item = await store.get(input.externalId);
@@ -795,7 +798,7 @@ export async function runDispatchJob(
     };
 
     // Re-read item state so decisions recorded after enqueue are visible in this run.
-    const store = await getItemStore();
+    const store = await getItemStore(ctx.item.productSlug);
     const freshItem = (await store.get(ctx.item.externalId)) ?? ctx.item;
 
     const result = await dispatchStageHandler(
@@ -806,7 +809,7 @@ export async function runDispatchJob(
       },
       ctx.product,
       runtime,
-      transitionItem,
+      (transition) => transitionItem({ ...transition, productSlug: freshItem.productSlug }),
       {
         workdir: ctx.workdir,
         dataRoot: ctx.dataRoot,
@@ -964,7 +967,7 @@ export async function scheduleItemDispatch(input: {
     return { scheduled: false, reason: DISPATCH_UNAVAILABLE };
   }
 
-  const store = await getItemStore();
+  const store = await getItemStore(input.productSlug);
   const item = await store.get(input.externalId);
   if (!item || item.productSlug !== input.productSlug) {
     console.info(

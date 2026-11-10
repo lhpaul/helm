@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Namespace item storage by product slug (#126):** items are now persisted at
+  `data/items/{productSlug}/{externalId}.json` instead of the flat
+  `data/items/{externalId}.json`, so two products sharing a data root with the
+  same `externalId` (e.g. `issue_1`) no longer overwrite each other. `ItemStore`
+  is scoped to one slug and `getItemStore(productSlug)` returns a per-product
+  store. Existing flat files are migrated automatically and idempotently on
+  first access (rename into the slug recorded in each file; never overwrites,
+  never deletes — unparseable or slug-less files are left in place and logged).
+  Single-product deployments need no action. Rollback: move each
+  `items/<slug>/*.json` back up to `items/`. Operators who hand-edit item files
+  now find them under `items/<productSlug>/`.
 - **Fewer unnecessary `adjudication_conflict` escalations on spec/plan review (#125):**
   in the early artifact loop the review-adjudicator is told that draft edits
   (wording, clarity, structure) are AUTO plan items, not conflicts, and that a

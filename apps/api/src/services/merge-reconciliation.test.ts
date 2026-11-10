@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,7 +30,7 @@ let store: ItemStore;
 beforeEach(async () => {
   itemsDir = join(tmpdir(), `helm-merge-reconcile-${randomUUID()}`);
   await mkdir(itemsDir, { recursive: true });
-  store = new ItemStore(itemsDir);
+  store = new ItemStore(itemsDir, 'test-app');
   mockGetItemStore.mockResolvedValue(store);
   mockGetProductConfig.mockResolvedValue({
     product: { slug: 'test-app', name: 'Test App' },
@@ -225,11 +225,17 @@ describe('reconcileMergedArtifactPullRequest', () => {
   });
 
   it('ignores when the item belongs to another product', async () => {
-    await store.create({
+    // A namespaced store cannot create a foreign-product item; simulate a stray
+    // file (wrong slug recorded inside the test-app directory) the guard must reject.
+    const created = await store.create({
       externalId: 'HLM-1',
-      productSlug: 'other-product',
+      productSlug: 'test-app',
       triggeredBy: 'test:create',
     });
+    await writeFile(
+      join(itemsDir, 'test-app', 'HLM-1.json'),
+      JSON.stringify({ ...created, productSlug: 'other-product' }),
+    );
 
     const result = await reconcileMergedArtifactPullRequest(input('helm/impl/HLM-1'));
 

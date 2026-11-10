@@ -23,3 +23,15 @@ PR is merged and uses a supported artifact branch, then runs the same guarded
 transition path as the webhook handler. Repeating the same request after success
 is safe: Helm returns an already-reconciled no-op and does not append duplicate
 history.
+
+## Item storage layout
+
+Workflow state is stored one JSON file per item at
+`$HELM_DATA_DIR/items/<productSlug>/<externalId>.json`, so products sharing a data
+root never collide on `externalId` (ADR-004). Older flat files
+(`items/<externalId>.json`) are moved into their product directory automatically
+the first time the server (or the writeback-backfill script) touches the store;
+the move is idempotent and never overwrites an existing file. Files that cannot
+be migrated safely (invalid JSON, missing/unsafe `productSlug`) stay in place and
+are reported in the server log. To roll back, move the files from each
+`items/<productSlug>/` directory back up into `items/`.

@@ -174,12 +174,13 @@ async function writebackNativeState(
  * back to the tracker (best-effort). Drop-in replacement for `store.transition`.
  */
 export async function transitionItem(input: {
+  productSlug: string;
   externalId: string;
   toStage: WorkflowStage;
   triggeredBy: string;
   note?: string;
 }): Promise<ItemState> {
-  const store = await getItemStore();
+  const store = await getItemStore(input.productSlug);
   const updated = await store.transition(input);
   await writebackStage(updated.externalId, updated.currentStage, input.triggeredBy);
   // Defensive copy: callers own the result, not the store-built object.
@@ -193,6 +194,7 @@ export async function transitionItem(input: {
  * as normal transitionItem().
  */
 export async function transitionItemIfCurrentStage(input: {
+  productSlug: string;
   externalId: string;
   fromStage: WorkflowStage;
   toStage: WorkflowStage;
@@ -205,6 +207,7 @@ export async function transitionItemIfCurrentStage(input: {
 }
 
 export async function transitionItemIfCurrentStageResult(input: {
+  productSlug: string;
   externalId: string;
   fromStage: WorkflowStage;
   toStage: WorkflowStage;
@@ -212,7 +215,7 @@ export async function transitionItemIfCurrentStageResult(input: {
   note?: string;
   idempotencyKey?: string;
 }): Promise<{ item: ItemState; applied: boolean }> {
-  const store = await getItemStore();
+  const store = await getItemStore(input.productSlug);
   const { state: updated, applied } = await store.transitionIfCurrentStage(input);
   if (applied) {
     await writebackStage(updated.externalId, updated.currentStage, input.triggeredBy);
@@ -226,13 +229,14 @@ export async function transitionItemIfCurrentStageResult(input: {
  * Drop-in replacement for `store.forceTransition`.
  */
 export async function forceTransitionItem(input: {
+  productSlug: string;
   externalId: string;
   fromStage: WorkflowStage;
   toStage: WorkflowStage;
   triggeredBy: string;
   note?: string;
 }): Promise<ItemState> {
-  const store = await getItemStore();
+  const store = await getItemStore(input.productSlug);
   const updated = await store.forceTransition(input);
   await writebackStage(updated.externalId, updated.currentStage, input.triggeredBy);
   // Defensive copy: callers own the result, not the store-built object.
@@ -253,7 +257,7 @@ export async function createItem(input: {
   productSlug: string;
   triggeredBy: string;
 }): Promise<ItemState> {
-  const store = await getItemStore();
+  const store = await getItemStore(input.productSlug);
   const created = await store.create(input);
   await writebackStage(created.externalId, created.currentStage, input.triggeredBy);
   // Defensive copy: callers own the result, not the store-built object.

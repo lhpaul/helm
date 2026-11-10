@@ -1,4 +1,4 @@
-import { readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
   ReviewLoopLane,
@@ -24,14 +24,28 @@ function minDefined(a: number | undefined, b: number | undefined): number | unde
   return Math.min(a, b);
 }
 
+/** Product slugs are path segments: same shape the product schema enforces. */
+export const PRODUCT_SLUG_REGEX = /^[a-z0-9-]+$/;
+
 /**
- * File-based persistence for item workflow state.
- * Each item is stored as data/items/{externalId}.json using atomic writes.
+ * File-based persistence for item workflow state, scoped to one product.
+ * Each item is stored as data/items/{productSlug}/{externalId}.json using
+ * atomic writes, so two products sharing a data root never collide on
+ * externalId (ADR-004). Legacy flat files are moved by migrateLegacyItems.
  */
 export class ItemStore {
   private readonly itemLocks = new Map<string, Promise<unknown>>();
+  private readonly itemsDir: string;
 
-  constructor(private readonly itemsDir: string) {}
+  constructor(
+    itemsRoot: string,
+    private readonly productSlug: string,
+  ) {
+    if (!PRODUCT_SLUG_REGEX.test(productSlug)) {
+      throw new Error(`Invalid productSlug: "${productSlug}". Must match [a-z0-9-]+`);
+    }
+    this.itemsDir = join(itemsRoot, productSlug);
+  }
 
   /**
    * Rejects externalIds that could escape itemsDir via path traversal or
@@ -72,7 +86,13 @@ export class ItemStore {
     productSlug: string;
     triggeredBy: string;
   }): Promise<ItemState> {
+    if (input.productSlug !== this.productSlug) {
+      throw new Error(
+        `ItemStore for "${this.productSlug}" cannot create an item for "${input.productSlug}"`,
+      );
+    }
     const filePath = this.itemPath(input.externalId);
+    await mkdir(this.itemsDir, { recursive: true });
     const now = new Date().toISOString();
     const creationEvent: WorkflowEvent = {
       fromStage: null,

@@ -132,7 +132,9 @@ itemsRouter.post('/items', async (c) => {
 // ── GET /api/items ────────────────────────────────────────────────────────────
 
 itemsRouter.get('/items', async (c) => {
-  const store = await getItemStore();
+  // Legacy endpoint: scoped to the primary product (ADR-004).
+  const config = await getProductConfig();
+  const store = await getItemStore(config.product.slug);
   const items = await store.list();
   return c.json(items);
 });
@@ -154,7 +156,9 @@ itemsRouter.post('/items/:externalId/transitions', async (c) => {
   try {
     // transitionItem wraps store.transition with best-effort tracker writeback
     // of the new stage (ADR-033).
+    const config = await getProductConfig();
     const item = await transitionItem({
+      productSlug: config.product.slug,
       externalId,
       toStage: bodyResult.data.toStage,
       triggeredBy: bodyResult.data.triggeredBy,

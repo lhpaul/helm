@@ -69,7 +69,7 @@ releaseRouter.post('/items/:externalId/release', async (c) => {
 
   let store;
   try {
-    store = await getItemStore();
+    store = await getItemStore(config.product.slug);
   } catch (err) {
     console.error('[release] Failed to load item store:', err);
     return c.json({ error: 'Failed to load item store' }, 500);
@@ -92,6 +92,7 @@ releaseRouter.post('/items/:externalId/release', async (c) => {
     // (ADR-033). manual:release is not tracker-originated → the released stage
     // is mirrored to the tracker.
     const updated = await transitionItem({
+      productSlug: config.product.slug,
       externalId,
       toStage: 'released',
       triggeredBy: 'manual:release',

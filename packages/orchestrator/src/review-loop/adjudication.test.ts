@@ -584,9 +584,25 @@ ${status}`;
   });
 
   it('keeps doc_conflict escalating without a hierarchy source', () => {
-    for (const line of ['', '  Resolved by: reviewer opinion', '  Resolved by: code reviewer']) {
+    for (const line of [
+      '',
+      '  Resolved by: reviewer opinion',
+      '  Resolved by: code reviewer',
+      '  Resolved by: spec reviewer opinion',
+      '  Resolved by: ADR reviewer opinion',
+      '  Resolved by: ADR',
+    ]) {
       const parsed = parseAdjudicationBody(adjudication(`- **doc_conflict** · Mismatch\n${line}`));
       expect(resolveHierarchyDocConflicts(parsed).status).toBe('HUMAN_REQUIRED');
+    }
+  });
+
+  it('accepts document references with a section or note', () => {
+    for (const source of ['ADR-037 §2', 'spec (Acceptance Criteria)', 'CLAUDE.md', 'adr 037']) {
+      const parsed = parseAdjudicationBody(
+        adjudication(`- **doc_conflict** · Stale ref\n  Resolved by: ${source}`),
+      );
+      expect(resolveHierarchyDocConflicts(parsed).status).toBe('AUTO_REMEDIATE');
     }
   });
 

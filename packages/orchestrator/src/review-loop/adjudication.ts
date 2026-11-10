@@ -156,7 +156,13 @@ export function decisionMatchesLatestAdjudication(input: {
  * item spec, CLAUDE.md / project contract. Reviewer opinion is the weakest
  * source and never settles a conflict.
  */
-const HIERARCHY_SOURCE_RE = /^(?:adr(?:[-\s]?\d+)?|spec|claude\.md|project contract)\b/i;
+const HIERARCHY_SOURCE_RE = /^(?:adr[-\s]?\d+|spec|claude\.md)(?:\s*(?:§|\(|:)[^]*)?$/i;
+
+/** The whole value must be a document reference; reviewer opinion never counts. */
+function isHierarchySource(value: string): boolean {
+  const source = value.trim();
+  return HIERARCHY_SOURCE_RE.test(source) && !/\b(?:review(?:er)?s?|opinion)\b/i.test(source);
+}
 
 /**
  * Early artifact review only (#125): a `doc_conflict` the adjudicator itself
@@ -176,7 +182,7 @@ export function resolveHierarchyDocConflicts(parsed: ParsedAdjudication): Parsed
   const isResolved = (conflict: AdjudicationConflict): boolean => {
     if (conflict.conflictKind !== 'doc_conflict') return false;
     const source = fieldFromDecisionBody(conflict.body, ['Resolved by']);
-    return source !== null && HIERARCHY_SOURCE_RE.test(source);
+    return source !== null && isHierarchySource(source);
   };
   const resolved = parsed.conflicts.filter(isResolved);
   if (resolved.length === 0) return parsed;

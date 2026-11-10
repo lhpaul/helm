@@ -125,7 +125,7 @@ export function buildReviewAdjudicatorParams(
     '- Identify **doc_conflict** (ADR vs spec vs CLAUDE.md vs reviewer) — resolve using hierarchy ADR > spec > CLAUDE.md, or mark HUMAN_REQUIRED.',
     ...(options.draftArtifact
       ? [
-          '- **Draft artifact review (spec/plan):** the draft is editable, so most findings are edits, not decisions. Wording, clarity, structure, missing detail, internal inconsistency, and reviewer taste are **AUTO** (or **DEFERRED**) in the unified plan — never Conflicts. When a draft contradicts an accepted ADR, the item spec (for a plan), or CLAUDE.md, list it as **doc_conflict** with a line `Resolved by: <ADR-NNN | spec | CLAUDE.md>` and put the fix in the plan as **AUTO**; the orchestrator then does not escalate it. Only list a **product_decision** (HUMAN_REQUIRED) when the choice changes user-visible behavior, scope, or acceptance criteria and no accepted ADR, spec, or settled decision already decides it. Reviewer opinion alone never makes a conflict.',
+          '- **Draft artifact review (spec/plan):** the draft is editable, so most findings are edits, not decisions. Wording, clarity, structure, missing detail, internal inconsistency, and reviewer taste are **AUTO** (or **DEFERRED**) in the unified plan — never Conflicts. When a draft contradicts an accepted ADR, the item spec (for a plan), or CLAUDE.md, list it as **doc_conflict** with a line `Resolved by: <ADR-NNN | spec | CLAUDE.md>` and put the fix in the plan as **AUTO**; when every remaining conflict is of that kind, declare Status AUTO_REMEDIATE and the orchestrator does not escalate (an explicit HUMAN_REQUIRED always escalates). Only list a **product_decision** (HUMAN_REQUIRED) when the choice changes user-visible behavior, scope, or acceptance criteria and no accepted ADR, spec, or settled decision already decides it. Reviewer opinion alone never makes a conflict.',
         ]
       : []),
     '- Mark findings as **DEFERRED** when they need design judgment and are not safe to auto-fix.',
@@ -249,8 +249,7 @@ export async function handleReviewAdjudicatorResult(
   // re-asks a decision the human already recorded.
   // Early artifact review only (#125): doc conflicts the adjudicator resolved by
   // the ADR > spec > CLAUDE.md hierarchy are draft edits, not human decisions.
-  // Runs before settled-decision suppression so it still sees the status the
-  // adjudicator declared (suppression rewrites the body status).
+  // Runs before settled-decision suppression, which rewrites the body status.
   const parsedBody = parseAdjudicationBody(body);
   const parsed = suppressSettledConflicts(
     options.artifactReview ? resolveHierarchyDocConflicts(parsedBody) : parsedBody,

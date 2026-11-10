@@ -164,11 +164,14 @@ const HIERARCHY_SOURCE_RE = /^(?:adr(?:[-\s]?\d+)?|spec|claude\.md|project contr
  * mechanical editing of the draft, not a human decision. It moves to the
  * unified plan as AUTO instead of forcing HUMAN_REQUIRED.
  *
- * `product_decision` entries and `doc_conflict` entries without a hierarchy
- * `Resolved by` line keep escalating. Implementation review never calls this.
+ * `product_decision` entries, `doc_conflict` entries without a hierarchy
+ * `Resolved by` line, and any adjudication that declares HUMAN_REQUIRED keep escalating. Implementation review never calls this.
  */
 export function resolveHierarchyDocConflicts(parsed: ParsedAdjudication): ParsedAdjudication {
   if (parsed.conflicts.length === 0) return parsed;
+  // An explicit HUMAN_REQUIRED (or missing/garbled status) is the adjudicator's
+  // own human stop: never lift it, whatever else is settled or resolved later.
+  if (parsed.body.match(STATUS_RE)?.[1]?.toUpperCase() !== 'AUTO_REMEDIATE') return parsed;
 
   const isResolved = (conflict: AdjudicationConflict): boolean => {
     if (conflict.conflictKind !== 'doc_conflict') return false;
@@ -186,14 +189,10 @@ export function resolveHierarchyDocConflicts(parsed: ParsedAdjudication): Parsed
     })
     .join('\n');
 
-  // parseAdjudicationBody forced HUMAN_REQUIRED because conflict entries existed.
-  // Fall back to the status the adjudicator actually declared once none remain,
-  // so an explicit HUMAN_REQUIRED (or a missing/garbled status) is never lifted.
-  const declared = parsed.body.match(STATUS_RE)?.[1];
+  // The declared status is AUTO_REMEDIATE (checked above); parseAdjudicationBody
+  // forced HUMAN_REQUIRED only because conflict entries existed.
   const status: AdjudicationStatus =
-    remainingConflicts.length === 0 && declared === 'AUTO_REMEDIATE'
-      ? 'AUTO_REMEDIATE'
-      : 'HUMAN_REQUIRED';
+    remainingConflicts.length === 0 ? 'AUTO_REMEDIATE' : 'HUMAN_REQUIRED';
   const conflictsSection = remainingConflicts.map((conflict) => conflict.body).join('\n\n');
   const unifiedPlan = [parsed.unifiedPlan, resolvedNotes].filter(Boolean).join('\n');
 

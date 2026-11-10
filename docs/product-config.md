@@ -313,7 +313,8 @@ the early loop and escalates with `adjudication_conflict` on `HUMAN_REQUIRED`
 treat wording, clarity and structure findings as `AUTO`/`DEFERRED` plan items,
 not conflicts. A `doc_conflict` that it resolves by the ADR > spec > `CLAUDE.md`
 hierarchy must carry a `Resolved by: <ADR-NNN | spec | CLAUDE.md>` line; Helm
-then moves it to the unified plan as `AUTO` and does not escalate it.
+then moves it to the unified plan as `AUTO` and does not escalate it, provided
+the adjudicator declares `AUTO_REMEDIATE` (an explicit `HUMAN_REQUIRED` is never lifted).
 
 Still escalating to a human: `product_decision` conflicts (behavior, scope or
 acceptance criteria not decided by an ADR, spec or settled decision), `doc_conflict`

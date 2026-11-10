@@ -33,6 +33,7 @@ import { tmpdir } from 'node:os';
 import type { Product } from '@helm/shared';
 import { specBranchName, planBranchName } from '@helm/shared';
 import type { AgentResult, IAgentRuntime, SpawnParams } from '../runtime.js';
+import { resolveSpecialistTimeoutMs } from './timeout.js';
 import type { ProductContext } from './fetch-product-context.js';
 import { parseGitHubRepoUrl } from './fetch-product-context.js';
 import { buildAuthenticatedUrl, sanitizeToken, defaultRunGit, type RunGit } from './git-helpers.js';
@@ -204,7 +205,7 @@ export function buildEarlyRemediatorParams(
     externalId,
     model: product.specialists[cfg.specialistId].model,
     permissionMode: 'acceptEdits',
-    timeoutMs: EARLY_REMEDIATION_TIMEOUT_MS,
+    timeoutMs: resolveSpecialistTimeoutMs(product, cfg.specialistId, EARLY_REMEDIATION_TIMEOUT_MS),
   };
 }
 

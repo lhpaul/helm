@@ -1,5 +1,32 @@
 # Product Configuration
 
+## Specialist Timeouts
+
+Each entry under `specialists:` in `product.yaml` accepts an optional
+`timeout_sec` (positive integer, max 7200) that bounds how long Helm waits for
+that specialist's agent session before killing it with a `[timeout]` result.
+
+```yaml
+specialists:
+  plan-writer:
+    runtime: claude_code
+    model: claude-sonnet-4-5
+    timeout_sec: 1800 # long plans may take more than the 5 min default
+```
+
+Defaults when `timeout_sec` is omitted (unchanged behaviour):
+
+| Specialist                                                                  | Default                                                  |
+| --------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `spec-writer`, `plan-writer`                                                | Runtime default: 5 min (`claude_code`), 10 min (`codex`) |
+| `implementer`                                                               | 20 min                                                   |
+| `spec-remediator`, `plan-remediator`, `code-remediator`                     | 15 min                                                   |
+| `code-reviewer`, `security-reviewer`, `test-reviewer`, `review-adjudicator` | 10 min                                                   |
+
+The timeout is per specialist (all specialists of a product share one runtime,
+so there is no separate per-runtime setting). The value is passed per spawn and
+overrides the runtime's default.
+
 ## Review Loop Budgets
 
 The review loop is bounded by two independent limits (ADR-036, ADR-042):

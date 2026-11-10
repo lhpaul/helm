@@ -58,6 +58,14 @@ const SpecialistSchema = z
      * rejected (not silently rendered as an empty bullet) and stored trimmed.
      */
     extra_hints: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+    /**
+     * Optional per-specialist timeout in seconds (#118). Overrides the
+     * specialist's built-in default for this product. When omitted, the
+     * specialist's default applies (spec-writer / plan-writer: the runtime
+     * default — 5 min for claude_code, 10 min for codex; other specialists
+     * keep their own constants). Capped at 2 hours.
+     */
+    timeout_sec: z.number().int().positive().max(7200).optional(),
   })
   .strict();
 

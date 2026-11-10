@@ -14,6 +14,7 @@
 import type { WorkflowStage } from '@helm/workflow';
 import type { Product, CodeRepo } from '@helm/shared';
 import type { AgentResult, SpawnParams } from '../runtime.js';
+import { resolveSpecialistTimeoutMs } from './timeout.js';
 import type { ProductContext } from './fetch-product-context.js';
 import type { ItemTransitionFn } from './spec-writer.js';
 import type { RunGit, RunGh } from './git-helpers.js';
@@ -165,7 +166,7 @@ export function buildImplementerParams(
     externalId,
     model: specialistCfg.model,
     permissionMode: 'bypassPermissions',
-    timeoutMs: IMPLEMENTER_TIMEOUT_MS,
+    timeoutMs: resolveSpecialistTimeoutMs(product, 'implementer', IMPLEMENTER_TIMEOUT_MS),
   };
 }
 

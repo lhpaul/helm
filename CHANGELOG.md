@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- External review now follows the PR head: a push during a review (including the
+  remediator's own) retries the review on the new SHA instead of escalating to
+  `HUMAN_REQUIRED` as `external_repeated_skip` (#117).
+
 - **`dispatcher.test.ts` fan-out expectation caught up with its call site:** the
   early-loop `spec-draft` wiring test asserted the `fanoutReviewers` options bag as an
   exact literal, so the two options added to the call site afterwards —

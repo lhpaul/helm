@@ -27,7 +27,7 @@ export type RunGit = (
  */
 export type RunGh = (
   args: string[],
-  opts: { env?: NodeJS.ProcessEnv },
+  opts: { env?: NodeJS.ProcessEnv; timeoutMs?: number },
 ) => Promise<{ stdout: string }>;
 
 // ── Default runners ───────────────────────────────────────────────────────────
@@ -45,6 +45,7 @@ export const defaultRunGit: RunGit = async (args, opts) => {
 export const defaultRunGh: RunGh = async (args, opts) => {
   const { stdout } = await execFileAsync('gh', args, {
     env: { ...process.env, ...opts.env },
+    ...(opts.timeoutMs ? { timeout: opts.timeoutMs, killSignal: 'SIGKILL' as const } : {}),
   });
   return { stdout };
 };

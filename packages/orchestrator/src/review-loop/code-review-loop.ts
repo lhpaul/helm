@@ -28,7 +28,7 @@ import {
   artifactsDirFor,
   EXTERNAL_ID_SAFE,
 } from '../specialists/code-workspace.js';
-import type { RunGit, RunGh } from '../specialists/git-helpers.js';
+import { defaultRunGh, type RunGit, type RunGh } from '../specialists/git-helpers.js';
 import { runExternalReviewIfConfigured, parsePullRequestRef } from '../external-review/run.js';
 import type { RunExternalReviewDeps } from '../external-review/run.js';
 import type { ExternalReviewResult, NormalizedFinding } from '../external-review/types.js';
@@ -573,26 +573,68 @@ async function suppressFalsePositiveReviewerResults(
   });
 }
 
+/** Head-change retries per external pass before the normal stop rule applies (#117). */
+const MAX_HEAD_CHANGE_RETRIES = 3;
+/** Upper bound for one head lookup; on timeout the recorded revision is used. */
+const HEAD_LOOKUP_TIMEOUT_MS = 20_000;
+
+/**
+ * Resolves the PR's current head SHA. Best effort: any failure returns
+ * `undefined` so callers fall back to the recorded revision (#117).
+ */
+async function resolveCurrentHeadRevision(
+  params: RunCodeReviewLoopParams,
+): Promise<string | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // `timeoutMs` kills the default runner's subprocess; the race also bounds
+    // injected runners that ignore it, so a stalled lookup never blocks the loop.
+    const { stdout } = await Promise.race([
+      (params.runGh ?? defaultRunGh)(
+        ['pr', 'view', params.prUrl, '--json', 'headRefOid', '--jq', '.headRefOid'],
+        { env: { GITHUB_TOKEN: params.githubToken }, timeoutMs: HEAD_LOOKUP_TIMEOUT_MS },
+      ),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('head lookup timed out')),
+          HEAD_LOOKUP_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    const sha = stdout.trim();
+    return /^[a-f\d]{40}$/.test(sha) ? sha : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 type ExternalReviewLoopOutcome =
-  | { kind: 'continue'; external: ExternalReviewResult }
+  | { kind: 'continue'; external: ExternalReviewResult; targetRevision?: string }
   | {
       kind: 'defer';
       reason: 'analysis_pending';
       providerReason?: string;
+      targetRevision?: string;
     }
   | {
       kind: 'escalate';
       reason: StopRuleEscalationReason;
       message: string;
       externalReason?: string;
+      targetRevision?: string;
     };
 
 async function runExternalReviewWithStopRule(
   params: RunCodeReviewLoopParams,
   loopConfig: ReturnType<typeof resolveReviewLoopConfig>,
+  onRevisionChange?: (to: string) => Promise<void>,
 ): Promise<ExternalReviewLoopOutcome> {
   const sleepFn = params.sleep ?? defaultSleep;
   let skipAttempt = 0;
+  let targetRevision = params.targetRevision;
+  let headChangeRetries = 0;
 
   while (true) {
     skipAttempt += 1;
@@ -600,17 +642,37 @@ async function runExternalReviewWithStopRule(
       params.product,
       params.prUrl,
       params.externalReviewDeps,
-      params.targetRevision,
+      targetRevision,
     );
 
+    // A push during the review (e.g. remediation) makes the result stale. Retry
+    // on the new head without spending the skip budget or escalating (#117).
+    // Once the free retries are spent a superseded verdict is still never
+    // accepted: it becomes a non-verdict that the normal stop rule bounds.
+    let reviewed = external;
+    const externalDisabled = external.status === 'skipped' && external.reason === 'not_configured';
+    if (targetRevision && !externalDisabled) {
+      const head = await resolveCurrentHeadRevision(params);
+      if (head && head !== targetRevision) {
+        targetRevision = head;
+        await onRevisionChange?.(head);
+        if (headChangeRetries < MAX_HEAD_CHANGE_RETRIES) {
+          headChangeRetries += 1;
+          skipAttempt -= 1;
+          continue;
+        }
+        reviewed = { status: 'skipped', reason: 'unavailable', providerReason: 'head_changed' };
+      }
+    }
+
     const decision = evaluateExternalReviewStopRule({
-      result: external,
+      result: reviewed,
       skipAttempt,
       maxSkipAttempts: loopConfig.noProgressCycles,
     });
 
     if (decision.action === 'continue') {
-      return { kind: 'continue', external: decision.result };
+      return { kind: 'continue', external: decision.result, targetRevision };
     }
 
     if (decision.action === 'defer') {
@@ -618,6 +680,7 @@ async function runExternalReviewWithStopRule(
         kind: 'defer',
         reason: decision.reason,
         providerReason: decision.providerReason,
+        targetRevision,
       };
     }
 
@@ -627,6 +690,7 @@ async function runExternalReviewWithStopRule(
         reason: decision.reason,
         message: decision.message,
         externalReason: decision.externalReason,
+        targetRevision,
       };
     }
 
@@ -727,6 +791,8 @@ export async function runCodeReviewLoop(
   const externalSticky = createStickyLane();
   let lastFanout: ReviewerFanoutResult | null = null;
   let ranRemediation = false;
+  /** Head the external review targets; follows the PR as remediation pushes. */
+  let currentRevision = params.targetRevision;
   const falsePositiveCatalog = await fetchFalsePositivesCatalog(
     params.product,
     params.githubToken,
@@ -900,9 +966,31 @@ export async function runCodeReviewLoop(
     // flight, and a readiness signal that finds no intent for the revision is
     // dropped (LEA-258). Everything the outbox row stores is already known
     // here, so nothing about the wait is guessed.
-    const provisionalIntent = buildDeferredExternalReviewIntent(params);
-    await parkProvisionalExternalReviewIntent(params, provisionalIntent);
-    const externalOutcome = await runExternalReviewWithStopRule(params, loopConfig);
+    // Remediation pushes a new commit, so the head recorded at dispatch start
+    // goes stale; review the head the PR has now (#117).
+    const resolvedHead =
+      currentRevision && params.product.review?.external?.provider
+        ? await resolveCurrentHeadRevision(params)
+        : undefined;
+    if (resolvedHead) currentRevision = resolvedHead;
+    const passParams: RunCodeReviewLoopParams = { ...params, targetRevision: currentRevision };
+    let provisionalIntent = buildDeferredExternalReviewIntent(passParams);
+    await parkProvisionalExternalReviewIntent(passParams, provisionalIntent);
+    const externalOutcome = await runExternalReviewWithStopRule(
+      passParams,
+      loopConfig,
+      async (to) => {
+        // Move the parked intent to the new head *before* its poll starts, so
+        // readiness for the new SHA finds a row and the old one is not stranded.
+        await clearProvisionalExternalReviewIntent(passParams, provisionalIntent);
+        provisionalIntent = buildDeferredExternalReviewIntent({
+          ...passParams,
+          targetRevision: to,
+        });
+        await parkProvisionalExternalReviewIntent(passParams, provisionalIntent);
+      },
+    );
+    if (externalOutcome.targetRevision) currentRevision = externalOutcome.targetRevision;
     // Every branch below returns, so reaching past this block means the wait
     // ended without deferring.
     if (externalOutcome.kind === 'defer') {
@@ -918,7 +1006,7 @@ export async function runCodeReviewLoop(
           error: 'External review deferred but review identity could not be resolved',
         };
       }
-      if (!params.targetRevision) {
+      if (!currentRevision) {
         return {
           status: 'error',
           prUrl: fanout.prUrl,
@@ -951,7 +1039,7 @@ export async function runCodeReviewLoop(
         reason: externalOutcome.reason,
         providerReason: externalOutcome.providerReason,
         prNumber: prRef.prNumber,
-        targetRevision: params.targetRevision,
+        targetRevision: currentRevision,
         maxDeferSec: externalMaxDeferSec(params.product),
       };
       try {

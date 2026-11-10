@@ -49,6 +49,28 @@ const WorkflowStageSchema = z.enum(WORKFLOW_STAGES);
  * args are unchanged. Never grants `bypassPermissions`.
  */
 const UNRESTRICTED_TOOL_RULE = /^(?:\*|Bash|Bash\(\s*\*?\s*\)|Bash\(\s*:?\*\s*\))$/;
+/**
+ * True when `rule` is exactly one tool rule: a tool name with an optional
+ * single parenthesised specifier that closes at the very end. The CLI splits
+ * `--allowedTools` entries on spaces outside parentheses, so `Read Bash` would
+ * smuggle in a second, unrestricted rule.
+ */
+function isSingleToolRule(rule: string): boolean {
+  const m = /^[A-Za-z][A-Za-z0-9_.:-]*/.exec(rule);
+  if (!m) return false;
+  const rest = rule.slice(m[0].length);
+  if (rest === '') return true;
+  if (!rest.startsWith('(') || !rest.endsWith(')')) return false;
+  let depth = 0;
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '(') depth++;
+    else if (rest[i] === ')') depth--;
+    if (depth === 0 && i < rest.length - 1) return false;
+    if (depth < 0) return false;
+  }
+  return depth === 0;
+}
+
 const GH_TOOL_RULE = /^Bash\(\s*gh(?:\s|:|\*|\))/;
 
 const SpecialistPermissionsSchema = z
@@ -76,6 +98,7 @@ const SpecialistPermissionsSchema = z
           .min(1)
           .max(300)
           .refine((t) => !t.includes(','), "must not contain ','")
+          .refine(isSingleToolRule, 'must be exactly one tool rule per entry')
           .refine(
             (t) => !UNRESTRICTED_TOOL_RULE.test(t),
             'unrestricted shell/tool rules are not allowed',

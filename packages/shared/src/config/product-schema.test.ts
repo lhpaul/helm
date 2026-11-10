@@ -727,7 +727,7 @@ describe('ProductSchema — specialists.<id>.permissions (#119)', () => {
     const result = ProductSchema.safeParse(
       withPerms({
         add_dirs: ['/srv/context', 'C:\\ctx'],
-        allowed_tools: ['Read', 'Bash(pnpm test:*)'],
+        allowed_tools: ['Read', 'Bash(pnpm test:*)', 'Bash(git log --oneline:*)', 'mcp__srv__tool'],
         gh_api_read_only: true,
       }),
     );
@@ -742,6 +742,10 @@ describe('ProductSchema — specialists.<id>.permissions (#119)', () => {
     [{ allowed_tools: ['Bash(*)'] }],
     [{ allowed_tools: ['*'] }],
     [{ allowed_tools: ['Read,Write'] }],
+    [{ allowed_tools: ['Read Bash'] }],
+    [{ allowed_tools: ['Read Bash(gh pr merge:*)'] }],
+    [{ allowed_tools: ['Read(a) Bash(b)'] }],
+    [{ allowed_tools: ['Bash(unbalanced'] }],
     [{ allowed_tools: ['Bash(gh api:*)'] }],
     [{ allowed_tools: ['Bash(gh pr merge:*)'] }],
     [{ bypass: true }],

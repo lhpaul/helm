@@ -19,6 +19,8 @@ export type LegacyMigrationReport = {
  * - Idempotent: once flat files are gone it is a no-op.
  * - Never overwrites: if the destination exists the legacy file stays put and is
  *   reported as skipped.
+ * - Throws on unexpected I/O failures so the caller can retry (nothing is lost:
+ *   the legacy file stays until the move completes).
  * - Never deletes: unparseable files or files with a missing/unsafe slug or a
  *   name that disagrees with their externalId are left in place and reported.
  *
@@ -73,7 +75,11 @@ export async function migrateLegacyItems(itemsRoot: string): Promise<LegacyMigra
       await unlink(from);
       report.migrated += 1;
     } catch (err) {
-      report.skipped.push({ file, reason: `error: ${(err as Error).message}` });
+      // Another process already moved/removed it: nothing left to migrate.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      // Operational failures must not look like a completed migration: callers
+      // would otherwise cache success and shadow the unmigrated item.
+      throw err;
     }
   }
   return report;

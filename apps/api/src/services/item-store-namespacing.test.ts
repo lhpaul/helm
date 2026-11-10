@@ -95,6 +95,19 @@ describe('ItemStore namespacing (#126)', () => {
 });
 
 describe('migrateLegacyItems (#126)', () => {
+  it('propagates unexpected I/O failures and recovers on retry', async () => {
+    await writeLegacy('issue_1', 'alpha');
+    // A regular file where the product directory must go makes the move fail.
+    await writeFile(join(root, 'alpha'), 'blocker');
+
+    await expect(migrateLegacyItems(root)).rejects.toThrow();
+    expect(await exists(join(root, 'issue_1.json'))).toBe(true);
+
+    await rm(join(root, 'alpha'));
+    expect(await migrateLegacyItems(root)).toEqual({ migrated: 1, skipped: [] });
+    expect(await exists(join(root, 'alpha', 'issue_1.json'))).toBe(true);
+  });
+
   it('does not replace a destination that appears after the legacy file was read', async () => {
     await writeLegacy('issue_1', 'alpha', { currentStage: 'merged' });
     const winner = JSON.stringify({ externalId: 'issue_1', productSlug: 'alpha', winner: true });

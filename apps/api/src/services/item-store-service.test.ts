@@ -51,6 +51,19 @@ describe('getItemStore(productSlug) (#126)', () => {
     expect(flat).toBe(false);
   });
 
+  it('retries the migration after a failure instead of caching success', async () => {
+    await writeFile(
+      join(dataDir, 'items', 'issue_9.json'),
+      JSON.stringify({ externalId: 'issue_9', productSlug: 'helm', currentStage: 'merged' }),
+    );
+    await writeFile(join(dataDir, 'items', 'helm'), 'blocker');
+    await expect(getItemStore('helm')).rejects.toThrow();
+
+    await rm(join(dataDir, 'items', 'helm'));
+    const store = await getItemStore('helm');
+    expect((await store.get('issue_9'))?.currentStage).toBe('merged');
+  });
+
   it('rejects an unsafe slug', async () => {
     await expect(getItemStore('../x')).rejects.toThrow(/Invalid productSlug/);
   });

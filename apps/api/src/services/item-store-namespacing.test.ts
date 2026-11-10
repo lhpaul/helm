@@ -95,6 +95,20 @@ describe('ItemStore namespacing (#126)', () => {
 });
 
 describe('migrateLegacyItems (#126)', () => {
+  it('does not replace a destination that appears after the legacy file was read', async () => {
+    await writeLegacy('issue_1', 'alpha', { currentStage: 'merged' });
+    const winner = JSON.stringify({ externalId: 'issue_1', productSlug: 'alpha', winner: true });
+    // Pre-create the namespaced file, simulating a concurrent writer winning the race.
+    await mkdir(join(root, 'alpha'), { recursive: true });
+    await writeFile(join(root, 'alpha', 'issue_1.json'), winner);
+
+    const report = await migrateLegacyItems(root);
+
+    expect(report.migrated).toBe(0);
+    expect(await readFile(join(root, 'alpha', 'issue_1.json'), 'utf-8')).toBe(winner);
+    expect(await exists(join(root, 'issue_1.json'))).toBe(true);
+  });
+
   it('moves flat files into their product namespace, preserving content', async () => {
     const a = await writeLegacy('issue_1', 'alpha');
     const b = await writeLegacy('HLM-2', 'beta');

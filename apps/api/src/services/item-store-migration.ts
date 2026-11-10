@@ -1,4 +1,4 @@
-import { readdir, rename, stat } from 'node:fs/promises';
+import { link, readdir, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { readJson } from '@helm/storage';
@@ -57,16 +57,20 @@ export async function migrateLegacyItems(itemsRoot: string): Promise<LegacyMigra
       }
       const destDir = join(itemsRoot, slug);
       const to = join(destDir, file);
-      const exists = await stat(to).then(
-        () => true,
-        () => false,
-      );
-      if (exists) {
-        report.skipped.push({ file, reason: 'destination already exists' });
-        continue;
-      }
       await mkdir(destDir, { recursive: true });
-      await rename(from, to);
+      // link() fails with EEXIST instead of replacing, so a destination created
+      // concurrently (e.g. the API running beside a CLI script) is never lost;
+      // unlinking the source afterwards completes an atomic no-replace move.
+      try {
+        await link(from, to);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+          report.skipped.push({ file, reason: 'destination already exists' });
+          continue;
+        }
+        throw err;
+      }
+      await unlink(from);
       report.migrated += 1;
     } catch (err) {
       report.skipped.push({ file, reason: `error: ${(err as Error).message}` });

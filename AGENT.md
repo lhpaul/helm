@@ -199,7 +199,7 @@ LOCAL_AI_REVIEWER_BACKEND=codex local-ai-reviewer.sh "$PR_NUMBER" lhpaul helm \
 
 Cuando CodeRabbit detecta uno de estos patrones, Claude Code puede aplicar el fix sin pedir input:
 
-- **Path traversal**: input externo usado en filesystem path sin validación. Fix: validar con regex whitelist (`EXTERNAL_ID_REGEX` o equivalente) antes de construir el path.
+- **Path traversal**: input externo usado en filesystem path sin validación. Fix: validar con `isValidExternalId()` / `EXTERNAL_ID_REGEX` de `@helm/shared` (única implementación) antes de construir el path.
 - **Info leak en error responses**: paths absolutos, tokens, mensajes internos enviados al cliente. Fix: log server-side con `console.error`, devolver mensaje genérico al cliente.
 - **Race condition en singleton lazy-init**: check-then-await sin single-flight pattern. Fix: shared in-flight promise + finally cleanup.
 - **Race condition en create-if-not-exists**: read-then-write sin atomicidad. Fix: `writeFile(path, content, { flag: 'wx' })` o equivalente.

@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   edits or deletes existing labels; `--repo`, `--dry-run`). Documented in
   `docs/review-labels.md`. Gate behavior is unchanged.
 
+### Changed
+
+- **Consolidate `externalId` validation in `@helm/shared` (#129, TD-001):**
+  `EXTERNAL_ID_REGEX` and `isValidExternalId()` now live once in
+  `@helm/shared`; `apps/api` and `@helm/orchestrator` reuse them instead of
+  keeping local copies of the regex. No behavior change: same accepted and
+  rejected values, same error messages and API contracts.
+
 ### Fixed
 
 - **Namespace item storage by product slug (#126):** items are now persisted at

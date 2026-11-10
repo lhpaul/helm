@@ -2,6 +2,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { WorkflowStage } from '@helm/workflow';
 import type { Product } from '@helm/shared';
+import { isValidExternalId } from '@helm/shared';
 import type { AgentResult, IAgentRuntime } from './runtime.js';
 import type { ItemTransitionFn } from './specialists/spec-writer.js';
 import { buildSpecWriterParams, handleSpecWriterResult } from './specialists/spec-writer.js';
@@ -204,7 +205,7 @@ export async function dispatchStageHandler(
   // externalId (used in workdir + branch names) must be safe filesystem components.
   // The (?!\.) lookahead blocks dot-segment values (`.`, `..`, `.hidden`, …) in
   // addition to the character-class restriction.
-  const isSafePathPart = (v: string): boolean => /^(?!\.)[A-Za-z0-9._-]+$/.test(v);
+  const isSafePathPart = isValidExternalId;
   if (!isSafePathPart(item.productSlug) || !isSafePathPart(item.externalId)) {
     return {
       specialistId: options?.specialistId ?? 'none',

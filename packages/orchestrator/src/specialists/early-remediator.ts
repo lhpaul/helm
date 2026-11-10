@@ -31,7 +31,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import type { Product } from '@helm/shared';
-import { specBranchName, planBranchName } from '@helm/shared';
+import { specBranchName, planBranchName, isValidExternalId } from '@helm/shared';
 import type { AgentResult, IAgentRuntime, SpawnParams } from '../runtime.js';
 import { resolveSpecialistPermissions } from './permissions.js';
 import { resolveSpecialistTimeoutMs } from './timeout.js';
@@ -86,12 +86,6 @@ const KIND_CONFIG: Record<EarlyRemediatorKind, KindConfig> = {
  * reviewer, less than a from-scratch writer, which is fine to share.
  */
 export const EARLY_REMEDIATION_TIMEOUT_MS = 15 * 60 * 1_000;
-
-// ── EXTERNAL_ID guard ──────────────────────────────────────────────────────────
-
-// Mirrors EXTERNAL_ID_SAFE in code-workspace.ts / spec-publisher.ts — the
-// (?!\.) lookahead rejects dot-segment values in addition to the char class.
-const EXTERNAL_ID_SAFE = /^(?!\.)[A-Za-z0-9._-]+$/;
 
 // ── Result type ────────────────────────────────────────────────────────────────
 
@@ -231,7 +225,7 @@ async function provisionArtifactWorkspace(
 ): Promise<ProvisionResult> {
   const cfg = KIND_CONFIG[kind];
 
-  if (!EXTERNAL_ID_SAFE.test(externalId)) {
+  if (!isValidExternalId(externalId)) {
     throw new Error(`${cfg.errorTag} Invalid externalId: "${externalId}"`);
   }
 

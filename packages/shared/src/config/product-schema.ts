@@ -71,7 +71,7 @@ function isSingleToolRule(rule: string): boolean {
   return depth === 0;
 }
 
-const GH_TOOL_RULE = /^Bash\(\s*gh(?:\s|:|\*|\))/;
+const GH_TOOL_RULE = /^Bash\((?:.*[\s/(;&|`$=])?gh(?:[\s:*)]|$)/;
 
 const SpecialistPermissionsSchema = z
   .object({

@@ -16,6 +16,8 @@ export type ExternalReviewContext = {
   prUrl: string;
   defaultBranch: string;
   targetRevision?: string;
+  /** Set when the PR is a knowledge-repo spec/plan artifact PR (#120). */
+  artifactKind?: 'spec' | 'plan';
 };
 
 export type ExternalReviewResult =

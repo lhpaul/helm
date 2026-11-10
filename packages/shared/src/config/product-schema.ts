@@ -382,6 +382,18 @@ export const ProductSchema = z
                 backend: z.enum(['codex', 'http']).default('codex'),
                 timeout_sec: z.number().int().positive().max(3600).default(900),
                 mode: z.enum(['ordinary', 'strict']).default('ordinary'),
+                /**
+                 * #120: opt-in external review of knowledge-repo spec/plan PRs
+                 * (early artifact loop). Off by default.
+                 */
+                artifacts: z
+                  .object({
+                    enabled: z.boolean().default(false),
+                    /** Operator wrapper running in the knowledge checkout; defaults to `command`. */
+                    command: z.string().trim().min(1).optional(),
+                  })
+                  .strict()
+                  .optional(),
               })
               .strict()
               .optional(),

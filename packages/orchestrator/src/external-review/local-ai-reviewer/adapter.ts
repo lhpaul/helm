@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { defaultRunGh } from '../../specialists/git-helpers.js';
 import type { Product } from '@helm/shared';
 import type {
   ExternalReviewAdapter,
@@ -19,8 +20,11 @@ type Invocation = {
   ctx: ExternalReviewContext;
 };
 type Execution = { stdout: string; exitCode: number; evidence: unknown };
+export type ReviewMdState = 'present' | 'missing' | 'unknown';
 export type LocalAiReviewerDeps = {
   executeLocalAiReview?: (input: Invocation) => Promise<Execution>;
+  /** Codex backend preflight for artifact PRs (#120). Read-only; never creates files. */
+  checkReviewMd?: (ctx: ExternalReviewContext) => Promise<ReviewMdState>;
 };
 
 const unavailable = (providerReason: string): ExternalReviewResult => ({
@@ -121,6 +125,28 @@ export async function executeLocalAiReview(input: Invocation): Promise<Execution
   }
 }
 
+/**
+ * The Codex backend needs a `REVIEW.md` in the reviewed repo. Looks it up at the
+ * exact PR head through the GitHub API (fixed args, no shell). Only a 404 counts
+ * as missing; any other failure is `unknown` so the companion decides.
+ */
+export async function checkReviewMdAtHead(ctx: ExternalReviewContext): Promise<ReviewMdState> {
+  try {
+    await defaultRunGh(
+      [
+        'api',
+        '--silent',
+        `repos/${ctx.owner}/${ctx.repo}/contents/REVIEW.md?ref=${ctx.targetRevision ?? ''}`,
+      ],
+      { timeoutMs: 30_000 },
+    );
+    return 'present';
+  } catch (error) {
+    const text = `${(error as { stderr?: unknown }).stderr ?? ''} ${(error as Error).message ?? ''}`;
+    return /HTTP 404|Not Found/i.test(text) ? 'missing' : 'unknown';
+  }
+}
+
 /** Both the companion output and its fresh artifact must agree before passing. */
 export function parseLocalAiReview(
   execution: Execution,
@@ -206,10 +232,26 @@ export function createLocalAiReviewerAdapter(
     async reviewPullRequest(ctx) {
       if (!ctx.targetRevision || !/^[a-f\d]{40}$/.test(ctx.targetRevision))
         return unavailable('missing_target_revision');
+      const backend = config?.backend ?? 'codex';
+      let command = config?.command ?? 'local-ai-reviewer.sh';
+      if (ctx.artifactKind) {
+        // #120: knowledge-repo spec/plan PRs are opt-in. Without it the companion
+        // would run in the code checkout and fail closed, so skip cleanly instead.
+        if (config?.artifacts?.enabled !== true) {
+          return { status: 'skipped', reason: 'not_configured' };
+        }
+        command = config.artifacts.command ?? command;
+        if (backend === 'codex') {
+          const state = await (deps?.checkReviewMd ?? checkReviewMdAtHead)(ctx).catch(
+            (): ReviewMdState => 'unknown',
+          );
+          if (state === 'missing') return unavailable('review_md_missing');
+        }
+      }
       try {
         const execution = await (deps?.executeLocalAiReview ?? executeLocalAiReview)({
-          command: config?.command ?? 'local-ai-reviewer.sh',
-          backend: config?.backend ?? 'codex',
+          command,
+          backend,
           mode: config?.mode ?? 'ordinary',
           timeoutSec: config?.timeout_sec ?? 900,
           ctx,

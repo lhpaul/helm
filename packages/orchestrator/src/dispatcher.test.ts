@@ -1466,6 +1466,7 @@ describe('dispatchStageHandler > early-stage remediators', () => {
       'https://github.com/test-org/test-knowledge/pull/7',
       externalReviewDeps,
       undefined,
+      'spec',
     );
     expect(transition).not.toHaveBeenCalled();
     expect(runEarlyRemediation).not.toHaveBeenCalled();
@@ -1497,6 +1498,7 @@ describe('dispatchStageHandler > early-stage remediators', () => {
       'https://github.com/test-org/test-knowledge/pull/7',
       externalReviewDeps,
       undefined,
+      'plan',
     );
   });
 

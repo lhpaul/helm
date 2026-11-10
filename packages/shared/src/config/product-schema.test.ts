@@ -670,6 +670,25 @@ describe('ProductSchema — local AI reviewer', () => {
       ).success,
     ).toBe(true);
   });
+  it('accepts opt-in knowledge artifact review and defaults it off (#120)', () => {
+    const on = ProductSchema.parse(raw({ artifacts: { enabled: true, command: 'kw' } }));
+    expect(on.review?.external?.local_ai_reviewer?.artifacts).toEqual({
+      enabled: true,
+      command: 'kw',
+    });
+    const empty = ProductSchema.parse(raw({ artifacts: {} }));
+    expect(empty.review?.external?.local_ai_reviewer?.artifacts?.enabled).toBe(false);
+    expect(
+      ProductSchema.parse(raw({})).review?.external?.local_ai_reviewer?.artifacts,
+    ).toBeUndefined();
+  });
+  it.each([
+    { artifacts: { extra: 1 } },
+    { artifacts: { command: ' ' } },
+    { artifacts: { enabled: 'yes' } },
+  ])('rejects invalid artifacts config %j', (config) => {
+    expect(ProductSchema.safeParse(raw(config)).success).toBe(false);
+  });
   it.each([
     { extra: true },
     { command: ' ' },

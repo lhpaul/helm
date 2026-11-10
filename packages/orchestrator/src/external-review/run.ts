@@ -37,20 +37,29 @@ export async function runExternalReviewIfConfigured(
   prUrl: string,
   deps?: RunExternalReviewDeps,
   targetRevision?: string,
+  artifactKind?: 'spec' | 'plan',
 ): Promise<ExternalReviewResult> {
   const provider = product.review?.external?.provider;
   if (!provider) {
     return { status: 'skipped', reason: 'not_configured' };
   }
 
-  const codeRepo = product.code_repos[0];
-  if (!codeRepo) {
+  // Artifact PRs (#120) live in the knowledge repo; implementation PRs in the code repo.
+  const reviewedRepo = artifactKind ? product.knowledge_repo : product.code_repos[0];
+  if (!reviewedRepo) {
     return { status: 'skipped', reason: 'unavailable' };
   }
 
-  const parsedRepo = parseGitHubRepoUrl(codeRepo.url);
+  const parsedRepo = parseGitHubRepoUrl(reviewedRepo.url);
   const prRef = parsePullRequestRef(prUrl);
   if (!parsedRepo || !prRef) {
+    return { status: 'skipped', reason: 'unavailable' };
+  }
+  if (
+    artifactKind &&
+    (prRef.owner.toLowerCase() !== parsedRepo.owner.toLowerCase() ||
+      prRef.repo.toLowerCase() !== parsedRepo.repo.toLowerCase())
+  ) {
     return { status: 'skipped', reason: 'unavailable' };
   }
 
@@ -59,8 +68,9 @@ export async function runExternalReviewIfConfigured(
     repo: prRef.repo,
     prNumber: prRef.prNumber,
     prUrl,
-    defaultBranch: codeRepo.default_branch,
+    defaultBranch: reviewedRepo.default_branch,
     ...(targetRevision ? { targetRevision } : {}),
+    ...(artifactKind ? { artifactKind } : {}),
   };
 
   if (provider === 'local-ai-reviewer') {

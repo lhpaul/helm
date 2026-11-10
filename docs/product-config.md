@@ -27,6 +27,38 @@ The timeout is per specialist (all specialists of a product share one runtime,
 so there is no separate per-runtime setting). The value is passed per spawn and
 overrides the runtime's default.
 
+## Specialist Permissions (Claude runtime)
+
+Each entry under `specialists:` accepts an optional `permissions` block (#119)
+so a specialist can read extra context or use scoped tools without editing the
+operator's global Claude CLI settings. It is applied per spawn as
+`--add-dir`, `--allowedTools` and `--disallowedTools`, and is supported only
+with `runtime: claude_code` (a `codex` specialist with `permissions` fails
+validation).
+
+```yaml
+specialists:
+  spec-writer:
+    runtime: claude_code
+    model: claude-sonnet-4-5
+    permissions:
+      add_dirs: [/srv/product-context] # absolute paths, no `..`
+      allowed_tools: ['Read', 'Bash(pnpm test:*)']
+      gh_api_read_only: true # read-only `gh api`
+```
+
+- Omitted `permissions` leaves the CLI arguments unchanged (restrictive default).
+  Helm never sets `bypassPermissions` through this block.
+- `gh_api_read_only: true` allows `gh api` and denies method overrides
+  (`--method`, `-X`), body/field flags (`-f`, `-F`, `--field`, `--raw-field`),
+  `--input` and `gh api graphql`.
+- Unrestricted rules (`Bash`, `Bash(*)`, `*`) are rejected. Any other `gh` rule
+  in `allowed_tools` is rejected unless `allow_gh_mutations: true` is declared.
+
+Helm also guarantees `USER` and `LOGNAME` in the Claude subprocess env (derived
+from each other or the OS account). If neither can be resolved the spawn fails
+with an explicit error instead of a session that ends in "Not logged in".
+
 ## Review Loop Budgets
 
 The review loop is bounded by two independent limits (ADR-036, ADR-042):

@@ -22,6 +22,7 @@ import { readFile } from 'node:fs/promises';
 import { rm } from 'node:fs/promises';
 import { implBranchName, type CodeRepo, type Product } from '@helm/shared';
 import type { AgentResult, IAgentRuntime, SpawnParams } from '../runtime.js';
+import { resolveSpecialistPermissions } from './permissions.js';
 import { resolveSpecialistTimeoutMs } from './timeout.js';
 import {
   provisionReviewerWorkspace,
@@ -383,6 +384,7 @@ export function buildReviewerParams(
       SPECIALIST_CONFIG_KEY[kind],
       REVIEWER_TIMEOUT_MS,
     ),
+    permissions: resolveSpecialistPermissions(product, SPECIALIST_CONFIG_KEY[kind]),
   };
 }
 

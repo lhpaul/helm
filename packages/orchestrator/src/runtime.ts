@@ -52,6 +52,21 @@ export interface SpawnParams {
    * GH_TOKEN scrubbed (so leaked credentials cannot be accessed from tool calls).
    */
   env?: Record<string, string>;
+  /**
+   * Per-spawn Claude CLI permissions from `product.yaml` (#119). Honoured by
+   * ClaudeCodeRuntime only (`--add-dir`, `--allowedTools`, `--disallowedTools`);
+   * omitted means the CLI args are unchanged.
+   */
+  permissions?: SpawnPermissions;
+}
+
+export interface SpawnPermissions {
+  /** Extra directories the agent may read (`--add-dir`). */
+  addDirs?: string[];
+  /** Tool rules auto-allowed for the session (`--allowedTools`). */
+  allowedTools?: string[];
+  /** Tool rules always denied, taking precedence over allows (`--disallowedTools`). */
+  disallowedTools?: string[];
 }
 
 export interface AgentSession {

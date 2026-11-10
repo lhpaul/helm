@@ -6,7 +6,7 @@ import type {
   IAgentRuntime,
   SpawnParams,
 } from '../runtime.js';
-import { buildSubprocessEnv, defaultSpawn } from './_env.js';
+import { buildSubprocessEnv, defaultSpawn, ensureUserIdentityEnv } from './_env.js';
 import type { SpawnFn, SubprocessLike } from './_env.js';
 
 // Re-exported for backward compatibility — these primitives now live in _env.ts
@@ -337,10 +337,19 @@ export class ClaudeCodeRuntime implements IAgentRuntime {
     if (params.model) {
       args.push('--model', params.model);
     }
+    // Per-spawn permissions from product.yaml (#119): flags only, never the
+    // operator's global CLI settings. Absent → args identical to before.
+    const perms = params.permissions;
+    for (const dir of perms?.addDirs ?? []) args.push('--add-dir', dir);
+    if (perms?.allowedTools?.length) args.push('--allowedTools', perms.allowedTools.join(','));
+    if (perms?.disallowedTools?.length) {
+      args.push('--disallowedTools', perms.disallowedTools.join(','));
+    }
 
     // Build a sanitized subprocess environment: host env with GITHUB_TOKEN and
     // GH_TOKEN scrubbed, then merged with any caller-provided overrides.
-    const env = buildSubprocessEnv(params.env);
+    // USER/LOGNAME are guaranteed (#119): without them the CLI says "Not logged in".
+    const env = ensureUserIdentityEnv(buildSubprocessEnv(params.env));
 
     const proc = this.spawnFn(args, params.workdir, env);
     const session = new ClaudeCodeSession(proc, params, timeoutMs);

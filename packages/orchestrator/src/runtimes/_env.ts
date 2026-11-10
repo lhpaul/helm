@@ -4,6 +4,8 @@
  * abstraction and the same credential-scrubbing logic without duplication.
  */
 
+import { userInfo } from 'node:os';
+
 // ── Subprocess abstraction ────────────────────────────────────────────────────
 // A minimal interface over Bun.Subprocess so tests can inject a fake process.
 // The real implementation calls Bun.spawn; no bun-types dep is needed in this
@@ -145,4 +147,40 @@ export function defaultSpawn(
     | undefined;
   if (!bun) throw new Error('Spawn-based runtimes require the Bun runtime');
   return bun.spawn(args, { cwd, stdin: stdin ?? 'ignore', stdout: 'pipe', stderr: 'pipe', env });
+}
+
+/**
+ * Guarantees `USER` and `LOGNAME` in a subprocess env (#119). The Claude CLI
+ * reports "Not logged in" when a service launches it without them. A missing
+ * one is copied from the other, else taken from the OS account. Throws when no
+ * identity can be resolved, so no session starts only to fail later.
+ *
+ * @param resolveOsUser  Injectable OS-account lookup (tests).
+ */
+export function ensureUserIdentityEnv(
+  env: Record<string, string>,
+  resolveOsUser: () => string | undefined = defaultOsUser,
+): Record<string, string> {
+  const user = env['USER']?.trim() || env['LOGNAME']?.trim() || safeOsUser(resolveOsUser);
+  if (!user) {
+    throw new Error(
+      '[runtime] Cannot determine the OS user: USER and LOGNAME are unset and the account ' +
+        'lookup failed. The Claude CLI would report "Not logged in". Set USER/LOGNAME for the service.',
+    );
+  }
+  if (!env['USER']?.trim()) env['USER'] = user;
+  if (!env['LOGNAME']?.trim()) env['LOGNAME'] = user;
+  return env;
+}
+
+function safeOsUser(resolve: () => string | undefined): string | undefined {
+  try {
+    return resolve()?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function defaultOsUser(): string | undefined {
+  return userInfo().username;
 }

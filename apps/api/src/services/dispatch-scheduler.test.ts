@@ -2500,6 +2500,33 @@ describe('pending external review readiness cleanup', () => {
       await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toBeNull();
     });
 
+    // Readiness right after the implementer's push: the item is still before
+    // code-review, so no review job (and no intent) exists yet. The webhook
+    // records the note; the review dispatch that follows the transition parks,
+    // still sees `analysis_pending`, defers — and replays the note.
+    it('replays readiness recorded during implementation once the review job defers', async () => {
+      await expect(recordEarlyExternalReviewReadiness(readinessWebhook)).resolves.toEqual({
+        recorded: true,
+      });
+      expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+
+      stageHandler(async (hooks) => {
+        await hooks.onExternalReviewPending?.(deferIntent);
+        await hooks.onExternalReviewDeferred?.(deferIntent);
+        return { status: 'deferred', deferredExternalReview: deferIntent };
+      });
+      await runJob();
+
+      expect(mockCreateJobIfNoRunning).toHaveBeenCalledTimes(2);
+      expect(mockCreateJobIfNoRunning).toHaveBeenLastCalledWith({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        specialistId: 'reviewer-fanout',
+        targetRevision: 'sha-1',
+      });
+      await expect(findNote()).resolves.toBeNull();
+    });
+
     it('parks the replay for the job exit while the deferring job still runs', async () => {
       let parkedDuringJob: unknown;
       stageHandler(async (hooks) => {

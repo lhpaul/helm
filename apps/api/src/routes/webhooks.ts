@@ -737,6 +737,27 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           );
           return c.json({ processed: true });
         }
+        if (
+          artifactKind === 'impl' &&
+          !matchedByRevision &&
+          item?.productSlug === config.product.slug &&
+          isBeforeWorkflowStage(item.currentStage, expectedStage)
+        ) {
+          // The provider can finish right after the implementer's push, before
+          // the item reaches code-review and the loop parks its intent (#135).
+          // Keep the signal for the loop to replay when it defers.
+          await recordEarlyExternalReviewReadiness({
+            product: config,
+            provider: event.provider,
+            targetRevision: event.targetRevision,
+            prNumber,
+            owner: event.owner,
+            repo: event.repo,
+            headRef: event.headRef,
+            triggeredBy: 'webhook:external-review-ready',
+          });
+          return c.json({ processed: true });
+        }
         await clearPendingExternalReview({
           productSlug: config.product.slug,
           externalId,

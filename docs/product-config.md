@@ -144,8 +144,9 @@ Helm resumes a deferred review from the provider's readiness webhook only when
 it finds a pending intent for that exact revision. The review loop parks that
 intent before its first provider poll, and the defer step upserts the same row.
 The provider, though, starts on the push, and the loop parks only when it
-enters the external wait. A fast provider can therefore report readiness while
-the loop is still running Helm's own reviewer fan-out (#135, TD-002).
+enters the external wait. A fast provider can therefore report readiness before
+the item reaches `code-review`, or while the loop is still running Helm's own
+reviewer fan-out (#135, TD-002).
 
 That signal is not dropped. When readiness matches no pending intent, Helm
 writes a short-lived readiness note to

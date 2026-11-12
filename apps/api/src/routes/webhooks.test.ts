@@ -2679,6 +2679,49 @@ describe('POST /api/webhooks/github', () => {
         });
       });
 
+      it('records impl readiness that lands before the item reaches code-review', async () => {
+        const config = configWithProvider('bugbot');
+        vi.mocked(getProductConfig).mockResolvedValue(config as never);
+        mockGet.mockResolvedValue({
+          externalId: 'issue_42',
+          productSlug: 'test-app',
+          currentStage: 'in-development',
+          history: [],
+        });
+
+        const res = await post(bugbotCheckRunPayload(), 'check_run');
+
+        expect(res.status).toBe(200);
+        expect(mockRecordEarlyExternalReviewReadiness).toHaveBeenCalledWith({
+          product: config,
+          provider: 'bugbot',
+          targetRevision: 'sha-42',
+          prNumber: 42,
+          owner: 'test-org',
+          repo: 'test-repo',
+          headRef: 'helm/impl/issue_42',
+          triggeredBy: 'webhook:external-review-ready',
+        });
+        expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+        expect(mockClearPendingExternalReview).not.toHaveBeenCalled();
+      });
+
+      it('does not record impl readiness for an item already past code-review', async () => {
+        vi.mocked(getProductConfig).mockResolvedValue(configWithProvider('bugbot') as never);
+        mockGet.mockResolvedValue({
+          externalId: 'issue_42',
+          productSlug: 'test-app',
+          currentStage: 'merged',
+          history: [],
+        });
+
+        const res = await post(bugbotCheckRunPayload(), 'check_run');
+
+        expect(res.status).toBe(200);
+        expect(mockRecordEarlyExternalReviewReadiness).not.toHaveBeenCalled();
+        expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+      });
+
       it('does not record readiness when the resume failed for another reason', async () => {
         vi.mocked(getProductConfig).mockResolvedValue(configWithProvider('bugbot') as never);
         mockGet.mockResolvedValue({

@@ -22,8 +22,8 @@ export type ExternalReviewReadinessNote = {
   provider: string;
   targetRevision: string;
   prNumber?: number;
-  owner?: string;
-  repo?: string;
+  owner: string;
+  repo: string;
   headRef?: string;
   receivedAt: string;
   expiresAt: string;

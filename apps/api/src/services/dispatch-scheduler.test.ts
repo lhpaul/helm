@@ -2605,6 +2605,8 @@ describe('pending external review readiness cleanup', () => {
         provider: 'bugbot',
         targetRevision: 'sha-1',
         prNumber: 42,
+        owner: 'o',
+        repo: 'r',
         receivedAt: '2026-01-01T00:00:00.000Z',
         expiresAt: '2026-01-01T00:30:00.000Z',
       });
@@ -2645,6 +2647,40 @@ describe('pending external review readiness cleanup', () => {
         targetRevision: 'sha-1',
         triggeredBy: 'webhook:external-review-ready:recheck:awaiting-job-exit',
       });
+    });
+
+    it('does not record readiness without repository identity', async () => {
+      for (const missing of [
+        { owner: null },
+        { repo: null },
+        { owner: undefined, repo: undefined },
+      ]) {
+        await expect(
+          recordEarlyExternalReviewReadiness({ ...readinessWebhook, ...missing }),
+        ).resolves.toEqual({ recorded: false, reason: 'Missing repository identity' });
+      }
+      await expect(findNote()).resolves.toBeNull();
+    });
+
+    it('never replays a stored note that lacks repository identity', async () => {
+      const store = await getExternalReviewReadinessStore(dataRoot);
+      await store.put({
+        productSlug: 'test-product',
+        provider: 'bugbot',
+        targetRevision: 'sha-1',
+        prNumber: 42,
+        receivedAt: '2026-11-12T10:00:00.000Z',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      } as never);
+      stageHandler(async (hooks) => {
+        await hooks.onExternalReviewDeferred?.(deferIntent);
+        return { status: 'deferred', deferredExternalReview: deferIntent };
+      });
+
+      await runJob();
+
+      expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+      await expect(findNote()).resolves.not.toBeNull();
     });
 
     it('does not record a readiness note under an unsafe key', async () => {

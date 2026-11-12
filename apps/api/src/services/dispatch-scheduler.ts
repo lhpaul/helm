@@ -406,8 +406,9 @@ function expectedRepoForIntent(
 
 /**
  * A readiness note only stands in for the webhook when everything the webhook
- * carried agrees with the intent. Fields the payload lacked (check runs often
- * omit PR metadata) are not checked; fields it had must match.
+ * carried agrees with the intent. The repository is always required; PR number
+ * and head ref are checked when the payload had them (check runs often omit
+ * PR metadata).
  */
 function readinessNoteMatchesIntent(
   note: ExternalReviewReadinessNote,
@@ -422,10 +423,10 @@ function readinessNoteMatchesIntent(
     return false;
   }
   if (note.prNumber !== undefined && note.prNumber !== intent.prNumber) return false;
-  if (note.owner !== undefined || note.repo !== undefined) {
-    const expected = expectedRepoForIntent(product, intent);
-    if (!expected || note.owner !== expected.owner || note.repo !== expected.repo) return false;
-  }
+  // Repository identity is mandatory, as on the webhook's own resume path: a
+  // note without it could otherwise resume an intent the webhook would reject.
+  const expected = expectedRepoForIntent(product, intent);
+  if (!expected || note.owner !== expected.owner || note.repo !== expected.repo) return false;
   if (note.headRef !== undefined) {
     const parsed = parseArtifactBranch(note.headRef);
     const expectedKind =
@@ -501,6 +502,12 @@ export async function recordEarlyExternalReviewReadiness(input: {
   triggeredBy: string;
 }): Promise<RecordEarlyExternalReviewReadinessResult> {
   const productSlug = input.product.product.slug;
+  if (!input.owner || !input.repo) {
+    console.info(
+      '[dispatch-scheduler] early external review readiness not recorded — missing repository identity',
+    );
+    return { recorded: false, reason: 'Missing repository identity' };
+  }
   if (!isExternalReviewReadinessKeySafe(productSlug, input.provider, input.targetRevision)) {
     console.info('[dispatch-scheduler] early external review readiness not recorded — unsafe key');
     return { recorded: false, reason: 'Unsafe readiness key' };
@@ -515,8 +522,8 @@ export async function recordEarlyExternalReviewReadiness(input: {
     provider: input.provider,
     targetRevision: input.targetRevision,
     ...(input.prNumber !== undefined ? { prNumber: input.prNumber } : {}),
-    ...(input.owner ? { owner: input.owner } : {}),
-    ...(input.repo ? { repo: input.repo } : {}),
+    owner: input.owner,
+    repo: input.repo,
     ...(input.headRef ? { headRef: input.headRef } : {}),
     receivedAt: new Date(now).toISOString(),
     expiresAt: new Date(now + maxDeferSec * 1000).toISOString(),

@@ -159,9 +159,11 @@ more for an intent written in the meantime. Then:
   step replays the note through the normal resume path. The review is
   re-dispatched as soon as the deferring job exits; no second webhook is
   needed.
-- A note is replayed only when the PR number, repository and artifact branch it
-  carried (when the payload had them) match the intent. Otherwise it is kept for
-  its own intent.
+- A note is replayed only when its repository matches the intent's (code repo
+  for implementation reviews, knowledge repo for draft reviews), and so do the
+  PR number and artifact branch when the payload had them. Readiness without
+  repository identity is not recorded, the same rule the direct resume path
+  applies. A note that does not match is kept for its own intent.
 - Notes expire with `review.external.max_defer_sec` (default 30 minutes) and are
   swept with expired pending intents.
 

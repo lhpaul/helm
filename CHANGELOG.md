@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Propagate the local-ai-reviewer companion reason; no retry on deterministic
+  failures (#134):** the adapter now reads the companion's `RESULT`/`REASON`
+  (also when no evidence file was written) instead of masking every failure as
+  `execution_unavailable`. Deterministic reasons such as
+  `review_contract_missing` (no `REVIEW.md`) return `escalate` with that reason,
+  so the stop rule escalates immediately instead of retrying and escalating
+  `external_repeated_skip`. Transient reasons stay retryable and now carry the
+  real reason. Helm's `review_md_missing` preflight also escalates now (was
+  `skipped:unavailable`). Companion stderr is captured as a bounded, redacted
+  tail and logged server-side only. See `docs/local-ai-reviewer.md`.
 - **Namespace item storage by product slug (#126):** items are now persisted at
   `data/items/{productSlug}/{externalId}.json` instead of the flat
   `data/items/{externalId}.json`, so two products sharing a data root with the

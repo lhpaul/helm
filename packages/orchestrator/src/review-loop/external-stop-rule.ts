@@ -28,6 +28,9 @@ export function evaluateExternalReviewStopRule(input: {
 }): ExternalReviewStopDecision {
   const { result, skipAttempt, maxSkipAttempts } = input;
 
+  // Deterministic provider failures (e.g. local-ai-reviewer
+  // `review_contract_missing`, #134) arrive as `escalate`: no retry, the real
+  // reason goes straight to the human instead of `external_repeated_skip`.
   if (result.status === 'escalate') {
     return {
       action: 'escalate',

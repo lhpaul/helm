@@ -353,7 +353,8 @@ describe('runExternalReviewIfConfigured — knowledge artifact PRs (#120)', () =
     expect(executeLocalAiReview).not.toHaveBeenCalled();
   });
 
-  it('reports review_md_missing for the codex backend without running the companion', async () => {
+  it('escalates review_md_missing for the codex backend without running the companion (#134)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const executeLocalAiReview = clean(7);
     await expect(
       runExternalReviewIfConfigured(
@@ -363,12 +364,9 @@ describe('runExternalReviewIfConfigured — knowledge artifact PRs (#120)', () =
         targetRevision,
         'spec',
       ),
-    ).resolves.toMatchObject({
-      status: 'skipped',
-      reason: 'unavailable',
-      providerReason: 'review_md_missing',
-    });
+    ).resolves.toEqual({ status: 'escalate', reason: 'review_md_missing' });
     expect(executeLocalAiReview).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('does not check REVIEW.md for the http backend', async () => {

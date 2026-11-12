@@ -19,7 +19,14 @@ type Invocation = {
   timeoutSec: number;
   ctx: ExternalReviewContext;
 };
-type Execution = { stdout: string; exitCode: number; evidence: unknown };
+type Execution = {
+  stdout: string;
+  exitCode: number;
+  /** `null` when the companion wrote no evidence file (e.g. preflight failures). */
+  evidence: unknown;
+  /** Bounded tail of the companion's stderr, for server-side diagnosis only. */
+  stderr?: string;
+};
 export type ReviewMdState = 'present' | 'missing' | 'unknown';
 export type LocalAiReviewerDeps = {
   executeLocalAiReview?: (input: Invocation) => Promise<Execution>;
@@ -33,6 +40,73 @@ const unavailable = (providerReason: string): ExternalReviewResult => ({
   providerReason,
 });
 
+/**
+ * Companion `REASON`s that a retry cannot fix (#134): missing review contract,
+ * configuration, checkout or credential problems. They escalate at once with
+ * the real reason instead of spending the repeated-skip budget. Everything else
+ * (timeouts, quota, head races, malformed output, unknown reasons) stays
+ * retryable. `review_md_missing` is Helm's own preflight for the same contract.
+ */
+export const DETERMINISTIC_COMPANION_REASONS: ReadonlySet<string> = new Set([
+  'review_contract_missing',
+  'review_md_missing',
+  'invalid_backend',
+  'missing_command',
+  'invalid_repo_root',
+  'repo_root_mismatch',
+  'missing_credentials',
+  'missing_model_access',
+]);
+
+/** Companion exit code for `RESULT=escalate`. */
+const COMPANION_ESCALATE_EXIT = 2;
+const REASON_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+const STDERR_TAIL_BYTES = 4096;
+const DIAGNOSTIC_MAX_CHARS = 2048;
+
+/**
+ * Bounds and redacts companion output before it reaches server logs. Never sent
+ * to GitHub or escalation messages; this is best-effort defense in depth.
+ */
+export function sanitizeDiagnostic(text: string): string {
+  return text
+
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED]')
+    .replace(/\b(?:sk|xox[abpr])-[A-Za-z0-9_-]{10,}/g, '[REDACTED]')
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [REDACTED]')
+    .replace(
+      /\b([A-Za-z_]*(?:token|secret|password|passwd|api[_-]?key|authorization)[A-Za-z_]*)(\s*[=:]\s*)\S+/gi,
+      '$1$2[REDACTED]',
+    )
+    .replace(/https?:\/\/[^\s/@]+@/g, 'https://[REDACTED]@')
+    .replace(/(?:\/Users|\/home|\/private|\/var\/folders|\/tmp)\/[^\s'"]*/g, '[PATH]')
+    .slice(-DIAGNOSTIC_MAX_CHARS);
+}
+
+function logNonPass(
+  outcome: ExternalReviewResult,
+  ctx: ExternalReviewContext,
+  details: { result?: string; companionReason?: string; exitCode?: number; stderr?: string },
+): void {
+  if (outcome.status === 'clean' || outcome.status === 'needs_fixes') return;
+  const reason =
+    outcome.status === 'skipped'
+      ? `${outcome.reason}:${outcome.providerReason ?? ''}`
+      : outcome.reason;
+  console.warn(
+    `[local-ai-reviewer] ${ctx.owner}/${ctx.repo}#${ctx.prNumber} ${outcome.status} (${reason})`,
+    {
+      result: details.result,
+      companionReason: details.companionReason,
+      exitCode: details.exitCode,
+      stderrTail: details.stderr ? sanitizeDiagnostic(details.stderr) : undefined,
+    },
+  );
+}
+
 /** Execute an operator-trusted command; PR data is positional, never shell source. */
 export async function executeLocalAiReview(input: Invocation): Promise<Execution> {
   const directory = await mkdtemp(join(tmpdir(), 'helm-local-review-'));
@@ -41,7 +115,7 @@ export async function executeLocalAiReview(input: Invocation): Promise<Execution
   let timer: ReturnType<typeof setTimeout> | undefined;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const execution = await new Promise<{ stdout: string; exitCode: number }>((resolve, reject) => {
+    const execution = await new Promise<Omit<Execution, 'evidence'>>((resolve, reject) => {
       const child = spawn(
         '/bin/sh',
         [
@@ -59,7 +133,7 @@ export async function executeLocalAiReview(input: Invocation): Promise<Execution
         {
           detached: true,
           signal: controller.signal,
-          stdio: ['ignore', 'pipe', 'ignore'],
+          stdio: ['ignore', 'pipe', 'pipe'],
           env: {
             ...process.env,
             LOCAL_AI_REVIEWER_BACKEND: input.backend,
@@ -71,6 +145,7 @@ export async function executeLocalAiReview(input: Invocation): Promise<Execution
         },
       );
       let stdout = '';
+      let stderrTail = Buffer.alloc(0);
       let failed = false;
       const stop = () => {
         if (!child.pid) return;
@@ -99,6 +174,12 @@ export async function executeLocalAiReview(input: Invocation): Promise<Execution
         }
         stdout += chunk.toString('utf8');
       });
+      // Keep only a bounded tail: diagnostics, never parsed for verdicts.
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrTail = Buffer.concat([stderrTail, chunk]);
+        if (stderrTail.length > STDERR_TAIL_BYTES)
+          stderrTail = stderrTail.subarray(stderrTail.length - STDERR_TAIL_BYTES);
+      });
       // Bun's transitive Node types can omit ChildProcess event overloads;
       // the spawned process implements Node EventEmitter at runtime.
       const events = child as unknown as EventEmitter;
@@ -110,11 +191,22 @@ export async function executeLocalAiReview(input: Invocation): Promise<Execution
       events.on('close', (code: number | null) => {
         if (timer) clearTimeout(timer);
         controller.signal.removeEventListener('abort', stop);
-        if (failed || controller.signal.aborted) reject(new Error('execution_unavailable'));
-        else resolve({ stdout, exitCode: code ?? -1 });
+        const stderr = stderrTail.toString('utf8');
+        if (failed || controller.signal.aborted)
+          reject(Object.assign(new Error('execution_unavailable'), { stderr }));
+        else resolve({ stdout, exitCode: code ?? -1, stderr });
       });
     });
-    const evidenceText = await readFile(evidenceFile, 'utf8');
+    let evidenceText: string;
+    try {
+      evidenceText = await readFile(evidenceFile, 'utf8');
+    } catch (error) {
+      // The companion skips the artifact on preflight failures; its stdout
+      // RESULT/REASON still explains why (#134).
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+        return { ...execution, evidence: null };
+      throw error;
+    }
     if (Buffer.byteLength(evidenceText) > 1024 * 1024) throw new Error('evidence_oversized');
     return { ...execution, evidence: JSON.parse(evidenceText) as unknown };
   } finally {
@@ -159,6 +251,21 @@ export function parseLocalAiReview(
     if (fields.has(match[1]!)) return unavailable('duplicate_output');
     fields.set(match[1]!, match[2]!);
   }
+  const result = fields.get('RESULT');
+  if (result !== undefined && result !== 'clean' && result !== 'needs_fixes') {
+    // Non-pass outcome: surface the companion's own reason (#134). Nothing here
+    // can pass the gate, so the evidence/head checks below are not needed.
+    const reasonText = fields.get('REASON') ?? '';
+    const reason = REASON_PATTERN.test(reasonText) ? reasonText : 'no_terminal_verdict';
+    if (
+      result === 'escalate' &&
+      execution.exitCode === COMPANION_ESCALATE_EXIT &&
+      DETERMINISTIC_COMPANION_REASONS.has(reason)
+    ) {
+      return { status: 'escalate', reason };
+    }
+    return unavailable(reason);
+  }
   const evidence = execution.evidence;
   if (!evidence || typeof evidence !== 'object') return unavailable('missing_evidence');
   const artifact = evidence as Record<string, unknown>;
@@ -176,7 +283,6 @@ export function parseLocalAiReview(
   ) {
     return unavailable('invalid_evidence');
   }
-  const result = fields.get('RESULT');
   if (artifact.result !== result) return unavailable('verdict_mismatch');
   if (result !== 'clean' && result !== 'needs_fixes') return unavailable('no_terminal_verdict');
   if (execution.exitCode !== 0 && !(result === 'needs_fixes' && execution.exitCode === 1)) {
@@ -222,6 +328,15 @@ export function parseLocalAiReview(
     : { status: 'needs_fixes', blockers, advisories: [] };
 }
 
+/** First RESULT/REASON values, slug-checked, for diagnostics only. */
+function companionFields(stdout: string): { result?: string; reason?: string } {
+  const pick = (key: string) => {
+    const value = new RegExp(`^${key}=(.*)$`, 'm').exec(stdout)?.[1];
+    return value && REASON_PATTERN.test(value) ? value : undefined;
+  };
+  return { result: pick('RESULT'), reason: pick('REASON') };
+}
+
 export function createLocalAiReviewerAdapter(
   product: Product,
   deps?: LocalAiReviewerDeps,
@@ -246,22 +361,43 @@ export function createLocalAiReviewerAdapter(
           const state = await (deps?.checkReviewMd ?? checkReviewMdAtHead)(ctx).catch(
             (): ReviewMdState => 'unknown',
           );
-          if (state === 'missing') return unavailable('review_md_missing');
+          if (state === 'missing') {
+            // Deterministic: retrying cannot create the file (#134).
+            const outcome: ExternalReviewResult = {
+              status: 'escalate',
+              reason: 'review_md_missing',
+            };
+            logNonPass(outcome, ctx, {});
+            return outcome;
+          }
         }
       }
+      let execution: Execution;
       try {
-        const execution = await (deps?.executeLocalAiReview ?? executeLocalAiReview)({
+        execution = await (deps?.executeLocalAiReview ?? executeLocalAiReview)({
           command,
           backend,
           mode: config?.mode ?? 'ordinary',
           timeoutSec: config?.timeout_sec ?? 900,
           ctx,
         });
-        return parseLocalAiReview(execution, ctx);
-      } catch {
-        // Never expose command output, filesystem paths, or credentials.
-        return unavailable('execution_unavailable');
+      } catch (error) {
+        // Never expose command output, filesystem paths, or credentials in the
+        // result; the bounded, redacted stderr tail only goes to server logs.
+        const outcome = unavailable('execution_unavailable');
+        const stderr = (error as { stderr?: unknown }).stderr;
+        logNonPass(outcome, ctx, { stderr: typeof stderr === 'string' ? stderr : undefined });
+        return outcome;
       }
+      const outcome = parseLocalAiReview(execution, ctx);
+      const fields = companionFields(execution.stdout);
+      logNonPass(outcome, ctx, {
+        result: fields.result,
+        companionReason: fields.reason,
+        exitCode: execution.exitCode,
+        stderr: execution.stderr,
+      });
+      return outcome;
     },
   };
 }

@@ -138,6 +138,36 @@ review entirely — the loop then runs on Helm's own reviewer fan-out.
 Every provider is a name **and** identity check: a matching name from any other
 app, or a matching identity on any other name, is ignored.
 
+### Readiness that arrives before the pending intent
+
+Helm resumes a deferred review from the provider's readiness webhook only when
+it finds a pending intent for that exact revision. The review loop parks that
+intent before its first provider poll, and the defer step upserts the same row.
+The provider, though, starts on the push, and the loop parks only when it
+enters the external wait. A fast provider can therefore report readiness while
+the loop is still running Helm's own reviewer fan-out (#135, TD-002).
+
+That signal is not dropped. When readiness matches no pending intent, Helm
+writes a short-lived readiness note to
+`data/external-review-readiness/<product>/<provider>.<revision>.json`, logs
+`external review readiness recorded before its pending intent`, and checks once
+more for an intent written in the meantime. Then:
+
+- If the loop's poll sees the provider finish, the pass continues and the note
+  is dropped.
+- If the poll still reports `analysis_pending` and the loop defers, the defer
+  step replays the note through the normal resume path. The review is
+  re-dispatched as soon as the deferring job exits; no second webhook is
+  needed.
+- A note is replayed only when the PR number, repository and artifact branch it
+  carried (when the payload had them) match the intent. Otherwise it is kept for
+  its own intent.
+- Notes expire with `review.external.max_defer_sec` (default 30 minutes) and are
+  swept with expired pending intents.
+
+The webhook response is unchanged (`{ "processed": true }`). Products that set
+`resume_on_check_run: false` never write notes.
+
 ### `codex-github`
 
 ```yaml

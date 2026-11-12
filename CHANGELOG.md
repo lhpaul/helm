@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Keep external-review readiness that arrives before the pending intent
+  (#135, TD-002):** a provider can finish while the review loop is still in its
+  internal fan-out, before it parks its pending intent. The readiness webhook
+  used to log `no pending intent for revision` and drop the signal; if the
+  loop's poll then still saw `analysis_pending`, the deferral stranded until
+  expiry. Helm now records a short-lived readiness note
+  (`data/external-review-readiness/`, expires with `max_defer_sec`), re-checks
+  once for an intent, and replays the note when the loop defers on that
+  revision. Additive storage only: the review-dispatch outbox format and the
+  webhook response are unchanged. See `docs/product-config.md`.
 - **Propagate the local-ai-reviewer companion reason; no retry on deterministic
   failures (#134):** the adapter now reads the companion's `RESULT`/`REASON`
   (also when no evidence file was written) instead of masking every failure as

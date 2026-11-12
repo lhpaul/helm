@@ -33,6 +33,7 @@ const {
   mockClearPendingExternalReview,
   mockResumePendingExternalReview,
   mockResumePendingExternalReviewByRevision,
+  mockRecordEarlyExternalReviewReadiness,
   mockResolveOpenPrMetadata,
   mockAuthorHasWriteAccess,
   mockGetPrimaryCodeRepo,
@@ -61,6 +62,7 @@ const {
   mockClearPendingExternalReview: vi.fn(),
   mockResumePendingExternalReview: vi.fn(),
   mockResumePendingExternalReviewByRevision: vi.fn(),
+  mockRecordEarlyExternalReviewReadiness: vi.fn(),
   mockResolveOpenPrMetadata: vi.fn(),
   mockAuthorHasWriteAccess: vi.fn(),
   mockGetPrimaryCodeRepo: vi.fn(),
@@ -84,6 +86,8 @@ vi.mock('@helm/orchestrator', async (importOriginal) => {
 vi.mock('../services/dispatch-scheduler.js', () => ({
   DUPLICATE_TARGET_REVISION: 'Duplicate target revision',
   DRAFT_REVIEWER_NO_LONGER_APPLICABLE: 'Draft reviewer no longer applicable',
+  NO_MATCHING_PENDING_EXTERNAL_REVIEW: 'No matching pending external review',
+  recordEarlyExternalReviewReadiness: mockRecordEarlyExternalReviewReadiness,
   scheduleItemDispatch: mockScheduleItemDispatch,
   persistReviewDispatchIntent: mockPersistReviewDispatchIntent,
   replayPendingReviewDispatchForItem: mockReplayPendingReviewDispatchForItem,
@@ -493,6 +497,7 @@ describe('POST /api/webhooks/github', () => {
       jobId: 'job-resume-by-revision-1',
       externalId: 'issue_42',
     });
+    mockRecordEarlyExternalReviewReadiness.mockResolvedValue({ recorded: true });
     mockGetPrimaryCodeRepo.mockReturnValue({ owner: 'test-org', repo: 'test-repo' });
     mockAuthorHasWriteAccess.mockResolvedValue(true);
     mockResolveOpenPrMetadata.mockResolvedValue({
@@ -2602,6 +2607,121 @@ describe('POST /api/webhooks/github', () => {
         triggeredBy: 'webhook:external-review-ready',
       });
       expect(mockScheduleItemDispatch).not.toHaveBeenCalled();
+    });
+
+    // #135 / TD-002: readiness that beats the pending intent is recorded for
+    // replay instead of being dropped as a silent no-op.
+    describe('readiness before the pending intent (#135)', () => {
+      function configWithProvider(provider: string) {
+        return {
+          product: { slug: 'test-app', name: 'Test' },
+          issue_tracker: {
+            provider: 'github_projects',
+            org: 'test-org',
+            project_number: 1,
+            custom_field_name: 'Helm Stage',
+          },
+          code_repos: [{ url: 'https://github.com/test-org/test-repo', role: 'app' }],
+          knowledge_repo: { url: 'https://github.com/test-org/test-repo', branch: 'main' },
+          workflow: { final_stage: 'released' },
+          review: { external: { provider, resume_on_check_run: true } },
+        };
+      }
+
+      it('records a revision-only readiness that matches no intent', async () => {
+        const config = configWithProvider('coderabbit');
+        vi.mocked(getProductConfig).mockResolvedValue(config as never);
+
+        const res = await post(coderabbitStatusPayload(), 'status');
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ processed: true });
+        expect(mockRecordEarlyExternalReviewReadiness).toHaveBeenCalledWith({
+          product: config,
+          provider: 'coderabbit',
+          targetRevision: 'sha-42',
+          prNumber: undefined,
+          owner: 'test-org',
+          repo: 'test-repo',
+          triggeredBy: 'webhook:external-review-ready',
+        });
+        expect(mockResumePendingExternalReview).not.toHaveBeenCalled();
+        expect(mockResumePendingExternalReviewByRevision).not.toHaveBeenCalled();
+      });
+
+      it('records a head-ref readiness whose resume finds no intent', async () => {
+        const config = configWithProvider('bugbot');
+        vi.mocked(getProductConfig).mockResolvedValue(config as never);
+        mockGet.mockResolvedValue({
+          externalId: 'issue_42',
+          productSlug: 'test-app',
+          currentStage: 'code-review',
+          history: [],
+        });
+        mockResumePendingExternalReview.mockResolvedValue({
+          scheduled: false,
+          reason: 'No matching pending external review',
+        });
+
+        const res = await post(bugbotCheckRunPayload(), 'check_run');
+
+        expect(res.status).toBe(200);
+        expect(mockResumePendingExternalReview).toHaveBeenCalledTimes(1);
+        expect(mockRecordEarlyExternalReviewReadiness).toHaveBeenCalledWith({
+          product: config,
+          provider: 'bugbot',
+          targetRevision: 'sha-42',
+          prNumber: 42,
+          owner: 'test-org',
+          repo: 'test-repo',
+          headRef: 'helm/impl/issue_42',
+          triggeredBy: 'webhook:external-review-ready',
+        });
+      });
+
+      it('does not record readiness when the resume failed for another reason', async () => {
+        vi.mocked(getProductConfig).mockResolvedValue(configWithProvider('bugbot') as never);
+        mockGet.mockResolvedValue({
+          externalId: 'issue_42',
+          productSlug: 'test-app',
+          currentStage: 'code-review',
+          history: [],
+        });
+        mockResumePendingExternalReview.mockResolvedValue({
+          scheduled: false,
+          reason: 'Pending external review expired',
+        });
+
+        const res = await post(bugbotCheckRunPayload(), 'check_run');
+
+        expect(res.status).toBe(200);
+        expect(mockRecordEarlyExternalReviewReadiness).not.toHaveBeenCalled();
+      });
+
+      it('does not record readiness that already resumed a pending intent', async () => {
+        vi.mocked(getProductConfig).mockResolvedValue(configWithProvider('bugbot') as never);
+        mockGet.mockResolvedValue({
+          externalId: 'issue_42',
+          productSlug: 'test-app',
+          currentStage: 'code-review',
+          history: [],
+        });
+
+        const res = await post(bugbotCheckRunPayload(), 'check_run');
+
+        expect(res.status).toBe(200);
+        expect(mockResumePendingExternalReview).toHaveBeenCalledTimes(1);
+        expect(mockRecordEarlyExternalReviewReadiness).not.toHaveBeenCalled();
+      });
+
+      it('returns 503 so GitHub redelivers when the note cannot be stored', async () => {
+        vi.mocked(getProductConfig).mockResolvedValue(configWithProvider('coderabbit') as never);
+        mockRecordEarlyExternalReviewReadiness.mockRejectedValue(new Error('disk full'));
+
+        const res = await post(coderabbitStatusPayload(), 'status');
+
+        expect(res.status).toBe(503);
+      });
     });
 
     it('does not resume Bugbot readiness from an untrusted app identity', async () => {

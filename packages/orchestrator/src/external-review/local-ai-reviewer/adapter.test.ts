@@ -274,4 +274,15 @@ describe('sanitizeDiagnostic', () => {
     expect(text).toContain('red');
     expect(sanitizeDiagnostic('x'.repeat(5000)).length).toBe(2048);
   });
+  it.each([
+    '{"access_token":"s3cr3t value","other":1}',
+    "{'client_secret': 's3cr3t value'}",
+    '{\\"api_key\\":\\"s3cr3t value\\"}',
+    'PASSWORD = s3cr3t',
+    'credentials: s3cr3t',
+  ])('redacts quoted and unquoted credential values in %s', (input) => {
+    const text = sanitizeDiagnostic(input);
+    expect(text).not.toContain('s3cr3t');
+    expect(text).toContain('[REDACTED]');
+  });
 });

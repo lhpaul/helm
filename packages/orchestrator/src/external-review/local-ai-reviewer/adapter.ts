@@ -78,7 +78,8 @@ export function sanitizeDiagnostic(text: string): string {
     .replace(/\b(?:sk|xox[abpr])-[A-Za-z0-9_-]{10,}/g, '[REDACTED]')
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [REDACTED]')
     .replace(
-      /\b([A-Za-z_]*(?:token|secret|password|passwd|api[_-]?key|authorization)[A-Za-z_]*)(\s*[=:]\s*)\S+/gi,
+      // Plain `key=value`, `key: value` and quoted/escaped JSON keys and values.
+      /\b([A-Za-z_-]*(?:token|secret|password|passwd|api[_-]?key|authorization|credential)[A-Za-z_-]*)((?:\\?["'])?\s*[=:]\s*)(?:"[^"]*"?|'[^']*'?|\\"(?:[^"\\]|\\[^"])*(?:\\")?|[^\s,}]+)/gi,
       '$1$2[REDACTED]',
     )
     .replace(/https?:\/\/[^\s/@]+@/g, 'https://[REDACTED]@')

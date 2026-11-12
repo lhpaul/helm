@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { evaluateExternalReviewStopRule } from './external-stop-rule.js';
+import { parseLocalAiReview } from '../external-review/local-ai-reviewer/adapter.js';
 
 describe('evaluateExternalReviewStopRule', () => {
   it('escalates immediately when adapter returns escalate', () => {
@@ -110,5 +111,51 @@ describe('evaluateExternalReviewStopRule', () => {
     if (decision.action === 'escalate') {
       expect(decision.message).toContain('unavailable: usage_limit');
     }
+  });
+
+  describe('local-ai-reviewer companion failures (#134)', () => {
+    const ctx = {
+      owner: 'o',
+      repo: 'r',
+      prNumber: 1,
+      prUrl: 'https://github.com/o/r/pull/1',
+      defaultBranch: 'main',
+      targetRevision: 'a'.repeat(40),
+    };
+    const companion = (reason: string) =>
+      parseLocalAiReview(
+        { stdout: `RESULT=escalate\nREASON=${reason}\n`, exitCode: 2, evidence: null },
+        ctx,
+      );
+
+    it('escalates a deterministic reason on the first attempt, without retry', () => {
+      expect(
+        evaluateExternalReviewStopRule({
+          result: companion('review_contract_missing'),
+          skipAttempt: 1,
+          maxSkipAttempts: 2,
+        }),
+      ).toEqual({
+        action: 'escalate',
+        reason: 'external_escalate',
+        message: 'External review escalated: review_contract_missing',
+        skipAttempt: 1,
+        externalReason: 'review_contract_missing',
+      });
+    });
+
+    it('retries a transient reason, then escalates naming it', () => {
+      const result = companion('quota_exhausted');
+      expect(
+        evaluateExternalReviewStopRule({ result, skipAttempt: 1, maxSkipAttempts: 2 }),
+      ).toEqual({ action: 'retry', skipAttempt: 1 });
+      expect(
+        evaluateExternalReviewStopRule({ result, skipAttempt: 2, maxSkipAttempts: 2 }),
+      ).toMatchObject({
+        action: 'escalate',
+        reason: 'external_repeated_skip',
+        externalReason: 'unavailable: quota_exhausted',
+      });
+    });
   });
 });

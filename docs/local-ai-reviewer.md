@@ -53,6 +53,29 @@ passing the gate. Output is bounded to 1 MiB; expiry aborts the process group.
 Temporary artifacts are removed after parsing. The local reviewer posts no
 GitHub comments; operators can persist separate review artifacts for PR evidence.
 
+### Companion failure reasons
+
+When the companion stops without a verdict it prints `RESULT=<status>` and
+`REASON=<slug>`, sometimes without writing an evidence file (preflight
+failures). Helm reads that reason instead of reporting `execution_unavailable`:
+
+- **Deterministic** (escalate at once, no retry): `RESULT=escalate`, exit 2 and
+  one of `review_contract_missing`, `invalid_backend`, `missing_command`,
+  `invalid_repo_root`, `repo_root_mismatch`, `missing_credentials`,
+  `missing_model_access`. The adapter returns `escalate` with that reason and
+  the stop rule escalates `external_escalate` naming it. Fix the cause (for
+  example add `REVIEW.md`, fix the wrapper or log in) and re-run.
+- **Retryable**: every other reason (for example `quota_exhausted`,
+  `head_mismatch`, `diff_unavailable`, `malformed_output`,
+  `reviewer-no-verdict-yet`), timeouts and spawn failures stay
+  `skipped:unavailable` with the companion reason as provider reason, so the
+  repeated-skip escalation names it.
+
+Only slug-shaped reasons are propagated. The companion's stderr is kept as a
+bounded tail (4 KiB), redacted (tokens, credentials, local paths) and logged on
+the server with `RESULT`, `REASON` and exit code; it never reaches GitHub or the
+escalation message.
+
 ## Knowledge-repo spec and plan PRs
 
 With `review.early_loop.enabled: true`, the early artifact loop reviews draft
@@ -79,7 +102,8 @@ artifact PRs get internal review only (`skipped:not_configured`).
 
 With `backend: codex` the companion needs a `REVIEW.md` in the reviewed repo. Helm
 checks for it at the PR head (read-only, via `gh api`); if it is absent the result
-is `skipped:unavailable` with provider reason `review_md_missing`. Add the file to
+is `escalate` with reason `review_md_missing` (no retry: retrying cannot create
+the file). Add the file to
 your own knowledge repo yourself; Helm never creates files in reviewed repos, and
 for repos you do not own use a different backend or review the PR elsewhere.
 Implementation PRs keep using `command` and are not affected.

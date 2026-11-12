@@ -58,6 +58,7 @@ vi.mock('./github-pr.js', async (importOriginal) => {
 
 import {
   clearPendingExternalReview,
+  recordEarlyExternalReviewReadiness,
   replayPendingReviewDispatchForItem,
   resumePendingExternalReview,
   resumePendingExternalReviewByRevision,
@@ -68,6 +69,7 @@ import {
 import { dispatchStageHandler, resolveSpecialistId } from '@helm/orchestrator';
 import { getItemStore, getProductRegistry } from './index.js';
 import { getReviewDispatchOutbox } from './review-dispatch-outbox.js';
+import { getExternalReviewReadinessStore } from './external-review-readiness.js';
 import { GitHubPrError } from './github-pr.js';
 
 const baseProduct = {
@@ -2372,6 +2374,361 @@ describe('pending external review readiness cleanup', () => {
     await expect(
       outbox.get('test-product', 'LEA-1', 'review_dispatch', 'reviewer-fanout'),
     ).resolves.toBeNull();
+  });
+
+  describe('readiness before the pending intent (#135, TD-002)', () => {
+    const deferIntent = {
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'reviewer-fanout',
+      provider: 'bugbot',
+      reason: 'analysis_pending' as const,
+      prNumber: 42,
+      targetRevision: 'sha-1',
+      maxDeferSec: 600,
+    };
+    const readinessWebhook = {
+      product: baseProduct,
+      provider: 'bugbot',
+      targetRevision: 'sha-1',
+      prNumber: 42,
+      owner: 'o',
+      repo: 'r',
+      headRef: 'helm/impl/LEA-1',
+      triggeredBy: 'webhook:external-review-ready',
+    };
+    const runningJob = {
+      jobId: 'job-current',
+      productSlug: 'test-product',
+      externalId: 'LEA-1',
+      specialistId: 'reviewer-fanout',
+      status: 'running',
+      targetRevision: 'sha-1',
+      startedAt: '2026-11-12T10:00:00.000Z',
+    };
+
+    type LoopHooks = {
+      onExternalReviewPending?: (i: typeof deferIntent) => Promise<void>;
+      onExternalReviewSettled?: (i: typeof deferIntent) => Promise<void>;
+      onExternalReviewDeferred?: (i: typeof deferIntent) => Promise<void>;
+    };
+
+    function stageHandler(body: (hooks: LoopHooks) => Promise<unknown>) {
+      vi.mocked(dispatchStageHandler).mockImplementation((async (
+        _item: unknown,
+        _product: unknown,
+        _runtime: unknown,
+        _transition: unknown,
+        options: LoopHooks,
+      ) => body(options)) as never);
+    }
+
+    async function runJob() {
+      await runDispatchJob({ jobId: 'job-current' } as never, {
+        product: baseProduct as never,
+        item: {
+          externalId: 'LEA-1',
+          productSlug: 'test-product',
+          currentStage: 'code-review',
+        } as never,
+        workdir: '/tmp/ws',
+        dataRoot,
+        specialistId: 'reviewer-fanout',
+        feedback: undefined,
+        githubToken: 'test-github-token',
+      });
+    }
+
+    async function findNote() {
+      const store = await getExternalReviewReadinessStore(dataRoot);
+      return store.find({
+        productSlug: 'test-product',
+        provider: 'bugbot',
+        targetRevision: 'sha-1',
+      });
+    }
+
+    beforeEach(() => {
+      mockGetRunningJobForItem.mockResolvedValue(runningJob);
+      // An existing job stops every schedule at the scheduler boundary, so no
+      // background dispatch forks and races the temp-dir cleanup.
+      mockCreateJobIfNoRunning.mockResolvedValue({
+        duplicate: true,
+        existingJobId: 'job-current',
+      });
+      mockResolveOpenPrMetadata.mockResolvedValue({
+        headRef: 'helm/impl/LEA-1',
+        headSha: 'sha-1',
+      });
+    });
+
+    // The race the ticket names, in its widest form: the provider finishes
+    // and GitHub delivers readiness before the loop has written any intent for
+    // the revision. The loop's own poll still says `analysis_pending`, so it
+    // defers. Before #135 the signal was dropped and the deferral stranded.
+    it('replays readiness that arrived before the intent once the loop defers', async () => {
+      let webhookOutcome: unknown;
+      stageHandler(async (hooks) => {
+        // ← readiness lands while the loop is still in its internal fan-out.
+        webhookOutcome = await recordEarlyExternalReviewReadiness(readinessWebhook);
+        await hooks.onExternalReviewPending?.(deferIntent);
+        await hooks.onExternalReviewDeferred?.(deferIntent);
+        return { status: 'deferred', deferredExternalReview: deferIntent };
+      });
+
+      await runJob();
+
+      // Not a silent no-op: the webhook kept the signal.
+      expect(webhookOutcome).toEqual({ recorded: true });
+      // The defer hook replayed it (parked for the job exit), and the replay
+      // after the exit carried it back to the scheduler with the same identity.
+      expect(mockCreateJobIfNoRunning).toHaveBeenCalledTimes(2);
+      for (const call of mockCreateJobIfNoRunning.mock.calls) {
+        expect(call[0]).toEqual({
+          productSlug: 'test-product',
+          externalId: 'LEA-1',
+          specialistId: 'reviewer-fanout',
+          targetRevision: 'sha-1',
+        });
+      }
+      expect(dispatchStageHandler).toHaveBeenCalledTimes(1);
+      await expect(findNote()).resolves.toBeNull();
+      const outbox = await getReviewDispatchOutbox(dataRoot);
+      await expect(
+        outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+      ).resolves.toBeNull();
+      await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toBeNull();
+    });
+
+    // Readiness right after the implementer's push: the item is still before
+    // code-review, so no review job (and no intent) exists yet. The webhook
+    // records the note; the review dispatch that follows the transition parks,
+    // still sees `analysis_pending`, defers — and replays the note.
+    it('replays readiness recorded during implementation once the review job defers', async () => {
+      await expect(recordEarlyExternalReviewReadiness(readinessWebhook)).resolves.toEqual({
+        recorded: true,
+      });
+      expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+
+      stageHandler(async (hooks) => {
+        await hooks.onExternalReviewPending?.(deferIntent);
+        await hooks.onExternalReviewDeferred?.(deferIntent);
+        return { status: 'deferred', deferredExternalReview: deferIntent };
+      });
+      await runJob();
+
+      expect(mockCreateJobIfNoRunning).toHaveBeenCalledTimes(2);
+      expect(mockCreateJobIfNoRunning).toHaveBeenLastCalledWith({
+        productSlug: 'test-product',
+        externalId: 'LEA-1',
+        specialistId: 'reviewer-fanout',
+        targetRevision: 'sha-1',
+      });
+      await expect(findNote()).resolves.toBeNull();
+    });
+
+    it('parks the replay for the job exit while the deferring job still runs', async () => {
+      let parkedDuringJob: unknown;
+      stageHandler(async (hooks) => {
+        await recordEarlyExternalReviewReadiness(readinessWebhook);
+        await hooks.onExternalReviewPending?.(deferIntent);
+        await hooks.onExternalReviewDeferred?.(deferIntent);
+        const outbox = await getReviewDispatchOutbox(dataRoot);
+        parkedDuringJob = await outbox.get('test-product', 'LEA-1', 'review_dispatch');
+        return { status: 'deferred', deferredExternalReview: deferIntent };
+      });
+
+      await runJob();
+
+      expect(parkedDuringJob).toMatchObject({
+        kind: 'review_dispatch',
+        specialistId: 'reviewer-fanout',
+        prNumber: 42,
+        targetRevision: 'sha-1',
+        triggeredBy: 'webhook:external-review-ready:early:awaiting-job-exit',
+      });
+    });
+
+    it('drops the note when the loop poll sees the provider finish', async () => {
+      stageHandler(async (hooks) => {
+        await recordEarlyExternalReviewReadiness(readinessWebhook);
+        await hooks.onExternalReviewPending?.(deferIntent);
+        await hooks.onExternalReviewSettled?.(deferIntent);
+        return { status: 'done' };
+      });
+
+      await runJob();
+
+      await expect(findNote()).resolves.toBeNull();
+      expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+    });
+
+    it('keeps a note whose PR does not match the deferred intent', async () => {
+      stageHandler(async (hooks) => {
+        await recordEarlyExternalReviewReadiness({ ...readinessWebhook, prNumber: 99 });
+        await hooks.onExternalReviewDeferred?.(deferIntent);
+        return { status: 'deferred', deferredExternalReview: deferIntent };
+      });
+
+      await runJob();
+
+      await expect(findNote()).resolves.toMatchObject({ prNumber: 99 });
+      expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+      const outbox = await getReviewDispatchOutbox(dataRoot);
+      await expect(
+        outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+      ).resolves.toMatchObject({ targetRevision: 'sha-1' });
+    });
+
+    it('keeps a note from another repository or another artifact branch', async () => {
+      for (const mismatch of [
+        { owner: 'someone-else' },
+        { headRef: 'helm/impl/LEA-2' },
+        { headRef: 'helm/spec/LEA-1' },
+      ]) {
+        const store = await getExternalReviewReadinessStore(dataRoot);
+        await store.remove({
+          productSlug: 'test-product',
+          provider: 'bugbot',
+          targetRevision: 'sha-1',
+        });
+        stageHandler(async (hooks) => {
+          await recordEarlyExternalReviewReadiness({ ...readinessWebhook, ...mismatch });
+          await hooks.onExternalReviewDeferred?.(deferIntent);
+          return { status: 'deferred', deferredExternalReview: deferIntent };
+        });
+
+        await runJob();
+
+        await expect(findNote()).resolves.not.toBeNull();
+      }
+      expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+    });
+
+    it('replays without PR metadata when the payload carried none', async () => {
+      stageHandler(async (hooks) => {
+        await recordEarlyExternalReviewReadiness({
+          product: baseProduct,
+          provider: 'bugbot',
+          targetRevision: 'sha-1',
+          owner: 'o',
+          repo: 'r',
+          triggeredBy: 'webhook:external-review-ready',
+        });
+        await hooks.onExternalReviewDeferred?.(deferIntent);
+        return { status: 'deferred', deferredExternalReview: deferIntent };
+      });
+
+      await runJob();
+
+      await expect(findNote()).resolves.toBeNull();
+      expect(mockCreateJobIfNoRunning).toHaveBeenCalledTimes(2);
+    });
+
+    it('ignores an expired note', async () => {
+      const store = await getExternalReviewReadinessStore(dataRoot);
+      await store.put({
+        productSlug: 'test-product',
+        provider: 'bugbot',
+        targetRevision: 'sha-1',
+        prNumber: 42,
+        owner: 'o',
+        repo: 'r',
+        receivedAt: '2026-01-01T00:00:00.000Z',
+        expiresAt: '2026-01-01T00:30:00.000Z',
+      });
+      stageHandler(async (hooks) => {
+        await hooks.onExternalReviewDeferred?.(deferIntent);
+        return { status: 'deferred', deferredExternalReview: deferIntent };
+      });
+
+      await runJob();
+
+      expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+    });
+
+    // Webhook-side half of the rendezvous: the loop wrote its intent between
+    // the webhook's lookup and the note write. The re-check resumes it.
+    it('re-checks once and resumes an intent written after the webhook lookup', async () => {
+      const { outbox } = await putPending();
+      mockGetRunningJobForItem.mockResolvedValue(null);
+      mockCreateJobIfNoRunning.mockResolvedValue({
+        conflict: true,
+        runningJobId: 'job-other',
+        runningTargetRevision: 'sha-0',
+      });
+
+      await expect(recordEarlyExternalReviewReadiness(readinessWebhook)).resolves.toEqual({
+        recorded: true,
+        replayed: {
+          scheduled: false,
+          reason: 'Job already running — queued review dispatch for replay after exit',
+        },
+      });
+
+      await expect(findNote()).resolves.toBeNull();
+      await expect(
+        outbox.get('test-product', 'LEA-1', 'pending_external_review'),
+      ).resolves.toBeNull();
+      await expect(outbox.get('test-product', 'LEA-1', 'review_dispatch')).resolves.toMatchObject({
+        targetRevision: 'sha-1',
+        triggeredBy: 'webhook:external-review-ready:recheck:awaiting-job-exit',
+      });
+    });
+
+    it('does not record readiness without repository identity', async () => {
+      for (const missing of [
+        { owner: null },
+        { repo: null },
+        { owner: undefined, repo: undefined },
+      ]) {
+        await expect(
+          recordEarlyExternalReviewReadiness({ ...readinessWebhook, ...missing }),
+        ).resolves.toEqual({ recorded: false, reason: 'Missing repository identity' });
+      }
+      await expect(findNote()).resolves.toBeNull();
+    });
+
+    it('never replays a stored note that lacks repository identity', async () => {
+      const store = await getExternalReviewReadinessStore(dataRoot);
+      await store.put({
+        productSlug: 'test-product',
+        provider: 'bugbot',
+        targetRevision: 'sha-1',
+        prNumber: 42,
+        receivedAt: '2026-11-12T10:00:00.000Z',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      } as never);
+      stageHandler(async (hooks) => {
+        await hooks.onExternalReviewDeferred?.(deferIntent);
+        return { status: 'deferred', deferredExternalReview: deferIntent };
+      });
+
+      await runJob();
+
+      expect(mockCreateJobIfNoRunning).not.toHaveBeenCalled();
+      await expect(findNote()).resolves.not.toBeNull();
+    });
+
+    it('does not record a readiness note under an unsafe key', async () => {
+      await expect(
+        recordEarlyExternalReviewReadiness({ ...readinessWebhook, targetRevision: '../escape' }),
+      ).resolves.toEqual({ recorded: false, reason: 'Unsafe readiness key' });
+    });
+
+    it('expires the note with max_defer_sec', async () => {
+      const before = Date.now();
+      await recordEarlyExternalReviewReadiness({
+        ...readinessWebhook,
+        product: {
+          ...baseProduct,
+          review: { external: { provider: 'bugbot', max_defer_sec: 120 } },
+        } as Product,
+      });
+      const note = await findNote();
+      expect(Date.parse(note!.expiresAt) - before).toBeGreaterThanOrEqual(120_000);
+      expect(Date.parse(note!.expiresAt) - before).toBeLessThan(125_000);
+    });
   });
 });
 

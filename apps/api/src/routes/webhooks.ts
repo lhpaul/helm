@@ -31,7 +31,9 @@ import {
   clearPendingExternalReview,
   resumePendingExternalReview,
   resumePendingExternalReviewByRevision,
+  recordEarlyExternalReviewReadiness,
   DUPLICATE_TARGET_REVISION,
+  NO_MATCHING_PENDING_EXTERNAL_REVIEW,
   DRAFT_REVIEWER_NO_LONGER_APPLICABLE,
 } from '../services/dispatch-scheduler.js';
 import { ItemAlreadyExistsError, ItemNotFoundError } from '../services/errors.js';
@@ -659,9 +661,18 @@ webhooksRouter.post('/webhooks/github', async (c) => {
         artifactKind = parsed.kind;
         externalId = parsed.externalId;
       } else {
-        console.info(
-          '[webhooks/github] external review readiness ignored — no pending intent for revision',
-        );
+        // No intent yet and no branch to name the item: the provider finished
+        // before the review loop parked its intent (#135). Keep the signal so
+        // the loop can replay it when it defers on this revision.
+        await recordEarlyExternalReviewReadiness({
+          product: config,
+          provider: event.provider,
+          targetRevision: event.targetRevision,
+          prNumber: event.prNumber,
+          owner: event.owner,
+          repo: event.repo,
+          triggeredBy: 'webhook:external-review-ready',
+        });
         return c.json({ processed: true });
       }
 
@@ -726,6 +737,27 @@ webhooksRouter.post('/webhooks/github', async (c) => {
           );
           return c.json({ processed: true });
         }
+        if (
+          artifactKind === 'impl' &&
+          !matchedByRevision &&
+          item?.productSlug === config.product.slug &&
+          isBeforeWorkflowStage(item.currentStage, expectedStage)
+        ) {
+          // The provider can finish right after the implementer's push, before
+          // the item reaches code-review and the loop parks its intent (#135).
+          // Keep the signal for the loop to replay when it defers.
+          await recordEarlyExternalReviewReadiness({
+            product: config,
+            provider: event.provider,
+            targetRevision: event.targetRevision,
+            prNumber,
+            owner: event.owner,
+            repo: event.repo,
+            headRef: event.headRef,
+            triggeredBy: 'webhook:external-review-ready',
+          });
+          return c.json({ processed: true });
+        }
         await clearPendingExternalReview({
           productSlug: config.product.slug,
           externalId,
@@ -755,7 +787,23 @@ webhooksRouter.post('/webhooks/github', async (c) => {
             targetRevision: event.targetRevision,
             triggeredBy: 'webhook:external-review-ready',
           });
-      if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
+      if (
+        !matchedByRevision &&
+        !outcome.scheduled &&
+        outcome.reason === NO_MATCHING_PENDING_EXTERNAL_REVIEW
+      ) {
+        // Same race as above, reached through the head-ref path (#135).
+        await recordEarlyExternalReviewReadiness({
+          product: config,
+          provider: event.provider,
+          targetRevision: event.targetRevision,
+          prNumber,
+          owner: event.owner,
+          repo: event.repo,
+          headRef: event.headRef,
+          triggeredBy: 'webhook:external-review-ready',
+        });
+      } else if (!outcome.scheduled && outcome.reason !== DUPLICATE_TARGET_REVISION) {
         console.info(
           `[webhooks/github] external review readiness did not resume ${externalId}: ${outcome.reason}`,
         );

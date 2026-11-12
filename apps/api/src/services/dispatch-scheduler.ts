@@ -6,7 +6,7 @@ import {
   type DeferredExternalReviewIntent,
   type RunExternalReviewDeps,
 } from '@helm/orchestrator';
-import type { Product } from '@helm/shared';
+import { parseArtifactBranch, type Product } from '@helm/shared';
 import { WORKFLOW_STAGES, type WorkflowStage } from '@helm/workflow';
 import { createRuntimeForProduct } from './runtime-factory.js';
 import { transitionItem } from './item-service.js';
@@ -21,7 +21,13 @@ import {
   type ReviewDispatchIntent,
 } from './review-dispatch-outbox.js';
 import {
+  getExternalReviewReadinessStore,
+  isExternalReviewReadinessKeySafe,
+  type ExternalReviewReadinessNote,
+} from './external-review-readiness.js';
+import {
   GitHubPrError,
+  getPrimaryCodeRepo,
   parseGitHubRepoUrl,
   resolveOpenPrMetadata,
   resolveOpenPrMetadataForRepo,
@@ -33,6 +39,7 @@ import { createGitHubCodexGitHubReviewLoader } from './codex-github-review-loade
 const DISPATCH_UNAVAILABLE = 'Unable to schedule dispatch';
 export const DUPLICATE_TARGET_REVISION = 'Duplicate target revision';
 export const DRAFT_REVIEWER_NO_LONGER_APPLICABLE = 'Draft reviewer no longer applicable';
+export const NO_MATCHING_PENDING_EXTERNAL_REVIEW = 'No matching pending external review';
 /** Parked early-loop intents may be replayed before the item reaches draft stage. */
 const DRAFT_REVIEWER_NOT_YET_APPLICABLE = 'Draft reviewer not yet applicable';
 
@@ -214,13 +221,13 @@ async function persistPendingExternalReview(input: {
   dataRoot: string;
   intent: DeferredExternalReviewIntent;
   triggeredBy: string;
-}): Promise<void> {
+}): Promise<PendingExternalReviewIntent> {
   if (!input.intent.targetRevision) {
     throw new Error('Cannot persist pending external review without target revision');
   }
   const outbox = await getReviewDispatchOutbox(input.dataRoot);
   const now = Date.now();
-  await outbox.put({
+  const stored = await outbox.put({
     kind: 'pending_external_review',
     productSlug: input.intent.productSlug,
     externalId: input.intent.externalId,
@@ -233,6 +240,7 @@ async function persistPendingExternalReview(input: {
     expiresAt: new Date(now + input.intent.maxDeferSec * 1000).toISOString(),
     triggeredBy: input.triggeredBy,
   });
+  return stored as PendingExternalReviewIntent;
 }
 
 /** Exported for webhook handlers that must durable-store before ACK. */
@@ -263,9 +271,9 @@ export async function resumePendingExternalReview(input: {
   const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
   const intent = await outbox.findPendingExternalReview(input);
   if (!intent) {
-    return { scheduled: false, reason: 'No matching pending external review' };
+    return { scheduled: false, reason: NO_MATCHING_PENDING_EXTERNAL_REVIEW };
   }
-  return finalizePendingExternalReviewResume(outbox, intent, input.triggeredBy);
+  return finalizePendingExternalReviewResume(outbox, intent, input.triggeredBy, dataRootFromEnv());
 }
 
 /** Look up a pending intent by SHA without scheduling (for webhook preconditions). */
@@ -288,9 +296,14 @@ export async function resumePendingExternalReviewByRevision(input: {
   const outbox = await getReviewDispatchOutbox(dataRootFromEnv());
   const intent = await outbox.findPendingExternalReviewByRevision(input);
   if (!intent) {
-    return { scheduled: false, reason: 'No matching pending external review' };
+    return { scheduled: false, reason: NO_MATCHING_PENDING_EXTERNAL_REVIEW };
   }
-  const outcome = await finalizePendingExternalReviewResume(outbox, intent, input.triggeredBy);
+  const outcome = await finalizePendingExternalReviewResume(
+    outbox,
+    intent,
+    input.triggeredBy,
+    dataRootFromEnv(),
+  );
   return { ...outcome, externalId: intent.externalId };
 }
 
@@ -364,6 +377,205 @@ async function maybeSweepExpiredPendingExternalReviews(): Promise<void> {
   if (now - lastPendingExternalSweepAt < PENDING_EXTERNAL_SWEEP_MIN_INTERVAL_MS) return;
   lastPendingExternalSweepAt = now;
   await sweepExpiredPendingExternalReviews();
+  await (await getExternalReviewReadinessStore(dataRootFromEnv())).removeExpired();
+}
+
+const DEFAULT_EXTERNAL_MAX_DEFER_SEC = 30 * 60;
+
+function shortRevision(revision: string): string {
+  return revision.slice(0, 12);
+}
+
+function isDraftReviewerSpecialist(specialistId: string | undefined): boolean {
+  return specialistId === 'spec-draft-reviewer' || specialistId === 'plan-draft-reviewer';
+}
+
+/** The repository whose PR an intent reviews: knowledge repo for drafts, code repo otherwise. */
+function expectedRepoForIntent(
+  product: Product,
+  intent: PendingExternalReviewIntent,
+): { owner: string; repo: string } | null {
+  try {
+    return isDraftReviewerSpecialist(intent.specialistId)
+      ? parseGitHubRepoUrl(product.knowledge_repo.url)
+      : getPrimaryCodeRepo(product);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A readiness note only stands in for the webhook when everything the webhook
+ * carried agrees with the intent. The repository is always required; PR number
+ * and head ref are checked when the payload had them (check runs often omit
+ * PR metadata).
+ */
+function readinessNoteMatchesIntent(
+  note: ExternalReviewReadinessNote,
+  intent: PendingExternalReviewIntent,
+  product: Product,
+): boolean {
+  if (
+    note.productSlug !== intent.productSlug ||
+    note.provider !== intent.provider ||
+    note.targetRevision !== intent.targetRevision
+  ) {
+    return false;
+  }
+  if (note.prNumber !== undefined && note.prNumber !== intent.prNumber) return false;
+  // Repository identity is mandatory, as on the webhook's own resume path: a
+  // note without it could otherwise resume an intent the webhook would reject.
+  const expected = expectedRepoForIntent(product, intent);
+  if (!expected || note.owner !== expected.owner || note.repo !== expected.repo) return false;
+  if (note.headRef !== undefined) {
+    const parsed = parseArtifactBranch(note.headRef);
+    const expectedKind =
+      intent.specialistId === 'spec-draft-reviewer'
+        ? 'spec'
+        : intent.specialistId === 'plan-draft-reviewer'
+          ? 'plan'
+          : 'impl';
+    if (parsed?.externalId !== intent.externalId || parsed.kind !== expectedKind) return false;
+  }
+  return true;
+}
+
+/**
+ * Replays a recorded readiness note against a pending intent through the same
+ * resume path the webhook uses, then drops the note. Returns `null` when the
+ * note does not belong to this intent (the note is kept for its own intent).
+ */
+async function replayReadinessNote(input: {
+  dataRoot: string;
+  product: Product;
+  intent: PendingExternalReviewIntent;
+  note: ExternalReviewReadinessNote;
+  triggeredBy: string;
+}): Promise<ScheduleItemDispatchResult | null> {
+  const { intent, note } = input;
+  if (!readinessNoteMatchesIntent(note, intent, input.product)) {
+    console.info(
+      `[dispatch-scheduler] early external review readiness kept — does not match the pending intent for ${intent.externalId}`,
+    );
+    return null;
+  }
+  const outbox = await getReviewDispatchOutbox(input.dataRoot);
+  const outcome = await finalizePendingExternalReviewResume(
+    outbox,
+    intent,
+    input.triggeredBy,
+    input.dataRoot,
+  );
+  const store = await getExternalReviewReadinessStore(input.dataRoot);
+  await store.remove(note);
+  console.info(
+    `[dispatch-scheduler] early external review readiness replayed for ${intent.externalId} (${note.provider} ${shortRevision(note.targetRevision)}): ${
+      outcome.scheduled ? `scheduled ${outcome.jobId}` : outcome.reason
+    }`,
+  );
+  return outcome;
+}
+
+export type RecordEarlyExternalReviewReadinessResult =
+  | { recorded: false; reason: string }
+  | { recorded: true; replayed?: ScheduleItemDispatchResult };
+
+/**
+ * Called by the readiness webhook when no pending intent matched its revision
+ * (#135, TD-002). The provider can finish before the review loop parks its
+ * intent — it starts on the push, and the loop parks only when it enters the
+ * external wait. Rather than dropping the signal, keep a short-lived note the
+ * loop consumes when it defers on this revision.
+ *
+ * Write-then-check: after the note is stored, look for an intent once more. The
+ * loop's defer hook does the mirror image (write intent, then look for a note),
+ * so when the two interleave at least one side sees the other.
+ */
+export async function recordEarlyExternalReviewReadiness(input: {
+  product: Product;
+  provider: string;
+  targetRevision: string;
+  prNumber?: number;
+  owner?: string | null;
+  repo?: string | null;
+  headRef?: string;
+  triggeredBy: string;
+}): Promise<RecordEarlyExternalReviewReadinessResult> {
+  const productSlug = input.product.product.slug;
+  if (!input.owner || !input.repo) {
+    console.info(
+      '[dispatch-scheduler] early external review readiness not recorded — missing repository identity',
+    );
+    return { recorded: false, reason: 'Missing repository identity' };
+  }
+  if (!isExternalReviewReadinessKeySafe(productSlug, input.provider, input.targetRevision)) {
+    console.info('[dispatch-scheduler] early external review readiness not recorded — unsafe key');
+    return { recorded: false, reason: 'Unsafe readiness key' };
+  }
+  const dataRoot = dataRootFromEnv();
+  const maxDeferSec =
+    input.product.review?.external?.max_defer_sec ?? DEFAULT_EXTERNAL_MAX_DEFER_SEC;
+  const now = Date.now();
+  const store = await getExternalReviewReadinessStore(dataRoot);
+  const note = await store.put({
+    productSlug,
+    provider: input.provider,
+    targetRevision: input.targetRevision,
+    ...(input.prNumber !== undefined ? { prNumber: input.prNumber } : {}),
+    owner: input.owner,
+    repo: input.repo,
+    ...(input.headRef ? { headRef: input.headRef } : {}),
+    receivedAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + maxDeferSec * 1000).toISOString(),
+  });
+  console.info(
+    `[dispatch-scheduler] external review readiness recorded before its pending intent (${input.provider} ${shortRevision(input.targetRevision)}) — replayed when the review loop defers on this revision`,
+  );
+
+  const outbox = await getReviewDispatchOutbox(dataRoot);
+  const intent = await outbox.findPendingExternalReviewByRevision({
+    productSlug,
+    provider: input.provider,
+    targetRevision: input.targetRevision,
+  });
+  if (!intent) return { recorded: true };
+  const replayed = await replayReadinessNote({
+    dataRoot,
+    product: input.product,
+    intent,
+    note,
+    triggeredBy: `${input.triggeredBy}:recheck`,
+  });
+  return replayed ? { recorded: true, replayed } : { recorded: true };
+}
+
+/**
+ * Defer-side half of the rendezvous: the loop just upserted its intent, so a
+ * readiness note recorded earlier for this revision is replayed now instead of
+ * waiting for a webhook that already came. Best effort — a failure leaves the
+ * deferral intact (the next readiness webhook or a re-dispatch still resumes it).
+ */
+async function replayEarlyReadinessOnDefer(input: {
+  dataRoot: string;
+  product: Product;
+  intent: PendingExternalReviewIntent;
+}): Promise<void> {
+  try {
+    const store = await getExternalReviewReadinessStore(input.dataRoot);
+    const note = await store.find({
+      productSlug: input.intent.productSlug,
+      provider: input.intent.provider,
+      targetRevision: input.intent.targetRevision,
+    });
+    if (!note) return;
+    await replayReadinessNote({
+      ...input,
+      note,
+      triggeredBy: 'webhook:external-review-ready:early',
+    });
+  } catch (err) {
+    logErrorMetadata('dispatch early readiness replay', err);
+  }
 }
 
 /**
@@ -388,6 +600,8 @@ async function finalizePendingExternalReviewResume(
   outbox: Awaited<ReturnType<typeof getReviewDispatchOutbox>>,
   intent: PendingExternalReviewIntent,
   triggeredBy: string,
+  /** Root the parked review_dispatch is written to — the same one `outbox` reads. */
+  dataRoot: string,
 ): Promise<ScheduleItemDispatchResult> {
   const pendingIntentMatch = {
     kind: 'pending_external_review' as const,
@@ -438,7 +652,7 @@ async function finalizePendingExternalReviewResume(
   // until expiry.
   if (outcome.reason === DRAFT_REVIEWER_NOT_YET_APPLICABLE) {
     await persistPendingReviewDispatch({
-      dataRoot: dataRootFromEnv(),
+      dataRoot,
       productSlug: intent.productSlug,
       externalId: intent.externalId,
       specialistId,
@@ -458,7 +672,7 @@ async function finalizePendingExternalReviewResume(
   // schedules fanout after the conflict clears — do not drop the signal.
   if (outcome.reason === DISPATCH_UNAVAILABLE || heldByRunningJob) {
     await persistPendingReviewDispatch({
-      dataRoot: dataRootFromEnv(),
+      dataRoot,
       productSlug: intent.productSlug,
       externalId: intent.externalId,
       specialistId,
@@ -871,12 +1085,27 @@ export async function runDispatchJob(
             prNumber: intent.prNumber,
             targetRevision,
           });
+          // This pass saw the provider finish, so an early readiness note for
+          // the revision has nothing left to resume (#135).
+          await (
+            await getExternalReviewReadinessStore(ctx.dataRoot)
+          ).remove({
+            productSlug: intent.productSlug,
+            provider: intent.provider,
+            targetRevision,
+          });
         },
         onExternalReviewDeferred: async (intent) => {
-          await persistPendingExternalReview({
+          const stored = await persistPendingExternalReview({
             dataRoot: ctx.dataRoot,
             intent,
             triggeredBy: 'external-review:analysis-pending',
+          });
+          // Readiness may have arrived before any intent existed (#135): replay it.
+          await replayEarlyReadinessOnDefer({
+            dataRoot: ctx.dataRoot,
+            product: ctx.product,
+            intent: stored,
           });
         },
         externalReviewDeps: externalReviewDepsForProduct(ctx.product, ctx.githubToken),

@@ -527,20 +527,25 @@ export async function dispatchStageHandler(
       // ── Transition plan-ready → in-development (after successful clone) ─────
       // Clone succeeded — signal "work in progress" before spawning the agent.
       // If this transition fails the finally block still cleans up the workspace.
-      try {
-        await transition({
-          externalId: item.externalId,
-          toStage: 'in-development',
-          triggeredBy: 'specialist:implementer',
-        });
-      } catch (err) {
-        return {
-          specialistId,
-          status: 'error',
-          costUsd: 0,
-          durationMs: 0,
-          error: `Failed to transition to in-development: ${err instanceof Error ? err.message : String(err)}`,
-        };
+      // Re-dispatching an item already in in-development (e.g. after a cut-off
+      // run) is idempotent: skip the self-transition, which the state machine
+      // rejects on purpose, and let the implementer run again (#142).
+      if (item.currentStage !== 'in-development') {
+        try {
+          await transition({
+            externalId: item.externalId,
+            toStage: 'in-development',
+            triggeredBy: 'specialist:implementer',
+          });
+        } catch (err) {
+          return {
+            specialistId,
+            status: 'error',
+            costUsd: 0,
+            durationMs: 0,
+            error: `Failed to transition to in-development: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
       }
 
       const params = buildImplementerParams(

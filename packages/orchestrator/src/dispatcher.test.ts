@@ -661,6 +661,106 @@ describe('dispatchStageHandler', () => {
     expect(result.prUrl).toBe(expectedPrUrl);
   });
 
+  // ── Idempotent re-dispatch (#142) ───────────────────────────────────────────
+
+  /** Plan fetch succeeds; every other knowledge-repo read is a 404. */
+  const makeImplementerFetchFn = (): FetchFn =>
+    vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/plans/')) {
+        return Promise.resolve({ ok: true, text: () => Promise.resolve('# Plan') } as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      } as Response);
+    });
+
+  /** Clone fakes a .git dir; status is dirty; gh opens `prUrl`. */
+  const makeImplementerRunners = (prUrl: string): { runGit: RunGit; runGh: RunGh } => ({
+    runGit: vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'clone')
+        await mkdir(join(args[args.length - 1]!, '.git'), { recursive: true });
+      if (args[0] === 'status') return { stdout: 'M  src/impl.ts\n' };
+      return { stdout: '' };
+    }),
+    runGh: vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: '[]' };
+      if (args[0] === 'pr' && args[1] === 'create') return { stdout: `${prUrl}\n` };
+      return { stdout: '' };
+    }),
+  });
+
+  it('implementer re-dispatch from in-development skips the self-transition and runs normally (#142)', async () => {
+    transition.mockResolvedValueOnce({ currentStage: 'code-review' });
+    const prUrl = 'https://github.com/test-org/test/pull/12';
+    const { runGit, runGh } = makeImplementerRunners(prUrl);
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'in-development' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        githubToken: 'test-token',
+        specialistId: 'implementer',
+        fetchFn: makeImplementerFetchFn(),
+        runGit,
+        runGh,
+      },
+    );
+
+    expect(result.specialistId).toBe('implementer');
+    expect(result.status).toBe('done');
+    expect(spawnSpy).toHaveBeenCalledOnce();
+    // Only the post-PR transition: no in-development → in-development call.
+    expect(transition).toHaveBeenCalledOnce();
+    expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'code-review' }));
+    expect(transition).not.toHaveBeenCalledWith(
+      expect.objectContaining({ toStage: 'in-development' }),
+    );
+    expect(result.newStage).toBe('code-review');
+    expect(result.prUrl).toBe(prUrl);
+  });
+
+  it('implementer dispatch from an invalid stage still fails on the in-development transition (#142)', async () => {
+    transition.mockRejectedValueOnce(
+      new Error(
+        "Cannot transition from 'code-review' to 'in-development'. Valid next stages: ['remediation']",
+      ),
+    );
+    const { runGit, runGh } = makeImplementerRunners('https://github.com/test-org/test/pull/13');
+    const runtime = new MockAgentRuntime({ messages: [] });
+    const spawnSpy = vi.spyOn(runtime, 'spawn');
+
+    const result = await dispatchStageHandler(
+      { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
+      makeProduct(),
+      runtime,
+      transition as ItemTransitionFn,
+      {
+        workdir,
+        githubToken: 'test-token',
+        specialistId: 'implementer',
+        fetchFn: makeImplementerFetchFn(),
+        runGit,
+        runGh,
+      },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain(
+      "Failed to transition to in-development: Cannot transition from 'code-review'",
+    );
+    expect(transition).toHaveBeenCalledOnce();
+    expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'in-development' }));
+    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(runGh).not.toHaveBeenCalled();
+  });
+
   // ── Product-context materialization (ADR-030) ──────────────────────────────
   // The spec-writer / plan-writer scratch worktree gets the full README + winning
   // agent instruction file written to disk before the agent spawns; the

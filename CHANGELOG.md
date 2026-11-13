@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Type-check the monorepo in CI (#141):** `pnpm build` failed because a
+  `code-review-loop.test.ts` fixture declared with `as const` had
+  `blockers: readonly []`, which is not assignable to `ExternalReviewResult`.
+  The fixture now uses `satisfies ExternalReviewResult`; the public type is
+  unchanged. Every workspace package has a `typecheck` script (`tsc --noEmit`)
+  and the root `pnpm lint`, which CI already runs, now also runs `typecheck`,
+  so a type error fails CI even when Vitest passes.
+
 - **Keep external-review readiness that arrives before the pending intent
   (#135, TD-002):** a provider can finish while the review loop is still in its
   internal fan-out, before it parks its pending intent. The readiness webhook

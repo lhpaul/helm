@@ -7,6 +7,7 @@
     "build": "tsc --noEmit && bun build src/index.ts --outdir dist --target bun",
     "test": "vitest run",
     "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
     "sync": "bun run src/scripts/sync.ts",
     "sync-env": "bash scripts/sync-env-from-1password.sh",
     "writeback-backfill": "bun run src/scripts/writeback-backfill.ts",

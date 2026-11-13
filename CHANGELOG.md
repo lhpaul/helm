@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Idempotent implementer re-dispatch (#142):** re-dispatching the
+  implementer for an item already in `in-development` (for example after a
+  cut-off run) no longer fails with `Cannot transition from 'in-development'
+to 'in-development'`. The dispatcher skips that self-transition and runs the
+  implementer normally. The state machine is unchanged, and dispatching from
+  any other invalid stage still fails as before.
+
 - **Type-check the monorepo in CI (#141):** `pnpm build` failed because a
   `code-review-loop.test.ts` fixture declared with `as const` had
   `blockers: readonly []`, which is not assignable to `ExternalReviewResult`.

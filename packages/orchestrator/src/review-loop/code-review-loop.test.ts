@@ -106,6 +106,7 @@ import {
 import { provisionReviewerWorkspace } from '../specialists/code-workspace.js';
 import { fetchSpecForPlan } from '../specialists/fetch-product-context.js';
 import { runExternalReviewIfConfigured } from '../external-review/run.js';
+import type { ExternalReviewResult } from '../external-review/types.js';
 import { postPRComment, upsertPRCommentByMarker } from '../specialists/pr-helpers.js';
 import { REVIEW_LOOP_ESCALATION_MARKER } from './escalation-comment.js';
 import { buildAdvisorySummaryRows, upsertReviewLoopSummaryComment } from './summary.js';
@@ -1097,7 +1098,7 @@ describe('runCodeReviewLoop', () => {
       reason: 'unavailable',
       providerReason: 'head_mismatch',
     } as const;
-    const clean = { status: 'clean', blockers: [], advisories: [] } as const;
+    const clean = { status: 'clean', blockers: [], advisories: [] } satisfies ExternalReviewResult;
     const heads = (...shas: string[]) => {
       const queue = [...shas];
       return vi.fn(async () => ({ stdout: `${queue.length > 1 ? queue.shift() : queue[0]}\n` }));

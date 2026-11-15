@@ -13,7 +13,7 @@ Persona objetivo: CTO de startup chica que sostiene calidad con poco equipo + ag
 La visión, el diagnóstico, la arquitectura, el scope de v0, el setup y el roadmap son notas privadas del maintainer. No están en este repo. Quien tenga acceso a esas notas debe leerlas antes de tomar decisiones técnicas. Cubren:
 
 - visión del producto
-- diagnóstico: análisis cruzado de agent-hq, ai-dev-framework-template y Zeki UX Lab
+- diagnóstico: análisis cruzado de agent-hq, ai-dev-framework-template y un UX Lab interno previo
 - arquitectura: componentes, modelo de dominio, máquina de estados, capas de persistencia
 - scope exacto de v0: qué entra, qué no, decisiones cerradas
 - setup: credenciales y software requeridos
@@ -23,7 +23,7 @@ La visión, el diagnóstico, la arquitectura, el scope de v0, el setup y el road
 
 ## Repositorios relacionados (referencias)
 
-- `agent-hq` (checkout hermano) — herramienta existente en MOME. Fuente de patrones técnicos a heredar (orquestador, terminal bridge, fan-out reviewers, cost tracking). Leer su `CLAUDE.md` antes de implementar cualquier patrón que ya esté resuelto ahí.
+- `agent-hq` (checkout hermano) — herramienta interna previa. Fuente de patrones técnicos a heredar (orquestador, terminal bridge, fan-out reviewers, cost tracking). Leer su `CLAUDE.md` antes de implementar cualquier patrón que ya esté resuelto ahí.
 - [ai-dev-framework-template](https://github.com/lhpaul/ai-dev-framework-template) — template del que Helm hereda Spec → Plan → Code, REVIEW.md, branch naming, CHANGELOG. Leer su `AGENTS.md` para entender la filosofía protocol-first.
 - [helm-knowledge](https://github.com/lhpaul/helm-knowledge) — knowledge repo del propio Helm: `.helm/product.yaml`, specs, plans, ADRs, retrospectivas. En local, checkout hermano `helm-knowledge/`.
 
@@ -51,30 +51,27 @@ Bun lee `.env` del directorio de trabajo del proceso — que es `apps/api/` cuan
 Un solo doc (`.env.example`) + un archivo de input por Product. `sync-env` inyecta secretos y escribe `.env`.
 
 ```bash
-# Create apps/api/.env.leasity-tenants or .env.helm from the blocks in .env.example
-pnpm sync-env -- leasity-tenants   # Arriendo Fácil (Linear)
-# pnpm sync-env -- helm            # Helm self-dogfood (GitHub Projects)
+# Create apps/api/.env.<product> from the blocks in .env.example
+pnpm sync-env -- <product>   # accepted slugs are listed in the sync-env script
+pnpm sync-env -- helm        # Helm self-dogfood (GitHub Projects)
 pnpm dev
 ```
 
 Requisitos: [1Password CLI](https://developer.1password.com/docs/cli/get-started/) (`op`) y sesión activa (`op signin`).
 
-| Archivo                | Commitear | Contenido                            |
-| ---------------------- | --------- | ------------------------------------ |
-| `.env.example`         | sí        | Doc: variables + cómo usar 1Password |
-| `.env.leasity-tenants` | no        | Input sync-env para Arriendo Fácil   |
-| `.env.helm`            | no        | Input sync-env para Helm-the-product |
-| `.env`                 | no        | Generado por `sync-env`; lo lee Bun  |
+| Archivo          | Commitear | Contenido                                    |
+| ---------------- | --------- | -------------------------------------------- |
+| `.env.example`   | sí        | Doc: variables + cómo usar 1Password         |
+| `.env.<product>` | no        | Input sync-env de un Product (refs `op://…`) |
+| `.env.helm`      | no        | Input sync-env para Helm-the-product         |
+| `.env`           | no        | Generado por `sync-env`; lo lee Bun          |
 
-**1Password layout**
+Los inputs usan referencias `op://<vault>/<item>/<field>` para el PAT de GitHub,
+el secret del webhook de GitHub y, solo en Products con Linear, la API key y el
+secret del webhook de Linear. El layout concreto de vaults e items es del
+operador y no se documenta en este repo.
 
-| Ref                                                  | Uso                              |
-| ---------------------------------------------------- | -------------------------------- |
-| `op://Helm/helm/github-token`                        | PAT GitHub (Projects + repo API) |
-| `op://Leasity/leasity-tenants/linear-api-key`        | Linear LEA (solo Product AF)     |
-| `op://Leasity/leasity-tenants/github-webhook-secret` | Webhook GitHub → Helm (AF)       |
-
-Helm-the-product usa **GitHub Projects**, no Linear — no hay Linear API key en el vault `Helm`.
+Helm-the-product usa **GitHub Projects**, no Linear — no necesita Linear API key.
 
 ### Variables
 
@@ -83,7 +80,7 @@ Helm-the-product usa **GitHub Projects**, no Linear — no hay Linear API key en
 | `HELM_KNOWLEDGE_REPO_PATH` | Path absoluto al knowledge repo del Product (donde vive `.helm/product.yaml`) |
 | `HELM_DATA_DIR`            | Path absoluto a `data/` operativo                                             |
 | `GITHUB_TOKEN`             | PAT GitHub                                                                    |
-| `LINEAR_API_KEY`           | Solo Arriendo Fácil (`issue_tracker.provider: linear`)                        |
+| `LINEAR_API_KEY`           | Solo Products con `issue_tracker.provider: linear`                            |
 | `GITHUB_WEBHOOK_SECRET`    | Secret del webhook GitHub hacia Helm                                          |
 
 Setup manual sin 1Password: escribir `.env` a mano con valores en claro (no recomendado para secretos).
@@ -107,7 +104,7 @@ No centralizamos en root para no necesitar dotenv-cli overhead.
 4. Knowledge repo separado por producto.
 5. 5 specialists en MVP: spec-writer, plan-writer, implementer, 3 reviewers, remediation.
 6. Open source desde día uno (Apache 2.0).
-7. Piloto MOME contra repo de prueba primero.
+7. Piloto inicial contra repo de prueba primero.
 
 ## Convenciones
 

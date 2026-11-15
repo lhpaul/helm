@@ -6,8 +6,7 @@ LEA-104's existing branch is cleaned up separately by the operator (see the
 **Severity:** HIGH — code-reviewer findings silently survive when the
 code-reviewer does not self-apply fixes; the PR looks remediated but the
 code-review HIGHs remain.
-**Discovered:** 2026-06-01, Arriendo Fácil pilot, item LEA-104, PR
-`lhpaul/leasity-tenants#3`.
+**Discovered:** 2026-06-01, private-product pilot, item LEA-104, pilot PR #3.
 **Components:** `packages/orchestrator/src/specialists/reviewer-fanout.ts`,
 `packages/orchestrator/src/specialists/remediation.ts`,
 `packages/orchestrator/src/specialists/code-workspace.ts`

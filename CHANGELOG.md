@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Generic product slugs in `sync-env` and env templates (#146):**
+  `pnpm sync-env -- <product>` now accepts any slug that matches
+  `^[a-z0-9][a-z0-9-]*$` (at most 64 characters) instead of a fixed list, and
+  rejects anything else, plus the reserved `example`, before calling
+  1Password. Existing `apps/api/.env.<product>` inputs keep working with the
+  same command; no migration is needed. `apps/api/.env.example` now documents
+  a generic product block with placeholder `op://<vault>/<item>/<field>`
+  references. Test fixtures and a `.gitignore` comment no longer carry private
+  product detail; ignored patterns are unchanged.
+
 - **Consolidate `externalId` validation in `@helm/shared` (#129, TD-001):**
   `EXTERNAL_ID_REGEX` and `isValidExternalId()` now live once in
   `@helm/shared`; `apps/api` and `@helm/orchestrator` reuse them instead of

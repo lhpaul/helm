@@ -43,15 +43,15 @@ describe('selectContractValidationFiles', () => {
 
 describe('parsePullRequestUrl', () => {
   it('parses owner/repo/number', () => {
-    expect(parsePullRequestUrl('https://github.com/lhpaul/leasity-tenants/pull/18')).toEqual({
-      owner: 'lhpaul',
-      repo: 'leasity-tenants',
+    expect(parsePullRequestUrl('https://github.com/example-org/example-repo/pull/18')).toEqual({
+      owner: 'example-org',
+      repo: 'example-repo',
       number: '18',
     });
   });
 
   it('returns null for non-PR URLs', () => {
-    expect(parsePullRequestUrl('https://github.com/lhpaul/leasity-tenants')).toBeNull();
+    expect(parsePullRequestUrl('https://github.com/example-org/example-repo')).toBeNull();
   });
 });
 

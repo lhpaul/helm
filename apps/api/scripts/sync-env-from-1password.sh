@@ -3,8 +3,12 @@
 # and writes apps/api/.env.
 #
 # Usage:
-#   pnpm sync-env -- leasity-tenants
+#   pnpm sync-env -- <product>
 #   pnpm sync-env -- helm
+#
+# <product> must match ^[a-z0-9][a-z0-9-]*$ (at most 64 characters) and names
+# the input file apps/api/.env.<product>. "example" is reserved for the
+# committed template.
 set -euo pipefail
 
 API_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,7 +21,7 @@ fi
 
 usage() {
   echo "Usage: pnpm sync-env -- <product>" >&2
-  echo "  product: leasity-tenants | helm" >&2
+  echo "  product: lowercase slug matching ^[a-z0-9][a-z0-9-]*\$ (max 64 chars), e.g. helm" >&2
   echo "  Reads apps/api/.env.<product> and writes apps/api/.env" >&2
 }
 
@@ -26,14 +30,25 @@ if [[ -z "$PRODUCT" ]]; then
   exit 1
 fi
 
+# Validate strictly before the slug builds a path or reaches the secrets manager.
+# Explicit character lists (not ranges) keep the check independent of locale.
+invalid_slug() {
+  echo "Error: invalid product slug." >&2
+  usage
+  exit 1
+}
 case "$PRODUCT" in
-  leasity-tenants | helm) ;;
-  *)
-    echo "Error: unknown product '${PRODUCT}'" >&2
-    usage
-    exit 1
-    ;;
+  -* | *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) invalid_slug ;;
 esac
+if ((${#PRODUCT} > 64)); then
+  invalid_slug
+fi
+
+if [[ "$PRODUCT" == "example" ]]; then
+  echo "Error: 'example' is reserved for the .env.example template." >&2
+  usage
+  exit 1
+fi
 
 INPUT="${API_DIR}/.env.${PRODUCT}"
 

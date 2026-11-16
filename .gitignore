@@ -67,7 +67,7 @@ web_modules/
 
 # dotenv environment variable files
 # Committed: .env.example only (docs).
-# Local inputs for sync-env: .env.helm, .env.leasity-tenants (gitignored).
+# Local inputs for sync-env: .env.<product> (gitignored).
 # Generated: .env (gitignored).
 .env
 .env.*

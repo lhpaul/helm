@@ -52,7 +52,7 @@ Un solo doc (`.env.example`) + un archivo de input por Product. `sync-env` inyec
 
 ```bash
 # Create apps/api/.env.<product> from the blocks in .env.example
-pnpm sync-env -- <product>   # accepted slugs are listed in the sync-env script
+pnpm sync-env -- <product>   # slug: ^[a-z0-9][a-z0-9-]*$, max 64 chars
 pnpm sync-env -- helm        # Helm self-dogfood (GitHub Projects)
 pnpm dev
 ```

@@ -445,5 +445,18 @@ to 'in-development'`. The dispatcher skips that self-transition and runs the
   - `resolveStatus(agentResult, handlerOutcome)` — new shared helper in `dispatcher.ts`. Rules: agent cancelled/errored → propagate directly; agent done + handler `error` field defined → `'error'`; agent done + handler succeeded → `'done'`. The helper is called in all three specialist branches (spec-writer, plan-writer, implementer).
   - `dispatcher.test.ts` — updated one existing assertion (spec file not created was already an error path but wrongly expected `'done'`); added 6 new test cases: spec-writer transition fails, spec-writer publish clone fails, plan-writer plan file not written, plan-writer publish clone fails, implementer no file changes (the exact e2e scenario that surfaced the bug), and implementer PR opened but code-review transition fails (verifies `prUrl` is preserved in error result).
 
+### Security
+
+- **API listens on `127.0.0.1` by default (#159):** the Bun API server set no
+  `hostname`, so it listened on every interface while having no
+  authentication. It now binds to loopback unless `HELM_API_HOST` sets another
+  interface (blank values use the default); a non-loopback host logs a warning
+  at startup. The startup log shows the real bind address, and the Vite dev
+  proxy follows `HELM_API_HOST` (default `127.0.0.1:3001`). **Impact on existing instances:** access from
+  the same machine (including a local tunnel or reverse proxy that targets
+  `127.0.0.1:3001`) keeps working. Instances reached from another machine stop
+  answering until they set `HELM_API_HOST` (for example `0.0.0.0`) and
+  restart. See `docs/local-dev.md`.
+
 [Unreleased]: https://github.com/lhpaul/helm/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/lhpaul/helm/releases/tag/v0.1.0

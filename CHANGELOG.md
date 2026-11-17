@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authentication. It now binds to loopback unless `HELM_API_HOST` sets another
   interface (blank values use the default); a non-loopback host logs a warning
   at startup. The startup log shows the real bind address, and the Vite dev
-  proxy targets `127.0.0.1:3001`. **Impact on existing instances:** access from
+  proxy follows `HELM_API_HOST` (default `127.0.0.1:3001`). **Impact on existing instances:** access from
   the same machine (including a local tunnel or reverse proxy that targets
   `127.0.0.1:3001`) keeps working. Instances reached from another machine stop
   answering until they set `HELM_API_HOST` (for example `0.0.0.0`) and

@@ -1,6 +1,7 @@
 import { createBunWebSocket } from 'hono/bun';
 import { app } from './app.js';
 import { getJobStore } from './services/index.js';
+import { buildListenConfig, formatListenUrl } from './server-config.js';
 
 const { upgradeWebSocket, websocket } = createBunWebSocket();
 
@@ -16,7 +17,10 @@ app.get(
   })),
 );
 
-console.log('API running at http://localhost:3001');
+// Loopback by default; HELM_API_HOST overrides it explicitly (#159).
+const listen = buildListenConfig(process.env);
+if (listen.warning) console.warn(listen.warning);
+console.log(`API running at ${formatListenUrl(listen)}`);
 
 // Reconcile orphaned jobs on startup (fire and forget).
 // Any job that was 'running' when the server last shut down is marked 'error'.
@@ -32,7 +36,8 @@ void getJobStore()
   });
 
 export default {
-  port: 3001,
+  hostname: listen.hostname,
+  port: listen.port,
   fetch: app.fetch,
   websocket,
   // Dispatch now returns in ms (async job); this timeout protects other

@@ -1,5 +1,20 @@
 # Local Dev Operations
 
+## API bind address
+
+The API (`apps/api`, port 3001) listens on `127.0.0.1` by default, so only
+processes on the same machine can reach it. The API has no authentication.
+
+To listen on another interface, set `HELM_API_HOST` in the API environment and
+restart it, for example `HELM_API_HOST=0.0.0.0` (all IPv4 interfaces) or a LAN
+address. Empty values use the default. When the host is not a loopback address
+the API logs a warning at startup. Prefer a firewall or an authenticated proxy
+over exposing the API directly.
+
+Anything that forwards to the API on the same machine (the Vite dev proxy, a
+tunnel, a reverse proxy) should target `127.0.0.1:3001`. A `localhost` target
+can resolve to `::1` first and miss an IPv4-only listener.
+
 ## Recover A Missed Artifact PR Merge
 
 Helm normally advances an item when GitHub delivers a merged pull request webhook

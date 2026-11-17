@@ -13,14 +13,6 @@ import {
   buildFindingsByKind,
 } from './code-review-loop.js';
 
-// Head lookups must never reach the real `gh`; default to "unresolvable" (#117).
-vi.mock('../specialists/git-helpers.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../specialists/git-helpers.js')>()),
-  defaultRunGh: vi.fn(async () => {
-    throw new Error('gh unavailable in tests');
-  }),
-}));
-
 vi.mock('../specialists/reviewer-fanout.js', () => ({
   fanoutReviewers: vi.fn(),
   shouldRemediate: vi.fn(),
@@ -48,13 +40,6 @@ vi.mock('../specialists/review-adjudicator.js', () => ({
   buildReviewAdjudicatorParams: vi.fn(),
   handleReviewAdjudicatorResult: vi.fn(),
 }));
-vi.mock('../specialists/fetch-product-context.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../specialists/fetch-product-context.js')>();
-  return {
-    ...actual,
-    fetchSpecForPlan: vi.fn().mockResolvedValue(null),
-  };
-});
 vi.mock('../specialists/code-workspace.js', () => ({
   provisionReviewerWorkspace: vi.fn().mockResolvedValue({
     workspacePath: '/tmp/ws',
@@ -74,28 +59,6 @@ vi.mock('../external-review/run.js', () => ({
     return { owner: match[1], repo: match[2], prNumber: Number(match[3]) };
   }),
 }));
-vi.mock('../specialists/pr-helpers.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../specialists/pr-helpers.js')>();
-  return {
-    ...actual,
-    postPRComment: vi.fn().mockResolvedValue(undefined),
-    upsertPRCommentByMarker: vi.fn().mockResolvedValue(undefined),
-  };
-});
-vi.mock('./false-positives.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./false-positives.js')>();
-  return {
-    ...actual,
-    fetchFalsePositivesCatalog: vi.fn().mockResolvedValue([]),
-  };
-});
-vi.mock('./summary.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./summary.js')>();
-  return {
-    ...actual,
-    upsertReviewLoopSummaryComment: vi.fn().mockResolvedValue(undefined),
-  };
-});
 
 import { fanoutReviewers, shouldRemediate } from '../specialists/reviewer-fanout.js';
 import { buildRemediationParams, handleRemediationResult } from '../specialists/remediation.js';
@@ -121,6 +84,27 @@ import type {
   ReviewLoopLedgerEntry,
   ReviewLoopLedgerUpdate,
 } from './cumulative-ledger.js';
+import * as gitHelpersModule from '../specialists/git-helpers.js';
+import * as fetchProductContextModule from '../specialists/fetch-product-context.js';
+import * as prHelpersModule from '../specialists/pr-helpers.js';
+import * as falsePositivesModule from './false-positives.js';
+import * as summaryModule from './summary.js';
+
+// Partial mocks use vi.spyOn on the real modules instead of
+// vi.mock(path, importOriginal): importOriginal/importActual request the module
+// under its absolute path while normal imports use the root-relative id, which
+// made vitest 2.1.9 transform and rewrite the same cache file while other
+// workers read it (#152). Spies are installed once, before any test runs.
+const actualFetchFalsePositivesCatalog = falsePositivesModule.fetchFalsePositivesCatalog;
+// Head lookups must never reach the real `gh`; default to "unresolvable" (#117).
+vi.spyOn(gitHelpersModule, 'defaultRunGh').mockImplementation(async () => {
+  throw new Error('gh unavailable in tests');
+});
+vi.spyOn(fetchProductContextModule, 'fetchSpecForPlan').mockResolvedValue(null);
+vi.spyOn(prHelpersModule, 'postPRComment').mockResolvedValue(undefined);
+vi.spyOn(prHelpersModule, 'upsertPRCommentByMarker').mockResolvedValue(undefined);
+vi.spyOn(falsePositivesModule, 'fetchFalsePositivesCatalog').mockResolvedValue([]);
+vi.spyOn(summaryModule, 'upsertReviewLoopSummaryComment').mockResolvedValue(undefined);
 
 const PR_URL = 'https://github.com/o/r/pull/42';
 
@@ -1762,11 +1746,7 @@ describe('runCodeReviewLoop', () => {
   ])(
     'suppresses pair-spec-and-plan-files through the real fetched catalog merge for $stage',
     async ({ kind, stage, path }) => {
-      const actualFalsePositives =
-        await vi.importActual<typeof import('./false-positives.js')>('./false-positives.js');
-      vi.mocked(fetchFalsePositivesCatalog).mockImplementation(
-        actualFalsePositives.fetchFalsePositivesCatalog,
-      );
+      vi.mocked(fetchFalsePositivesCatalog).mockImplementation(actualFetchFalsePositivesCatalog);
       const fetchFn = vi.fn(async () => {
         return new Response(
           [

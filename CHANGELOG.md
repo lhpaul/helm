@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Rare missing `git-helpers` exports in tests under load (#152):** vitest
+  2.1.9 (`pool: forks`) could rewrite a transformed-module cache file
+  (truncate, then write) while another worker was reading it, so that worker
+  ran an empty module and every export was `undefined`. The rewrite happened
+  when `importOriginal`/`importActual` requested a module under its absolute
+  path while other imports used the root-relative id. A pnpm patch backports
+  the upstream atomic write (vitest-dev/vitest#7531) without changing any
+  dependency version (remove it when moving to vitest 3), and
+  `code-review-loop.test.ts` now uses `vi.spyOn` instead of `importOriginal`
+  partial mocks. Test-only; no runtime or CI changes.
+
 - **Flaky reviewer-fanout cleanup tests under load (#149):** four
   `dispatcher.test.ts` reviewer-fanout tests checked workspace cleanup by
   listing the shared `os.tmpdir()` for any `helm-review-issue_1-*` entry, so

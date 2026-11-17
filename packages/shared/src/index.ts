@@ -1,5 +1,5 @@
 // tipos y utilidades compartidas entre @helm/api y @helm/web
-export const HELM_VERSION = '0.0.0';
+export const HELM_VERSION = '0.1.0';
 export * from './config/index.js';
 export { EXTERNAL_ID_REGEX, isValidExternalId } from './external-id.js';
 // Artifact branch naming convention — shared between orchestrator (spec-publisher,

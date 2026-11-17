@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -1777,8 +1778,11 @@ describe('dispatchStageHandler > early-stage remediators', () => {
 describe('dispatchStageHandler > reviewer-fanout', () => {
   let workdir: string;
   let transition: ReturnType<typeof vi.fn>;
+  /** Clone destinations this test's runGit saw (one per provisioned workspace). */
+  let clonedWorkspaces: string[];
 
   beforeEach(async () => {
+    clonedWorkspaces = [];
     workdir = join(tmpdir(), `dispatcher-rf-${randomUUID()}`);
     await mkdir(workdir, { recursive: true });
     transition = vi.fn().mockResolvedValue({ currentStage: 'code-review' });
@@ -1822,15 +1826,25 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === 'clone') {
         const dest = args[args.length - 1]!;
+        clonedWorkspaces.push(dest);
         await mkdir(join(dest, '.git'), { recursive: true });
       }
       return { stdout: '' };
     });
 
-  /** Lists leftover reviewer-workspace dirs in tmpdir for this item. */
-  const listReviewWorkspaces = async (): Promise<string[]> => {
-    const entries = await readdir(tmpdir());
-    return entries.filter((e) => e.startsWith('helm-review-issue_1-')).sort();
+  /**
+   * Asserts that every workspace this test provisioned, and its sibling
+   * `-artifacts` dir, was removed. Checks only this test's own paths: listing
+   * the shared os.tmpdir() by prefix also sees workspaces created at the same
+   * time by other test files or other test processes, which made these
+   * assertions flaky under load (#149).
+   */
+  const expectProvisionedWorkspacesRemoved = (): void => {
+    expect(clonedWorkspaces.length).toBeGreaterThan(0);
+    for (const workspace of clonedWorkspaces) {
+      expect(existsSync(workspace)).toBe(false);
+      expect(existsSync(`${workspace}-artifacts`)).toBe(false);
+    }
   };
 
   afterEach(async () => {
@@ -2069,9 +2083,9 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
       expect.objectContaining({ toStage: 'code-review' }),
     );
 
-    // Teardown: the remediation workspace AND its sibling artifacts dir
-    // (both match the helm-review-issue_1- prefix) are removed (ADR-025 cleanup).
-    expect(await listReviewWorkspaces()).toHaveLength(0);
+    // Teardown: the remediation workspace AND its sibling artifacts dir are
+    // removed (ADR-025 cleanup).
+    expectProvisionedWorkspacesRemoved();
   });
 
   it('gate active + remediation done BUT fan-out errored: status error (coverage gap surfaced), still transitions back', async () => {
@@ -2216,7 +2230,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
       }),
     );
     expect(result.newStage).toBe('code-review');
-    expect(await listReviewWorkspaces()).toHaveLength(0);
+    expectProvisionedWorkspacesRemoved();
   });
 
   it('gate active + provision fails: status error, NO transition, no agent, no workspace leftover', async () => {
@@ -2227,11 +2241,12 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     // runGit that fails the clone — provisionReviewerWorkspace throws and cleans
     // up its own workspace before propagating.
     const failingRunGit: RunGit = vi.fn().mockImplementation(async (args: string[]) => {
-      if (args[0] === 'clone') throw new Error('fatal: Remote branch not found');
+      if (args[0] === 'clone') {
+        clonedWorkspaces.push(args[args.length - 1]!);
+        throw new Error('fatal: Remote branch not found');
+      }
       return { stdout: '' };
     });
-
-    const before = await listReviewWorkspaces();
 
     const result = await dispatchStageHandler(
       { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
@@ -2248,8 +2263,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     expect(spawnSpy).not.toHaveBeenCalled();
     expect(handleRemediationResult).not.toHaveBeenCalled();
     // No workspace left behind.
-    const after = await listReviewWorkspaces();
-    expect(after).toEqual(before);
+    expectProvisionedWorkspacesRemoved();
   });
 
   it('gate active + transition to remediation fails after provision: status error, workspace cleaned up', async () => {
@@ -2258,8 +2272,6 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     vi.mocked(shouldRemediate).mockReturnValueOnce(true);
     // First transition (code-review → remediation) rejects after the clone succeeded.
     transition.mockRejectedValueOnce(new Error('transition denied'));
-
-    const before = await listReviewWorkspaces();
 
     const result = await dispatchStageHandler(
       { externalId: 'issue_1', productSlug: 'test-product', currentStage: 'code-review' },
@@ -2276,8 +2288,7 @@ describe('dispatchStageHandler > reviewer-fanout', () => {
     expect(transition).toHaveBeenCalledWith(expect.objectContaining({ toStage: 'remediation' }));
     expect(spawnSpy).not.toHaveBeenCalled();
     // The provisioned workspace was removed by the finally block.
-    const after = await listReviewWorkspaces();
-    expect(after).toEqual(before);
+    expectProvisionedWorkspacesRemoved();
   });
 
   it('re-runs fan-out after remediation when blockers remain (ADR-036 internal loop)', async () => {

@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Flaky reviewer-fanout cleanup tests under load (#149):** four
+  `dispatcher.test.ts` reviewer-fanout tests checked workspace cleanup by
+  listing the shared `os.tmpdir()` for any `helm-review-issue_1-*` entry, so
+  they also saw workspaces created at the same time by other test files or
+  other `pnpm test` processes. They now check only the workspace paths the
+  test itself provisioned (and their `-artifacts` siblings). Test-only change;
+  runtime behavior is unchanged.
+
 - **Idempotent implementer re-dispatch (#142):** re-dispatching the
   implementer for an item already in `in-development` (for example after a
   cut-off run) no longer fails with `Cannot transition from 'in-development'

@@ -3,3 +3,7 @@ packages:
   - 'packages/*'
 allowBuilds:
   esbuild: true
+# Backport of vitest PR #7531 (atomic cacheFs writes) into vitest 2.1.9 to stop
+# rare empty-module reads in forked test workers (#152). Remove when upgrading to vitest 3.
+patchedDependencies:
+  vitest@2.1.9: patches/vitest@2.1.9.patch

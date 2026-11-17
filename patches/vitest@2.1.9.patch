@@ -1,0 +1,49 @@
+diff --git a/dist/chunks/resolveConfig.rBxzbVsl.js b/dist/chunks/resolveConfig.rBxzbVsl.js
+index 8f3732f..444120d 100644
+--- a/dist/chunks/resolveConfig.rBxzbVsl.js
++++ b/dist/chunks/resolveConfig.rBxzbVsl.js
+@@ -6592,6 +6592,21 @@ async function groupFilesByEnv(files) {
+ }
+ 
+ const created = /* @__PURE__ */ new Set();
++// Backport of https://github.com/vitest-dev/vitest/pull/7531 (helm#152): write the
++// transformed-module cache with write-then-rename so a worker never reads a file
++// that is being rewritten (truncated). Drop this patch when moving to vitest 3.
++async function atomicWriteFile(dir, realFilePath, data) {
++  const tmpFilePath = join(dir, `.tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`);
++  try {
++    await writeFile(tmpFilePath, data, "utf-8");
++    await promises$1.rename(tmpFilePath, realFilePath);
++  } finally {
++    try {
++      await promises$1.unlink(tmpFilePath);
++    } catch {
++    }
++  }
++}
+ const promises = /* @__PURE__ */ new Map();
+ function createMethodsRPC(project, options = {}) {
+   const ctx = project.ctx;
+@@ -6628,17 +6643,17 @@ function createMethodsRPC(project, options = {}) {
+       const dir = join(project.tmpDir, transformMode);
+       const name = hash("sha1", id, "hex");
+       const tmp = join(dir, name);
++      if (!created.has(dir)) {
++        fs.mkdirSync(dir, { recursive: true });
++        created.add(dir);
++      }
+       if (promises.has(tmp)) {
+         await promises.get(tmp);
+         return { id: tmp };
+       }
+-      if (!created.has(dir)) {
+-        await mkdir(dir, { recursive: true });
+-        created.add(dir);
+-      }
+       promises.set(
+         tmp,
+-        writeFile(tmp, code, "utf-8").finally(() => promises.delete(tmp))
++        atomicWriteFile(dir, tmp, code).catch(() => writeFile(tmp, code, "utf-8")).finally(() => promises.delete(tmp))
+       );
+       await promises.get(tmp);
+       Object.assign(result, { id: tmp });

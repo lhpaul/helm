@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  vitest@2.1.9: 8f19a19f4ce9065bb865582a7c201594169a7d500c8b9c7d8d4684d57019f37c
+
 importers:
 
   .:
@@ -40,7 +43,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^2.1.9
-        version: 2.1.9(@types/node@25.7.0)(jsdom@29.1.1)(lightningcss@1.32.0)
+        version: 2.1.9(patch_hash=8f19a19f4ce9065bb865582a7c201594169a7d500c8b9c7d8d4684d57019f37c)(@types/node@25.7.0)(jsdom@29.1.1)(lightningcss@1.32.0)
 
   apps/api:
     dependencies:
@@ -111,7 +114,7 @@ importers:
         version: 4.7.0(vite@5.4.21(@types/node@25.7.0)(lightningcss@1.32.0))
       '@vitest/coverage-v8':
         specifier: ^2.1.9
-        version: 2.1.9(vitest@2.1.9(@types/node@25.7.0)(jsdom@29.1.1)(lightningcss@1.32.0))
+        version: 2.1.9(vitest@2.1.9(patch_hash=8f19a19f4ce9065bb865582a7c201594169a7d500c8b9c7d8d4684d57019f37c)(@types/node@25.7.0)(jsdom@29.1.1)(lightningcss@1.32.0))
       jsdom:
         specifier: ^29.1.1
         version: 29.1.1
@@ -123,7 +126,7 @@ importers:
         version: 5.4.21(@types/node@25.7.0)(lightningcss@1.32.0)
       vitest:
         specifier: ^2.1.9
-        version: 2.1.9(@types/node@25.7.0)(jsdom@29.1.1)(lightningcss@1.32.0)
+        version: 2.1.9(patch_hash=8f19a19f4ce9065bb865582a7c201594169a7d500c8b9c7d8d4684d57019f37c)(@types/node@25.7.0)(jsdom@29.1.1)(lightningcss@1.32.0)
 
   packages/adapters:
     dependencies:
@@ -145,7 +148,7 @@ importers:
         version: 22.19.19
       vitest:
         specifier: ^2.1.9
-        version: 2.1.9(@types/node@22.19.19)(jsdom@29.1.1)(lightningcss@1.32.0)
+        version: 2.1.9(patch_hash=8f19a19f4ce9065bb865582a7c201594169a7d500c8b9c7d8d4684d57019f37c)(@types/node@22.19.19)(jsdom@29.1.1)(lightningcss@1.32.0)
 
   packages/orchestrator:
     dependencies:
@@ -161,7 +164,7 @@ importers:
         version: 22.19.19
       vitest:
         specifier: ^2.1.9
-        version: 2.1.9(@types/node@22.19.19)(jsdom@29.1.1)(lightningcss@1.32.0)
+        version: 2.1.9(patch_hash=8f19a19f4ce9065bb865582a7c201594169a7d500c8b9c7d8d4684d57019f37c)(@types/node@22.19.19)(jsdom@29.1.1)(lightningcss@1.32.0)
 
   packages/shared:
     dependencies:
@@ -2941,7 +2944,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@vitest/coverage-v8@2.1.9(vitest@2.1.9(@types/node@25.7.0)(jsdom@29.1.1)(lightningcss@1.32.0))':
+  '@vitest/coverage-v8@2.1.9(vitest@2.1.9(patch_hash=8f19a19f4ce9065bb865582a7c201594169a7d500c8b9c7d8d4684d57019f37c)(@types/node@25.7.0)(jsdom@29.1.1)(lightningcss@1.32.0))':
     dependencies:
       '@ampproject/remapping': 2.3.0
       '@bcoe/v8-coverage': 0.2.3
@@ -2955,7 +2958,7 @@ snapshots:
       std-env: 3.10.0
       test-exclude: 7.0.2
       tinyrainbow: 1.2.0
-      vitest: 2.1.9(@types/node@25.7.0)(jsdom@29.1.1)(lightningcss@1.32.0)
+      vitest: 2.1.9(patch_hash=8f19a19f4ce9065bb865582a7c201594169a7d500c8b9c7d8d4684d57019f37c)(@types/node@25.7.0)(jsdom@29.1.1)(lightningcss@1.32.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -4057,7 +4060,7 @@ snapshots:
       fsevents: 2.3.3
       lightningcss: 1.32.0
 
-  vitest@2.1.9(@types/node@22.19.19)(jsdom@29.1.1)(lightningcss@1.32.0):
+  vitest@2.1.9(patch_hash=8f19a19f4ce9065bb865582a7c201594169a7d500c8b9c7d8d4684d57019f37c)(@types/node@22.19.19)(jsdom@29.1.1)(lightningcss@1.32.0):
     dependencies:
       '@vitest/expect': 2.1.9
       '@vitest/mocker': 2.1.9(vite@5.4.21(@types/node@25.7.0)(lightningcss@1.32.0))
@@ -4093,7 +4096,7 @@ snapshots:
       - supports-color
       - terser
 
-  vitest@2.1.9(@types/node@25.7.0)(jsdom@29.1.1)(lightningcss@1.32.0):
+  vitest@2.1.9(patch_hash=8f19a19f4ce9065bb865582a7c201594169a7d500c8b9c7d8d4684d57019f37c)(@types/node@25.7.0)(jsdom@29.1.1)(lightningcss@1.32.0):
     dependencies:
       '@vitest/expect': 2.1.9
       '@vitest/mocker': 2.1.9(vite@5.4.21(@types/node@25.7.0)(lightningcss@1.32.0))

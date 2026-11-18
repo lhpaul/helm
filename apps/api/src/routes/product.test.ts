@@ -3,7 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { app } from '../app.js';
+import { app as rawApp } from '../app.js';
+import { withOperatorToken } from '../test-support/operator-token.js';
+
+// Route tests run with API auth on; every request carries the test token.
+const app = withOperatorToken(rawApp);
 
 // Minimal valid config — reuses the same shape as packages/shared test fixtures
 const VALID_PRODUCT_YAML = `

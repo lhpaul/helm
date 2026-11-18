@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Operator token on the API (#160, ADR-045) — BREAKING for operators:**
+  every `/api/*` route (reads and writes) and the `GET /ws` upgrade now
+  require `Authorization: Bearer <HELM_API_TOKEN>`, compared in constant time.
+  `GET /health` and the signed webhooks (`/api/webhooks/github`,
+  `/api/webhooks/linear`) are unchanged. Failures answer
+  `401 {"error":"Unauthorized"}` with `WWW-Authenticate: Bearer`. The #162
+  origin guard still runs first. The API **fails closed**: with
+  `HELM_API_TOKEN` unset, blank or shorter than 32 characters it starts, logs
+  an error naming the variable and answers `401` on every protected route, so
+  updating without the token breaks the dashboard and operator `curl` while
+  webhooks keep advancing items. The Vite dev proxy adds the header from
+  `HELM_API_TOKEN` in the `pnpm dev` shell (never exposed to the browser);
+  Turbo passes `HELM_API_TOKEN` and `HELM_API_AUTH` through to `dev`.
+  **Upgrade steps:** (1) generate a token (`openssl rand -hex 32`) and store
+  it in the secrets manager; (2) add the `HELM_API_TOKEN=op://…` line to the
+  product's private `sync-env` input (see `apps/api/.env.example`) and
+  regenerate `apps/api/.env`; (3) restart the API; (4) export
+  `HELM_API_TOKEN` in the shell that runs `pnpm dev`; (5) add
+  `-H "Authorization: Bearer $HELM_API_TOKEN"` to every `curl`/script call to
+  `/api/*` except webhooks, reads included. Webhooks and `/health` watchdogs
+  need no change; keep any public ingress restricted to `/api/webhooks/*` and
+  `/health` as defense in depth. **Opt-out/rollback:**
+  `HELM_API_AUTH=disabled` turns the check off (startup warning); use it only
+  after confirming that any public ingress only serves `/api/webhooks/*` and
+  `/health` (or sits behind an authenticated proxy) and that the API is not
+  reachable through a non-loopback `HELM_API_HOST` bind (move it back to
+  loopback or firewall the port first). See `docs/local-dev.md`
+  ("API authentication").
+
 ## [0.1.0] - 2026-11-17
 
 ### Added

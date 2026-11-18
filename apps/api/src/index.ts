@@ -1,5 +1,5 @@
 import { createBunWebSocket } from 'hono/bun';
-import { app } from './app.js';
+import { apiAuthMiddleware, app } from './app.js';
 import { getJobStore } from './services/index.js';
 import { buildListenConfig, formatListenUrl } from './server-config.js';
 
@@ -7,6 +7,8 @@ const { upgradeWebSocket, websocket } = createBunWebSocket();
 
 // WebSocket lives here (not in app.ts) so tests can import app.ts without
 // pulling in hono/bun, which requires the Bun runtime.
+// The operator token is checked before the upgrade (#160, ADR-045).
+app.use('/ws', apiAuthMiddleware);
 app.get(
   '/ws',
   upgradeWebSocket(() => ({

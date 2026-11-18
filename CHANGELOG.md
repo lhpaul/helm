@@ -7,134 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-17
+
 ### Added
 
 - **Ensure review merge-gate labels (#128):** `scripts/ensure-review-labels.sh`
   creates the `ready-for-human-review` label when missing (idempotent, never
   edits or deletes existing labels; `--repo`, `--dry-run`). Documented in
   `docs/review-labels.md`. Gate behavior is unchanged.
-
-### Changed
-
-- **Generic product slugs in `sync-env` and env templates (#146):**
-  `pnpm sync-env -- <product>` now accepts any slug that matches
-  `^[a-z0-9][a-z0-9-]*$` (at most 64 characters) instead of a fixed list, and
-  rejects anything else, plus the reserved `example`, before calling
-  1Password. Existing `apps/api/.env.<product>` inputs keep working with the
-  same command; no migration is needed. `apps/api/.env.example` now documents
-  a generic product block with placeholder `op://<vault>/<item>/<field>`
-  references. Test fixtures and a `.gitignore` comment no longer carry private
-  product detail; ignored patterns are unchanged.
-
-- **Consolidate `externalId` validation in `@helm/shared` (#129, TD-001):**
-  `EXTERNAL_ID_REGEX` and `isValidExternalId()` now live once in
-  `@helm/shared`; `apps/api` and `@helm/orchestrator` reuse them instead of
-  keeping local copies of the regex. No behavior change: same accepted and
-  rejected values, same error messages and API contracts.
-
-### Security
-
-- **Reject cross-origin browser requests to state-changing API routes (#162):**
-  the API has no authentication, so a web page open in the operator's
-  browser could send a simple cross-origin `POST` (for example to
-  `/api/products/:slug/items/:externalId/dispatch`) and trigger side effects.
-  Every non-`GET`/`HEAD`/`OPTIONS` request under `/api/*`, except the signed
-  GitHub/Linear webhooks, now needs an allowed `Origin` (the local UI on port
-  5173 by default, plus `HELM_ALLOWED_ORIGINS`), and without `Origin` a
-  `Sec-Fetch-Site` of `cross-site`/`same-site` is rejected. Rejections return
-  `403`. Requests with neither header (curl, scripts) still pass.
-  **Impact on existing instances:** curl/scripts, webhooks and the bundled UI
-  keep working. A browser-based tool on any other origin that writes to the
-  API gets `403` until its origin is added to `HELM_ALLOWED_ORIGINS` and the
-  API restarts. See `docs/local-dev.md`.
-
-- **API listens on `127.0.0.1` by default (#159):** the Bun API server set no
-  `hostname`, so it listened on every interface while having no
-  authentication. It now binds to loopback unless `HELM_API_HOST` sets another
-  interface (blank values use the default); a non-loopback host logs a warning
-  at startup. The startup log shows the real bind address, and the Vite dev
-  proxy follows `HELM_API_HOST` (default `127.0.0.1:3001`). **Impact on existing instances:** access from
-  the same machine (including a local tunnel or reverse proxy that targets
-  `127.0.0.1:3001`) keeps working. Instances reached from another machine stop
-  answering until they set `HELM_API_HOST` (for example `0.0.0.0`) and
-  restart. See `docs/local-dev.md`.
-
-### Fixed
-
-- **Rare missing `git-helpers` exports in tests under load (#152):** vitest
-  2.1.9 (`pool: forks`) could rewrite a transformed-module cache file
-  (truncate, then write) while another worker was reading it, so that worker
-  ran an empty module and every export was `undefined`. The rewrite happened
-  when `importOriginal`/`importActual` requested a module under its absolute
-  path while other imports used the root-relative id. A pnpm patch backports
-  the upstream atomic write (vitest-dev/vitest#7531) without changing any
-  dependency version (remove it when moving to vitest 3), and
-  `code-review-loop.test.ts` now uses `vi.spyOn` instead of `importOriginal`
-  partial mocks. Test-only; no runtime or CI changes.
-
-- **Flaky reviewer-fanout cleanup tests under load (#149):** four
-  `dispatcher.test.ts` reviewer-fanout tests checked workspace cleanup by
-  listing the shared `os.tmpdir()` for any `helm-review-issue_1-*` entry, so
-  they also saw workspaces created at the same time by other test files or
-  other `pnpm test` processes. They now check only the workspace paths the
-  test itself provisioned (and their `-artifacts` siblings). Test-only change;
-  runtime behavior is unchanged.
-
-- **Idempotent implementer re-dispatch (#142):** re-dispatching the
-  implementer for an item already in `in-development` (for example after a
-  cut-off run) no longer fails with `Cannot transition from 'in-development'
-to 'in-development'`. The dispatcher skips that self-transition and runs the
-  implementer normally. The state machine is unchanged, and dispatching from
-  any other invalid stage still fails as before.
-
-- **Type-check the monorepo in CI (#141):** `pnpm build` failed because a
-  `code-review-loop.test.ts` fixture declared with `as const` had
-  `blockers: readonly []`, which is not assignable to `ExternalReviewResult`.
-  The fixture now uses `satisfies ExternalReviewResult`; the public type is
-  unchanged. Every workspace package has a `typecheck` script (`tsc --noEmit`)
-  and the root `pnpm lint`, which CI already runs, now also runs `typecheck`,
-  so a type error fails CI even when Vitest passes.
-
-- **Keep external-review readiness that arrives before the pending intent
-  (#135, TD-002):** a provider can finish while the review loop is still in its
-  internal fan-out, before it parks its pending intent. The readiness webhook
-  used to log `no pending intent for revision` and drop the signal; if the
-  loop's poll then still saw `analysis_pending`, the deferral stranded until
-  expiry. Helm now records a short-lived readiness note
-  (`data/external-review-readiness/`, expires with `max_defer_sec`), re-checks
-  once for an intent, and replays the note when the loop defers on that
-  revision. Additive storage only: the review-dispatch outbox format and the
-  webhook response are unchanged. See `docs/product-config.md`.
-- **Propagate the local-ai-reviewer companion reason; no retry on deterministic
-  failures (#134):** the adapter now reads the companion's `RESULT`/`REASON`
-  (also when no evidence file was written) instead of masking every failure as
-  `execution_unavailable`. Deterministic reasons such as
-  `review_contract_missing` (no `REVIEW.md`) return `escalate` with that reason,
-  so the stop rule escalates immediately instead of retrying and escalating
-  `external_repeated_skip`. Transient reasons stay retryable and now carry the
-  real reason. Helm's `review_md_missing` preflight also escalates now (was
-  `skipped:unavailable`). Companion stderr is captured as a bounded, redacted
-  tail and logged server-side only. See `docs/local-ai-reviewer.md`.
-- **Namespace item storage by product slug (#126):** items are now persisted at
-  `data/items/{productSlug}/{externalId}.json` instead of the flat
-  `data/items/{externalId}.json`, so two products sharing a data root with the
-  same `externalId` (e.g. `issue_1`) no longer overwrite each other. `ItemStore`
-  is scoped to one slug and `getItemStore(productSlug)` returns a per-product
-  store. Existing flat files are migrated automatically and idempotently on
-  first access (rename into the slug recorded in each file; never overwrites,
-  never deletes — unparseable or slug-less files are left in place and logged).
-  Single-product deployments need no action. Rollback: move each
-  `items/<slug>/*.json` back up to `items/`. Operators who hand-edit item files
-  now find them under `items/<productSlug>/`.
-- **Fewer unnecessary `adjudication_conflict` escalations on spec/plan review (#125):**
-  in the early artifact loop the review-adjudicator is told that draft edits
-  (wording, clarity, structure) are AUTO plan items, not conflicts, and that a
-  `doc_conflict` it resolves by the ADR > spec > CLAUDE.md hierarchy
-  (`Resolved by: …`) goes to the remediator instead of a human. Real
-  `product_decision` conflicts, unresolved `doc_conflict`s, implementation
-  review and explicit `HUMAN_REQUIRED` still escalate (ADR-037).
-
-### Added
 
 - **External review on knowledge-repo spec/plan PRs (#120):** opt-in
   `review.external.local_ai_reviewer.artifacts` (`enabled`, optional `command`)
@@ -181,7 +61,42 @@ to 'in-development'`. The dispatcher skips that self-transition and runs the
   accepts are item-scoped and re-read every cycle, so one posted mid-run lands on the
   next pass.
 
+- **Trusted Codex GitHub clean terminal signal (#96, ADR-036 addendum 2026-08-18):** closes the gap the `codex-github` provider shipped with — Codex publishes no check run and no commit status and does not always submit a review, so a genuinely clean PR sat `deferred` until `max_defer_sec` expired the intent. Helm now reads the PR's **root comments** authored by a trusted Codex identity as a second evidence channel: a comment carrying a `Reviewed commit:` marker naming the revision under review is terminal evidence (abbreviated SHAs match by prefix), and is the signal a clean run actually produces. A `clean` verdict now requires evidence that is attributable, head-pinned, terminal, and parseable as a pass — everything else fails to be clean in one of three ways. A reaction-only response is **absent** — Helm reads reactions from no provider. An untrusted author, a stale review or summary, and a draft (`PENDING`) review are **dropped**: they reach Helm and produce no record, so the loop simply stays deferred. Only a dismissed review, a missing Codex cloud environment, an exhausted usage limit, a SHA-pinned response Helm cannot parse, and a failed root-comment read are **ranked as unavailable** and return `skipped`. When evidence disagrees, blocking always wins whatever its age; then a failed root-comment read, which is _missing_ evidence and so cannot be silently overridden by a clean review (and is the one unavailability with no timestamp to rank); otherwise the newest wins, and on an exact timestamp tie the less-clean side does. Both unavailability notices are dated records, so neither outlives the condition it reported — a quota notice stays on the PR forever, and ranking it as a sticky flag would have kept a PR that once hit its limit from ever reading clean again. Unavailability wording is read only outside quoted spans, and a multi-backtick or 3+-tilde run suppresses the _unavailability_ classification specifically (the terminal verdicts still resolve), because a Codex review of the classifier quotes the phrases it matches on. The `Reviewed commit:` marker is parsed from unquoted prose only, failing closed on an unclosed delimiter: quoting one — in a fence, a block quote, a multi-backtick span, or an unterminated opener — and following it with approval prose would otherwise let a single trusted comment forge clean evidence for the current head. Findings in a summary comment follow the inline severity rules: an explicit blocker or a P0/P1 label blocks, a P2/P3-only summary lands on the advisory list. Each unavailability names its cause through the `providerReason` added by #94, so a quota stop is distinguishable from a misconfiguration in the `external_repeated_skip` escalation. A trusted root comment whose marker names a **full** 40-hex SHA resumes a deferred intent from the `issue_comment` webhook, alongside the existing `pull_request_review` / `submitted` path; an abbreviated marker cannot address an intent matched by exact revision, so those runs are picked up on the next poll. Adds `packages/orchestrator/src/external-review/codex-github/root-comment.ts`. **The default reviewer is unchanged** — the dogfood product still runs `provider: coderabbit`, since #96 requires the signal to be dogfooded on a real PR with validation evidence captured before the switch.
+
+- **Codex GitHub external review provider (ADR-036):** `review.external.provider` now accepts `codex-github`, alongside `bugbot` and `coderabbit`. Unlike both existing providers, Codex publishes no check run or commit status — it signals completion by **submitting a PR review** — so readiness is "a review authored by a trusted identity exists for the exact target revision", and a deferred review resumes from the `pull_request_review` (`submitted`) webhook, which the GitHub webhook route and parser now accept. New `review.external.codex_github` config block (`trusted_identities`, `check_names`, `blocking_severities`, defaulting to the `chatgpt-codex-connector` app, `Codex`/`Codex Review`/`codex`, and `critical`/`high`). Findings map from Codex's P-scale (`P0 → critical` … `P3 → low`); an unlabeled comment is treated as `high` rather than the mid default the other adapters use, since Codex only posts what it considers high-priority — an unparsed label must not silently demote a blocker. A `CHANGES_REQUESTED` review blocks even with no surviving inline finding, and a `DISMISSED` review is skipped rather than read as clean. When no review has landed for the revision the adapter returns `deferred`/`analysis_pending` (not `skipped`), because with no pending signal to poll, waiting is the only way the verdict is ever picked up. Only a **submitted** review is read as the verdict: GitHub's reviews endpoint exposes a reviewer's draft (`PENDING`, `submitted_at: null`) and a draft carries no inline comments, so selecting one would fall through to `clean` and forge a passing verdict for an unreviewed revision — drafts keep the loop deferring. Review-**author** matching is exact; check-run **app** identity matching ignores the `[bot]` suffix, since the app record carries the bare slug and is not user-settable. `codex-github` is supported but **not recommended as a product's default provider**: Codex publishes no check run or status, and a run that finds nothing can end as a 👍 reaction rather than a submitted review, which leaves a genuinely clean PR deferred until its intent expires. Adds `packages/orchestrator/src/external-review/codex-github/**` and `apps/api/src/services/codex-github-review-loader.ts`; the per-provider loader wiring in `dispatch-scheduler.ts` moves into the exported `externalReviewDepsForProduct` helper. Codex reviews are not automatic — the repo needs _Automatic reviews_ enabled in Codex settings, or an `@codex review` comment on the PR.
+
+- **Cumulative cross-dispatch review-loop budget (#65, ADR-042):** ADR-036's `max_cycles` and `no_progress_cycles` were per-dispatch, so every manual re-dispatch reset them and an item could run dozens of review/remediation cycles without ever escalating (observed on LEA-192). Remediation passes are now counted in a durable per-item ledger (`ItemState.reviewLoopLedger`, written by `ItemStore.updateReviewLoopLedger`) keyed by lane — `code-review`, `spec-draft`, `plan-draft` — so a draft-artifact loop never spends the implementation PR's budget. New optional `review.loop.max_cycles_cumulative` (default `max_cycles * 3`, validated `>= max_cycles`) escalates with the new `max_cycles_cumulative` stop-rule reason, checked before the per-dispatch `max_cycles`. The `no_progress` streak and its `bestBlockerCount` baseline are carried across dispatches on the same ledger, so a re-dispatch can no longer launder a stalled loop; that path keeps the existing `no_progress` reason and says in the message when the streak spanned dispatches. Ledger writes are monotonic (`cyclesTotal` clamped with `max`, `bestBlockerCount` with `min`) and best-effort — a failed write logs and continues rather than aborting a run that already pushed remediation commits.
+- **Review-loop escalations post to the PR on every stop-rule exit:** `max_cycles` and `no_progress` escalations previously returned only in the job result, while external-provider and adjudication escalations posted the `<!-- helm:review-loop-escalation -->` comment. All stop-rule escalations now post it, and each one appends a single item-history event (ordinary cycle ticks do not).
+
+- **Reviewer disagreement policy (#64):** the knowledge repo's `false-positives.md` is now the tie-breaker surface for opposing reviewer CRITICAL/HIGH findings. Catalogued adjudications that apply to the current stage are injected into the review-adjudicator and code-remediator prompts as a data-only block (JSON inside opaque delimiters, backticks neutralized). The adjudicator must defer the catalogued side of an opposing pair — keeping the non-catalogued fix as **AUTO** instead of re-opening it as a `product_decision` — and the remediator must never revert code the other side of a catalogued entry depends on. This closes the LEA-109 EP#8/EP#9 oscillation, where remediation flipped a least-privilege connection split back and forth across cycles.
+
+- **Review adjudicator secure-default policy (#73):** the adjudicator prompt now directs generic trust/security conflicts toward the clearly safer default (allowlist, fail closed, least privilege, strict validation, no open redirect) as AUTO remediation with a visible PR recommendation, while preserving explicit human overrides and keeping product-specific origins/allowlists out of Helm core.
+
+- **Opt-in early artifact review loop (#71):** products can set `review.early_loop.enabled: true` to route `spec-draft` and `plan-draft` artifact PRs through the existing ADR-036 reviewer/remediation loop before operator-authored remediation is required. The flag defaults off, so existing products keep the current operator-triggered `spec-remediator` / `plan-remediator` flow and explicit-feedback requirement. The false-positive catalog now includes Helm sequential-artifact patterns such as `pair-spec-and-plan-files` for draft review disposition.
+
+- **Review adjudicator (ADR-037):** optional `review-adjudicator` specialist runs between reviewer fan-out and `code-remediator`, synthesizing conflicting verdicts into a unified remediation plan. Escalates with `adjudication_conflict` when product or documentation decisions remain (`HUMAN_REQUIRED`). Configured via `specialists.review-adjudicator` and `review.loop.adjudication.enabled` (defaults on when the specialist is present). Backward compatible — products without the specialist keep the legacy direct-to-remediator path.
+- **Review loop stop-rule hardening (ADR-037):** `no_progress` now compares against the best (lowest) CRITICAL/HIGH blocker count seen in the loop run, detecting oscillation when remediation reverts prior fixes. Remediation failures retry once after recovery to `code-review` before the loop returns a terminal error.
+
+- **Review loop remediation recovery (#63):** when a remediation pass fails after the item entered `remediation`, the orchestrator best-effort transitions back to `code-review` (`triggeredBy: specialist:remediation-recovery`) so the item stays re-dispatchable without manual stage repair.
+- **Impl PR synchronize webhook re-dispatch:** GitHub `pull_request` `synchronize` events on `helm/impl/<id>` branches schedule `reviewer-fanout` when the item is in `code-review` (skips silently when a job is already running or the stage differs). Ignores pushes from `helm-bot` so remediation commits do not retrigger the loop. New `pull_request_synchronized` normalized event (includes `senderLogin`); shared `scheduleItemDispatch` helper in `apps/api/src/services/dispatch-scheduler.ts`.
+
 ### Changed
+
+- **Generic product slugs in `sync-env` and env templates (#146):**
+  `pnpm sync-env -- <product>` now accepts any slug that matches
+  `^[a-z0-9][a-z0-9-]*$` (at most 64 characters) instead of a fixed list, and
+  rejects anything else, plus the reserved `example`, before calling
+  1Password. Existing `apps/api/.env.<product>` inputs keep working with the
+  same command; no migration is needed. `apps/api/.env.example` now documents
+  a generic product block with placeholder `op://<vault>/<item>/<field>`
+  references. Test fixtures and a `.gitignore` comment no longer carry private
+  product detail; ignored patterns are unchanged.
+
+- **Consolidate `externalId` validation in `@helm/shared` (#129, TD-001):**
+  `EXTERNAL_ID_REGEX` and `isValidExternalId()` now live once in
+  `@helm/shared`; `apps/api` and `@helm/orchestrator` reuse them instead of
+  keeping local copies of the regex. No behavior change: same accepted and
+  rejected values, same error messages and API contracts.
 
 - Disable CodeRabbit automatic reviews and use the local reviewer terminal signal
   in the contributor review loop (#108).
@@ -211,148 +126,6 @@ to 'in-development'`. The dispatcher skips that self-transition and runs the
   criterion they map to or be filed at LOW/INFO, and a request for a higher-fidelity test
   artifact than the AC requires (real device, e2e harness, framework runtime) is capped at
   LOW unless an AC names it.
-
-### Fixed
-
-- External review now follows the PR head: a push during a review (including the
-  remediator's own) retries the review on the new SHA instead of escalating to
-  `HUMAN_REQUIRED` as `external_repeated_skip` (#117).
-
-- **`dispatcher.test.ts` fan-out expectation caught up with its call site:** the
-  early-loop `spec-draft` wiring test asserted the `fanoutReviewers` options bag as an
-  exact literal, so the two options added to the call site afterwards —
-  `draftArtifactKind` (#110) and `subsequentReviewPass` (#111) — made it fail on
-  `develop`. The options themselves are correct for that lane (`'spec'` on the
-  draft-spec path, `false` on the first fan-out); only the expectation was stale. It now
-  asserts both fields explicitly.
-
-- **External-review readiness no longer races the pending intent (LEA-258, TD-002):**
-  the review loop wrote its pending-external-review intent only after the provider poll
-  returned `analysis_pending`. A fast provider (CodeRabbit on a small PR) could finish
-  and have GitHub deliver `external_review_ready` inside that window, so the webhook
-  logged `no pending intent for revision` and dropped the resume — the loop only
-  recovered on a later poll, which stretched cycles and hid the race. The loop now parks
-  a provisional intent _before_ the first poll (every persisted field is already known
-  at that point, so nothing is invented), and the defer callback upserts the same outbox
-  slot; the row is cleared when the wait ends without deferring. Readiness that lands
-  while the deferring job is still running is no longer discarded as a duplicate
-  revision — a duplicate against a _running_ job is now parked as a `review_dispatch`
-  for the post-job replay, the same as a different-revision conflict.
-
-- **Linear webhook ACK within 5s deadline:** `POST /api/webhooks/linear` verified the
-  signature and then awaited create/transition plus `replayPendingReviewDispatch`
-  (GitHub lookups) on the request path. Linear disables webhooks that exceed a 5s
-  response window — observed as the production webhook being auto-disabled on a
-  previous public ingress during busy early-loop bursts. After a valid signature, Helm now returns `200`
-  immediately and runs side effects in the background (idempotent create / no-op
-  invalid transitions). Misconfiguration (`503`) and bad signatures (`401`) still
-  fail closed on the request path.
-
-- **CodeRabbit commit status with null creator (LEA-246 early-loop):** GitHub Combined
-  Status often returns CodeRabbit entries with `creator: null`. The loader required a
-  trusted login and treated a miss as `unavailable`, which burned
-  `external_repeated_skip` before a pending intent could be stored (status webhooks then
-  had nothing to resume). Allowlisted contexts with a missing creator are now accepted;
-  only an explicit untrusted creator is rejected. No matching status yet yields a
-  synthetic `pending` status (defer) instead of skip. Rate-limited "Review rate limited"
-  success statuses defer when `defer_when_pending` is on, instead of counting as
-  unavailable skips.
-
-- **GitHub `ping` acknowledged for Linear products:** `/api/webhooks/github` returned
-  `400` for `X-GitHub-Event: ping` when the primary product used Linear (AF). GitHub
-  marks those deliveries failed and can disable the hook. Ping is now a no-op `200`
-  so Linear products can still subscribe to GitHub PR/status events for the review
-  loop. Documents `LINEAR_WEBHOOK_SECRET` in `.env.example` for AF.
-
-### Removed
-
-- **Haystack external review provider (#85, ADR-036):** Haystack is retired end-to-end. `review.external.provider` no longer accepts `haystack` and the `review.external.haystack` config block is rejected — products must use `bugbot` or `coderabbit`. Deletes `packages/orchestrator/src/external-review/haystack/**` (adapter, CLI wrapper, triage polling, category/finding-id normalization, skip-evidence probe, fixtures), the Haystack branch in `runExternalReviewIfConfigured`, and the Haystack check-run allowlist and trusted app identities in the GitHub Projects webhook parser (a `Haystack / Review` check run no longer emits `external_review_ready`). The `external_skip_evidence` stop-rule escalation reason is removed with it: only the Haystack `pr-status` probe ever produced that evidence, so behavior for the remaining providers is unchanged (`external_escalate` and `external_repeated_skip` still apply). The post-skip retry backoff, previously read from `review.external.haystack.poll_interval_sec`, is now a fixed 15s. Shared `defaultSleep` moved to `packages/orchestrator/src/lib/sleep.ts`.
-
-### Added
-
-- **Trusted Codex GitHub clean terminal signal (#96, ADR-036 addendum 2026-08-18):** closes the gap the `codex-github` provider shipped with — Codex publishes no check run and no commit status and does not always submit a review, so a genuinely clean PR sat `deferred` until `max_defer_sec` expired the intent. Helm now reads the PR's **root comments** authored by a trusted Codex identity as a second evidence channel: a comment carrying a `Reviewed commit:` marker naming the revision under review is terminal evidence (abbreviated SHAs match by prefix), and is the signal a clean run actually produces. A `clean` verdict now requires evidence that is attributable, head-pinned, terminal, and parseable as a pass — everything else fails to be clean in one of three ways. A reaction-only response is **absent** — Helm reads reactions from no provider. An untrusted author, a stale review or summary, and a draft (`PENDING`) review are **dropped**: they reach Helm and produce no record, so the loop simply stays deferred. Only a dismissed review, a missing Codex cloud environment, an exhausted usage limit, a SHA-pinned response Helm cannot parse, and a failed root-comment read are **ranked as unavailable** and return `skipped`. When evidence disagrees, blocking always wins whatever its age; then a failed root-comment read, which is _missing_ evidence and so cannot be silently overridden by a clean review (and is the one unavailability with no timestamp to rank); otherwise the newest wins, and on an exact timestamp tie the less-clean side does. Both unavailability notices are dated records, so neither outlives the condition it reported — a quota notice stays on the PR forever, and ranking it as a sticky flag would have kept a PR that once hit its limit from ever reading clean again. Unavailability wording is read only outside quoted spans, and a multi-backtick or 3+-tilde run suppresses the _unavailability_ classification specifically (the terminal verdicts still resolve), because a Codex review of the classifier quotes the phrases it matches on. The `Reviewed commit:` marker is parsed from unquoted prose only, failing closed on an unclosed delimiter: quoting one — in a fence, a block quote, a multi-backtick span, or an unterminated opener — and following it with approval prose would otherwise let a single trusted comment forge clean evidence for the current head. Findings in a summary comment follow the inline severity rules: an explicit blocker or a P0/P1 label blocks, a P2/P3-only summary lands on the advisory list. Each unavailability names its cause through the `providerReason` added by #94, so a quota stop is distinguishable from a misconfiguration in the `external_repeated_skip` escalation. A trusted root comment whose marker names a **full** 40-hex SHA resumes a deferred intent from the `issue_comment` webhook, alongside the existing `pull_request_review` / `submitted` path; an abbreviated marker cannot address an intent matched by exact revision, so those runs are picked up on the next poll. Adds `packages/orchestrator/src/external-review/codex-github/root-comment.ts`. **The default reviewer is unchanged** — the dogfood product still runs `provider: coderabbit`, since #96 requires the signal to be dogfooded on a real PR with validation evidence captured before the switch.
-
-- **Codex GitHub external review provider (ADR-036):** `review.external.provider` now accepts `codex-github`, alongside `bugbot` and `coderabbit`. Unlike both existing providers, Codex publishes no check run or commit status — it signals completion by **submitting a PR review** — so readiness is "a review authored by a trusted identity exists for the exact target revision", and a deferred review resumes from the `pull_request_review` (`submitted`) webhook, which the GitHub webhook route and parser now accept. New `review.external.codex_github` config block (`trusted_identities`, `check_names`, `blocking_severities`, defaulting to the `chatgpt-codex-connector` app, `Codex`/`Codex Review`/`codex`, and `critical`/`high`). Findings map from Codex's P-scale (`P0 → critical` … `P3 → low`); an unlabeled comment is treated as `high` rather than the mid default the other adapters use, since Codex only posts what it considers high-priority — an unparsed label must not silently demote a blocker. A `CHANGES_REQUESTED` review blocks even with no surviving inline finding, and a `DISMISSED` review is skipped rather than read as clean. When no review has landed for the revision the adapter returns `deferred`/`analysis_pending` (not `skipped`), because with no pending signal to poll, waiting is the only way the verdict is ever picked up. Only a **submitted** review is read as the verdict: GitHub's reviews endpoint exposes a reviewer's draft (`PENDING`, `submitted_at: null`) and a draft carries no inline comments, so selecting one would fall through to `clean` and forge a passing verdict for an unreviewed revision — drafts keep the loop deferring. Review-**author** matching is exact; check-run **app** identity matching ignores the `[bot]` suffix, since the app record carries the bare slug and is not user-settable. `codex-github` is supported but **not recommended as a product's default provider**: Codex publishes no check run or status, and a run that finds nothing can end as a 👍 reaction rather than a submitted review, which leaves a genuinely clean PR deferred until its intent expires. Adds `packages/orchestrator/src/external-review/codex-github/**` and `apps/api/src/services/codex-github-review-loader.ts`; the per-provider loader wiring in `dispatch-scheduler.ts` moves into the exported `externalReviewDepsForProduct` helper. Codex reviews are not automatic — the repo needs _Automatic reviews_ enabled in Codex settings, or an `@codex review` comment on the PR.
-
-- **Cumulative cross-dispatch review-loop budget (#65, ADR-042):** ADR-036's `max_cycles` and `no_progress_cycles` were per-dispatch, so every manual re-dispatch reset them and an item could run dozens of review/remediation cycles without ever escalating (observed on LEA-192). Remediation passes are now counted in a durable per-item ledger (`ItemState.reviewLoopLedger`, written by `ItemStore.updateReviewLoopLedger`) keyed by lane — `code-review`, `spec-draft`, `plan-draft` — so a draft-artifact loop never spends the implementation PR's budget. New optional `review.loop.max_cycles_cumulative` (default `max_cycles * 3`, validated `>= max_cycles`) escalates with the new `max_cycles_cumulative` stop-rule reason, checked before the per-dispatch `max_cycles`. The `no_progress` streak and its `bestBlockerCount` baseline are carried across dispatches on the same ledger, so a re-dispatch can no longer launder a stalled loop; that path keeps the existing `no_progress` reason and says in the message when the streak spanned dispatches. Ledger writes are monotonic (`cyclesTotal` clamped with `max`, `bestBlockerCount` with `min`) and best-effort — a failed write logs and continues rather than aborting a run that already pushed remediation commits.
-- **Review-loop escalations post to the PR on every stop-rule exit:** `max_cycles` and `no_progress` escalations previously returned only in the job result, while external-provider and adjudication escalations posted the `<!-- helm:review-loop-escalation -->` comment. All stop-rule escalations now post it, and each one appends a single item-history event (ordinary cycle ticks do not).
-
-- **Reviewer disagreement policy (#64):** the knowledge repo's `false-positives.md` is now the tie-breaker surface for opposing reviewer CRITICAL/HIGH findings. Catalogued adjudications that apply to the current stage are injected into the review-adjudicator and code-remediator prompts as a data-only block (JSON inside opaque delimiters, backticks neutralized). The adjudicator must defer the catalogued side of an opposing pair — keeping the non-catalogued fix as **AUTO** instead of re-opening it as a `product_decision` — and the remediator must never revert code the other side of a catalogued entry depends on. This closes the LEA-109 EP#8/EP#9 oscillation, where remediation flipped a least-privilege connection split back and forth across cycles.
-
-- **Review adjudicator secure-default policy (#73):** the adjudicator prompt now directs generic trust/security conflicts toward the clearly safer default (allowlist, fail closed, least privilege, strict validation, no open redirect) as AUTO remediation with a visible PR recommendation, while preserving explicit human overrides and keeping product-specific origins/allowlists out of Helm core.
-
-- **Opt-in early artifact review loop (#71):** products can set `review.early_loop.enabled: true` to route `spec-draft` and `plan-draft` artifact PRs through the existing ADR-036 reviewer/remediation loop before operator-authored remediation is required. The flag defaults off, so existing products keep the current operator-triggered `spec-remediator` / `plan-remediator` flow and explicit-feedback requirement. The false-positive catalog now includes Helm sequential-artifact patterns such as `pair-spec-and-plan-files` for draft review disposition.
-
-- **Review adjudicator (ADR-037):** optional `review-adjudicator` specialist runs between reviewer fan-out and `code-remediator`, synthesizing conflicting verdicts into a unified remediation plan. Escalates with `adjudication_conflict` when product or documentation decisions remain (`HUMAN_REQUIRED`). Configured via `specialists.review-adjudicator` and `review.loop.adjudication.enabled` (defaults on when the specialist is present). Backward compatible — products without the specialist keep the legacy direct-to-remediator path.
-- **Review loop stop-rule hardening (ADR-037):** `no_progress` now compares against the best (lowest) CRITICAL/HIGH blocker count seen in the loop run, detecting oscillation when remediation reverts prior fixes. Remediation failures retry once after recovery to `code-review` before the loop returns a terminal error.
-
-- **Review loop remediation recovery (#63):** when a remediation pass fails after the item entered `remediation`, the orchestrator best-effort transitions back to `code-review` (`triggeredBy: specialist:remediation-recovery`) so the item stays re-dispatchable without manual stage repair.
-- **Impl PR synchronize webhook re-dispatch:** GitHub `pull_request` `synchronize` events on `helm/impl/<id>` branches schedule `reviewer-fanout` when the item is in `code-review` (skips silently when a job is already running or the stage differs). Ignores pushes from `helm-bot` so remediation commits do not retrigger the loop. New `pull_request_synchronized` normalized event (includes `senderLogin`); shared `scheduleItemDispatch` helper in `apps/api/src/services/dispatch-scheduler.ts`.
-
-### Fixed
-
-- **Codex GitHub unavailable states are legible in the escalation (#94, ADR-036):** the external `skipped` result gained an optional `providerReason`, and `evaluateExternalReviewStopRule` renders it into the `external_repeated_skip` escalation message and `externalReason` (`unavailable: review_dismissed`). Every unavailability previously read as a bare `unavailable`, so the human receiving the escalation could not tell a withdrawn verdict from an integration that was never reachable — the remaining acceptance criterion on #94, whose provider, adapter, loader, webhook resume, and docs shipped inside #95. A `DISMISSED` Codex review is the first reason to use it; it is still `skipped`, never read as clean. Additive and backward compatible: providers that set no reason keep the previous message verbatim.
-
-- **Review-loop escalation comment is upserted, not appended (#93, ADR-036 §6):** the `<!-- helm:review-loop-escalation -->` comment now goes through `upsertPRCommentByMarker` (the same path the Review Loop Summary already used) instead of `postPRComment`, for every escalation reason — `max_cycles`, `max_cycles_cumulative`, `no_progress`, `adjudication_conflict`, `external_escalate`, `external_repeated_skip`. A still-blocked item re-escalates on every re-dispatch, so appending piled identical comments on the PR (surfaced on #92, where a lane with an exhausted lifetime budget escalates on each subsequent dispatch). From this change on, escalations reuse the newest marked comment, rewriting it in place with the latest reason, this dispatch's cycle count, and the external signal — no new comment per escalation. Comments posted by earlier runs are left alone: there is no dedup migration, so a PR that already accumulated duplicates keeps them and the newest one is the one that gets updated. Stop-rule escalations also render the lane's lifetime counters (cycles completed plus the `max_cycles_cumulative` budget) so the budget state is legible from the current body. The escalation history stays on the item's history events, which remain idempotent per `(lane, reason, cyclesTotal)` (ADR-042 §5). Posting is still best-effort — a failed upsert never turns an escalation into a loop crash.
-
-- **Remediation recovery error reporting:** when remediation fails and the recovery transition back to `code-review` also fails, the loop error now includes `(remediation-recovery also failed)` (consistent with the post-success transition path).
-
-- **Haystack external review adapter (ADR-036, #53):** replaces the `not_implemented` stub in `runExternalReviewIfConfigured` with `HaystackExternalReviewAdapter`, wrapping `haystack triage --json` (poll-retry on transient `status` values) and optional `haystack pr-status --json`. Ports blocking vs advisory category rules from `haystack-reviewer.sh` (`Logic error`/`Critical` blocking; `Major` advisory unless `major_is_blocking: true`; `Rules violation` and other style categories advisory; unknown categories safe-fail to blocking). Normalized findings use stable ledger ids — provider-native id when present, else canonical `(path, category, line)` signature, never summary-hash. Returns `clean` | `needs_fixes` | `escalate` (`pending_timeout`/`timeout`) | `skipped`. Respects `review.external.haystack` config from product.yaml. Unit tests use fixture JSON under `packages/orchestrator/src/external-review/haystack/__fixtures__/`.
-
-- **External review stop-rule hardening (ADR-036, #57):** when external review is configured, the code-review loop retries skipped Haystack calls up to `review.loop.stop_rule.no_progress_cycles` (default 2), escalates immediately on adapter `escalate` or when `haystack pr-status` shows analysis-ready/rating evidence while triage was unavailable, and escalates on repeated skips without progress. Escalations post a marker comment (`<!-- helm:review-loop-escalation -->`) on the PR and surface `escalated`, `escalationReason`, and `cyclesCompleted` on dispatch results.
-
-- **Post-clean advisory dispositions (ADR-036, #56):** after a clean loop exit with remaining external advisories, upserts a **Review Loop Summary** PR comment (`<!-- helm:review-loop-summary -->`) with per-advisory dispositions (Rejected when matched against `false-positives.md` from the knowledge repo; Deferred otherwise). Uses marker-based update-in-place via `upsertPRCommentByMarker`. Does not re-run Haystack to clear advisories.
-
-- **Per-product native-state override — map a Helm stage to an exact Linear state by id (ADR-035):** lets a product point specific stages at specific Linear workflow states by **id**, overriding ADR-034's by-**type** 2-bucket default. ADR-034 maps both `merged` and `released` to a `completed`-**type** state and the Linear adapter keeps the _first_ state of that type — so a team with **two** completed-type states (`Merged` + `Released`) had `released` items mirror to the wrong column, making the H5 merged/released split invisible at the native-Status layer. Surfaced by the pilot product's native backfill (EP#13, 2026-06-07). Additive and backward-compatible — products without a map keep the ADR-034 behavior exactly.
-  - **New product config — `workflow.native_state_map: { <stage>: <linear state id> }`:** a per-product, per-stage override. Keys are validated as Helm workflow stages (any stage, not just `merged`/`released` — a team with two `started` states could map `code-review`/`in-development` too); values are Linear workflow-state **ids**. Resolved by **id** (not display name) so it survives a state rename in Linear; the `list-linear-states` helper (below) offsets the opacity of ids. Linear-only — ignored for GitHub Projects (native Status there is still deferred).
-  - **New adapter capability — `setWorkflowStateById(externalId, stateId)`:** an optional method on `IssueTrackerAdapter` (a sibling of `setWorkflowStateByType`). The Linear adapter validates `stateId` against the team's real states (a `Set` built from the same `LIST_TEAM_STATES` fetch) and reuses the `UPDATE_ISSUE_STATE` mutation; it throws `LinearNotFoundError` for an id not in the team, so a typo'd / stale config id is surfaced rather than sent. GitHub Projects leaves it undefined.
-  - **Precedence (shared by the live writeback and the backfill):** for a mapped stage with a `setWorkflowStateById`-capable adapter → write the configured id; otherwise → the existing by-type default (ADR-034). The decision lives in one helper (`resolveNativeStateWrite`) so `item-service` and `writeback-backfill` can never drift. Same Linear-gate, feature-detect, independent best-effort, timeout, and anti-echo as ADR-034 — a bad id is logged and swallowed, never failing the transition.
-  - **New discovery helper — `pnpm --filter @helm/api list-linear-states <slug>`:** prints a Linear product's team workflow states as `id  name  (type)` so an operator can copy the ids into `native_state_map`. No-op (with a clear message) for non-Linear products.
-
-- **Native workflow Status mirroring — Helm stage → Linear's native Status column (ADR-034):** Helm now drives Linear's **native workflow state** (the team's Status / Kanban column) from the item's stage, on the same best-effort writeback path that already writes the `helm:*` label (ADR-033). Previously the label was current but the native Status stayed at `Backlog`, so a board viewed by the native column showed every item as if nothing had progressed — surfaced during the private-product pilot (verified 2026-06-05, every LEA item read `Backlog` despite the label being correct). Additive and backward-compatible.
-  - **2-bucket mapping by state TYPE (`nativeStateTypeForStage` in `@helm/workflow`):** `merged` / `released` → a `completed`-type state (closes the issue, subsuming the deferred `setStatus`-close idea); every earlier stage → a `started`-type state ("In Development"). Mapped by Linear state **type** (`backlog | unstarted | started | completed | cancelled | triage`), not display name, so a team renaming "In Development" doesn't break us. `backlog` / `cancelled` are never auto-set — they stay human/initial. The mapping helper lives beside the state machine so it can never drift from `WORKFLOW_STAGES` (exhaustively tested).
-  - **New adapter capability — `setWorkflowStateByType(externalId, 'started' | 'completed')`:** an optional method on `IssueTrackerAdapter`. The Linear adapter builds a `type → stateId` map (first state per type by position) from the same `LIST_TEAM_STATES` fetch that already backed `setStatus`, and reuses the `UPDATE_ISSUE_STATE` mutation to target any resolved type (unlike `setStatus`, which is open/closed only). Throws `LinearNotFoundError` if the team has no state of the requested type. `setStatus` is unchanged.
-  - **Independent best-effort, Linear-only, anti-echo-gated:** the native-state set runs inside `item-service.writebackStage` after the label write, in its own try/timeout — a failure in one cannot block the other (the label is the primary signal, the native state a secondary mirror). Gated to `issue_tracker.provider === 'linear'` and feature-detected on the adapter, so GitHub Projects transitions skip it cleanly (its native Status field is a deferred follow-up). Tracker-originated transitions still write neither (anti-echo, unchanged).
-  - **Backfill extended:** `writeback-backfill` now also sets the native state per item for Linear products (best-effort per item; a native failure does not flip the item's label-reconcile result), reporting `nativeReconciled` / `nativeFailed` in its summary. This moves existing items (e.g. AF's LEA-103…109 → Completed) onto the native Kanban.
-
-- **Tracker writeback — workflow stage → Linear label / GitHub Projects single-select (ADR-033):** Helm now writes each stage change back to the external issue tracker as items advance. Previously stage lived only in the local item store, so the tracker showed every item as if nothing had progressed — surfaced during the private-product pilot, where every LEA item read stale in Linear despite the store advancing correctly. The adapter write-surface (`setSubStage`/`ensureSubStages`) existed and was unit-tested but had **zero** live call sites; this wires it into the transition path. Additive and backward-compatible — `ItemStore` semantics are unchanged.
-  - **New transition-service wrapper (`apps/api/src/services/item-service.ts`):** `transitionItem` / `forceTransitionItem` / `createItem` pair the store mutation with best-effort writeback through one private `writebackStage` choke point. The store stays pure-local (no adapter import — ADR-029); the wrapper is the only thing that touches the tracker. All stage-mutating call sites migrate to it (`routes/items`, `routes/dispatch`, `routes/webhooks` both providers, `routes/release`, `routes/rollback`).
-  - **Best-effort posture:** a tracker write that throws logs a warning and continues — the store remains the source of truth, so a tracker API hiccup never fails the workflow (consistent with how the webhook handlers already swallow external errors). A regression test proves the store result is still returned when the adapter throws.
-  - **Anti-echo:** writeback is skipped when the transition was tracker-originated (`triggeredBy` starts with `webhook:github-projects` / `webhook:linear`), preventing a tracker → webhook → store → writeback → tracker loop. **All other** triggers write back — `webhook:code-repo`, `webhook:knowledge-repo`, `webhook:release`, `manual:*`, `agent:*` — since those originate outside the tracker.
-  - **Scope = `setSubStage` only.** `setStatus` (auto-close on terminal stages) and `comment` (stage-change / PR-link notes) are deferred as separate policy decisions (noted in ADR-033). `ensureSubStages` is memoized once per adapter instance — neither adapter no-ops a repeat cheaply, so calling it per transition would be a network storm.
-  - **One-shot backfill command — `pnpm --filter @helm/api writeback-backfill <slug>`:** runs `ensureSubStages` once, then `setSubStage(currentStage)` for every item in the store (best-effort per item, `Reconciled N/M items` summary). Supports **both** providers (Linear and GitHub Projects). This is the recovery tool for items that advanced before writeback existed and for best-effort drift. The one-directional `sync` command (tracker → store, GitHub-only) is unchanged.
-
-- **`merged` workflow stage — split from `released` (ADR-032):** the final stage was a single `released` entered the moment the `helm/impl/<id>` PR merged, so `released` actually meant _merged_, not _shipped to users_. H5 inserts a distinct `merged` stage before `released`: a merged impl PR now lands the item in `merged`, and `released` is reached only by an explicit release trigger. `WORKFLOW_STAGES` grows to ten (`… 'remediation', 'merged', 'released'`); the state machine adds `code-review → merged` and `merged → released` (and removes `code-review → released` — see **Changed**). `released` stays terminal.
-  - **Manual operator promote — `POST /api/items/:externalId/release`:** advances one item `merged → released`. Body (Zod, `.strict()`): `{ reason?: string(1–500) }`. Responses: `200 { externalId, currentStage: 'released', historyEntry }` (history records `triggeredBy: 'manual:release'`, with `reason` in `note`); `400` on invalid body / invalid externalId / **item not in `merged`** (a `StageMismatchError`, mirroring the rollback endpoint, ADR-029); `404` if the item doesn't exist; `409` if the product opts out (`workflow.final_stage: merged`); `500` on unexpected failure. This is a normal **forward** edge, so it uses `ItemStore.transition()` (not `forceTransition` — that stays the rollback-only escape valve). Reuses `validateExternalId` + `mapErrorToResponse` (ADR-031).
-  - **Bulk release webhook — GitHub `release` event, `action: published`:** promotes **every** `merged` item of the instance product to `released` (`triggeredBy: 'webhook:release'`). Parsed by the tracker-agnostic `parseGitHubWebhook` (so it works for Linear products too — they still ship via GitHub releases) into a new `release_published` `NormalizedEvent`. Idempotent and delivery-safe: a per-item `WorkflowTransitionError`/`ItemNotFoundError` is logged and skipped, and the endpoint still returns `200`; non-`published` release actions are ignored. No-op for products with `workflow.final_stage: merged`.
-  - **`workflow.final_stage` product field:** `z.enum(['merged', 'released']).default('released')`. Gates the release **trigger**, not the state-machine **edge** (the `merged → released` edge always exists). A product with `final_stage: merged` (e.g. the playground, or any product with no user-facing release step) terminates at `merged`: the release endpoint returns `409` and the release webhook is a no-op. Default `released` is backward-compatible — existing `product.yaml` files are unaffected. (Placed under `workflow` alongside `stages_enabled` and the gates; the H5 brief's "top-level" framing predated the `workflow` grouping — reconciled in ADR-032.)
-  - Stage enumeration is automatic: both adapters' `ensureSubStages` build their option/label set from `WORKFLOW_STAGES`, so the new GitHub Projects single-select option and the Linear `helm:merged` label appear with no hand-maintained mapping.
-
-- **Product-context materialization for spec-writer / plan-writer worktrees (ADR-030):** before spawning the spec-writer or plan-writer agent, the dispatcher now writes the product's **full README and winning agent instruction file** (`AGENTS.md` / `AGENT.md` / `CLAUDE.md`, per the shared `AGENT_INSTRUCTION_FILES` order) into the agent's worktree (`data/worktrees/<slug>/<id>/`). The agent can now `cat`/`grep`/reference specific sections from disk instead of being limited to the truncated 2000-char `## Product Context` prompt snippet. Surfaced by the private-product pilot, where the plan-writer flagged the gap in its own Risks section across two consecutive items (LEA-105 and LEA-109, the latter as Evidence Point #3): _"The worktree provided here does not include CLAUDE.md, so any repo-specific notes from that file must be verified in the main branch before implementation."_
-  - New `materializeProductContext(workdir, product, token, fetchFn?)` in `fetch-product-context.ts` (exported from `@helm/orchestrator`) — a **sibling** of `fetchProductContext`, not a flag on it. Reuses the same `fetchRawFile` primitive; writes the **full file with no truncation** (the prompt-injected version keeps its 2000-char cap for context-window economy). Returns `MaterializedProductContext { readme, agentInstructions: { filename, … }, missingFiles[] }`; the agent instruction file is written under its **real winning variant name** (no rename). Best-effort posture: a 404 yields a `null` entry plus a `missingFiles` entry (the worktree simply lacks that file); a non-404 HTTP error propagates so the dispatcher can log it.
-  - Dispatcher wiring: invoked after worktree creation and before the runtime spawn in the **spec-writer** (token-gated + best-effort `.catch`, mirroring the existing `fetchProductContext` Part A) and **plan-writer** (token already asserted) paths. The **implementer is untouched** — it already gets `CLAUDE.md` via `provisionCodeWorkspace`'s shallow clone. A materialization failure logs and continues; it never fails the dispatch.
-  - `fetchProductContext` signature and 2000-char truncation behavior are **unchanged** — the `## Product Context` prompt section stays exactly as it was; materialization is purely additive.
-
-- **Operator rollback endpoint for failed implementer dispatches (ADR-029):** `POST /api/items/:externalId/rollback` rolls an item back from `in-development` to `plan-ready` after the implementer agent fails before any real work (Codex CLI crash, image-tool defect, environmental wedge). Replaces the previous workaround — hand-editing `<helm-data>/items/<id>.json`'s `currentStage` and appending a history entry by hand (documented in the private pilot driver prompt's gotchas table) — which is now **obsolete**. Surfaced by the private-product pilot, where LEA-109 hit this gap twice in one item.
-  - Body schema (Zod, `.strict()`): `{ fromStage: 'in-development', toStage: 'plan-ready', reason: string(1–500) }`. The allow-list is enforced at the schema boundary via **strict literals** — the single permitted pair is `in-development → plan-ready`; any future pair requires an intentional schema change, forcing deliberate review. `reason` is required even though the underlying `WorkflowEvent.note` is optional.
-  - Responses: `200 { externalId, currentStage: 'plan-ready', historyEntry }` on success; `400` on invalid body / invalid externalId / current stage not matching `fromStage`; `404` if the item doesn't exist; `409 { error, runningJobId }` if a dispatch job is currently running for the item; `500` on unexpected failures.
-  - The state machine (`VALID_TRANSITIONS`) is **untouched** — the rollback is an explicit escape valve, not a normal workflow edge. It calls a new sibling `ItemStore.forceTransition(...)` that bypasses `validateTransition` (asserting `currentStage === fromStage` to guard against races) while `transition()` and all its callers keep the state-machine guard intact. History records `triggeredBy: 'manual:rollback'` with the operator's reason in `note`. Concurrency reuses the existing job-store primitive via a new `JobStore.getRunningJobForItem(slug, externalId)` helper.
-  - Out of scope (explicit follow-up, see ADR-029): auto-rollback on classified failures, additional rollback pairs (e.g. `code-review → plan-ready`), and a dashboard UI — all open separately with their own evidence.
-
-- **Product-readiness gate (ADR-026):** an optional pre-dispatch precondition that blocks the spec-writer from running against an under-documented product, so it fails loudly with actionable `missing_context` instead of inventing context. Surfaced by the private-product pilot (a content-drifted `CLAUDE.md`).
-  - Schema: `workflow.readiness_gate` (optional, `skip` | `warn` | `required`, default `skip` → backward compatible; existing `product.yaml` files are unaffected). `skip` runs no check; `warn` checks and logs gaps but proceeds; `required` blocks dispatch.
-  - `checkProductReadiness(product, token, fetchFn?)` in `packages/orchestrator/src/readiness.ts` — for each `role: 'app'` code repo (`docs`/`infra` exempt), verifies a `README.md` and agent instructions (one of `AGENTS.md` / `AGENT.md` / `CLAUDE.md`) exist via the same `raw.githubusercontent` fetch primitive as `fetchProductContext` (no clone). Returns `{ ready, missingContext: [{ repo, role, missing[] }] }`. A 404 means absent; an unparseable repo URL or a missing token is reported as **unverifiable** (never silently passing); any other non-2xx/network error **propagates** so the caller can distinguish a precondition failure from an infrastructure failure.
-  - Dispatch route (`POST …/dispatch`): the gate runs **only** when the resolved specialist would be the spec-writer (discovery → spec-draft, or an explicit `specialistId: spec-writer`) and `readiness_gate !== 'skip'`, before job creation. `required` + not ready → `422 { error, missing_context }`; `required` + check throws → `502` (an infra failure is never reported as a `422` precondition failure); `warn` → logs and proceeds with `202`. Later stages and the operator-triggered remediators bypass the gate — they operate on structured artifacts, not raw repo docs, and the remediators are themselves the fix for missing context. `resolveSpecialistId(currentStage, specialistId?)` is now exported from `@helm/orchestrator` (single source of truth for the stage→specialist mapping, shared by the dispatcher and the gate).
-  - The `fetchProductContext` agent-instructions fallback chain is extended to `AGENTS.md → AGENT.md → CLAUDE.md` (was `AGENT.md → CLAUDE.md`); `AGENTS.md` is the cross-tool open standard. The accepted-filenames list (`AGENT_INSTRUCTION_FILES`) is the single source of truth shared by the reader and the gate so they cannot drift.
-  - Out of scope (explicit follow-up, see ADR-026): validating that files referenced in the issue body exist — deferred for false-positive risk ("create this file" issues legitimately reference not-yet-existing paths).
-
-- **Early-stage remediators — spec & plan (Session H2):** Helm can now iterate an already-published spec or plan PR _in place_ from operator feedback, closing the asymmetric-iteration gap (late stages iterated via the remediation gate; `spec-draft`/`plan-draft` were one-shot). See ADR-024.
-  - Two new specialists `spec-remediator` / `plan-remediator`, thin wrappers over a shared `early-remediator.ts` helper (`runEarlyRemediation`, `buildEarlyRemediatorPrompt`, `buildEarlyRemediatorParams`) parameterised by `kind: 'spec' | 'plan'`. Each one: resolves the open artifact PR, clones the knowledge repo at `helm/spec/<id>` / `helm/plan/<id>`, reads `specs/<id>.md` / `plans/<id>.md`, builds a prompt (`## Product Context`, `## Task`, `## Current {Spec|Plan}`, `## Feedback`, `## Hints`) instructing in-place edits (preserve untouched content, do NOT regenerate, do NOT open a new PR), spawns the runtime (`acceptEdits`, 15-min `EARLY_REMEDIATION_TIMEOUT_MS`), then fast-forward pushes back to the same branch (no `--force`) and returns the same `prUrl`. The item is **not** transitioned — it stays in its draft stage until the operator merges.
-  - `findArtifactPRUrl({ knowledgeRepo, externalId, kind, githubToken })` in `pr-helpers.ts` — queries `gh pr list --head helm/{spec,plan}/<id> --state open` (GitHub is the source of truth); null → `no open <kind> PR found for <id> on <branch>`.
-  - Dispatcher routing: `spec-remediator`/`plan-remediator` are operator-triggered (never in `STAGE_TO_SPECIALIST`). The branch enforces the stage invariant (`spec-remediator` requires `spec-draft`, `plan-remediator` requires `plan-draft`; else `… requires currentStage '<stage>', got '<actual>'`), non-empty feedback, and `GITHUB_TOKEN`, then runs the remediation with **no** stage transition.
-  - API: `POST …/dispatch` body gains `feedback?: string` (1–10000 chars). A Zod `superRefine` requires non-empty `feedback` when `specialistId` is a remediator (400 otherwise); `feedback` is threaded through `runDispatchJob` → dispatcher options. PR-comment triggers remain out of scope (no webhook ingestion yet).
-
-### Changed
 
 - **BREAKING — impl PR merge now lands items in `merged`, not `released` (ADR-032):** the `helm/impl/<id>` PR-merge webhook (`ARTIFACT_STAGE_MAP.impl`) now transitions items to the new `merged` stage instead of `released`, and the direct `code-review → released` state-machine edge is **removed** (the path is now `code-review → merged → released`). Consumers reading an item's `currentStage` will see a new `merged` value, and `released` now means _shipped to users_ rather than _PR merged_. Items reach `released` only via the new release trigger (the `POST /api/items/:id/release` endpoint or the `release.published` webhook — see **Added**). **Migration: grandfather.** Existing items already at `released` are **not** migrated — there is no migration script; the change is forward-only (only new impl merges land in `merged`). Accepted tradeoff: pre-H5 `released` items are indistinguishable from truly-shipped ones. A regression test confirms `ItemStore` leaves existing `released` items untouched.
 
@@ -466,11 +239,197 @@ to 'in-development'`. The dispatcher skips that self-transition and runs the
 - `apps/web`: React 18 + Vite 5 + Tailwind v4 with WebSocket hook (connects to api `/ws`, displays connection status)
 - `HELM_VERSION` constant in `@helm/shared` — consumed by api `/health` and available to web
 
-### Changed
-
 - **(breaking) Specialist IDs in `product.yaml` require kebab-case (post-pilot cleanup, ADR-022):** `SpecialistsSchema` keys migrated from snake_case (`spec_writer`, `plan_writer`, `code_reviewer`, `security_reviewer`, `test_reviewer`) to kebab-case (`spec-writer`, `plan-writer`, `code-reviewer`, `security-reviewer`, `test-reviewer`), aligning the config with the kebab identifiers already used everywhere else in Helm (artifact branches `helm/spec/*`, labels `helm:spec-draft`, workflow stages, and the `specialistId` values the dispatcher matches). `implementer` and `remediation` are unchanged (already single-word). `parseProductConfig` detects legacy snake_case keys and throws an actionable migration message pointing at ADR-022. Run the migration script in `helm-knowledge/operations/migrations/2026-05-31-specialist-id-kebab.md` to update existing products.
 
+### Removed
+
+- **Haystack external review provider (#85, ADR-036):** Haystack is retired end-to-end. `review.external.provider` no longer accepts `haystack` and the `review.external.haystack` config block is rejected — products must use `bugbot` or `coderabbit`. Deletes `packages/orchestrator/src/external-review/haystack/**` (adapter, CLI wrapper, triage polling, category/finding-id normalization, skip-evidence probe, fixtures), the Haystack branch in `runExternalReviewIfConfigured`, and the Haystack check-run allowlist and trusted app identities in the GitHub Projects webhook parser (a `Haystack / Review` check run no longer emits `external_review_ready`). The `external_skip_evidence` stop-rule escalation reason is removed with it: only the Haystack `pr-status` probe ever produced that evidence, so behavior for the remaining providers is unchanged (`external_escalate` and `external_repeated_skip` still apply). The post-skip retry backoff, previously read from `review.external.haystack.poll_interval_sec`, is now a fixed 15s. Shared `defaultSleep` moved to `packages/orchestrator/src/lib/sleep.ts`.
+
 ### Fixed
+
+- **Rare missing `git-helpers` exports in tests under load (#152):** vitest
+  2.1.9 (`pool: forks`) could rewrite a transformed-module cache file
+  (truncate, then write) while another worker was reading it, so that worker
+  ran an empty module and every export was `undefined`. The rewrite happened
+  when `importOriginal`/`importActual` requested a module under its absolute
+  path while other imports used the root-relative id. A pnpm patch backports
+  the upstream atomic write (vitest-dev/vitest#7531) without changing any
+  dependency version (remove it when moving to vitest 3), and
+  `code-review-loop.test.ts` now uses `vi.spyOn` instead of `importOriginal`
+  partial mocks. Test-only; no runtime or CI changes.
+
+- **Flaky reviewer-fanout cleanup tests under load (#149):** four
+  `dispatcher.test.ts` reviewer-fanout tests checked workspace cleanup by
+  listing the shared `os.tmpdir()` for any `helm-review-issue_1-*` entry, so
+  they also saw workspaces created at the same time by other test files or
+  other `pnpm test` processes. They now check only the workspace paths the
+  test itself provisioned (and their `-artifacts` siblings). Test-only change;
+  runtime behavior is unchanged.
+
+- **Idempotent implementer re-dispatch (#142):** re-dispatching the
+  implementer for an item already in `in-development` (for example after a
+  cut-off run) no longer fails with `Cannot transition from 'in-development'
+to 'in-development'`. The dispatcher skips that self-transition and runs the
+  implementer normally. The state machine is unchanged, and dispatching from
+  any other invalid stage still fails as before.
+
+- **Type-check the monorepo in CI (#141):** `pnpm build` failed because a
+  `code-review-loop.test.ts` fixture declared with `as const` had
+  `blockers: readonly []`, which is not assignable to `ExternalReviewResult`.
+  The fixture now uses `satisfies ExternalReviewResult`; the public type is
+  unchanged. Every workspace package has a `typecheck` script (`tsc --noEmit`)
+  and the root `pnpm lint`, which CI already runs, now also runs `typecheck`,
+  so a type error fails CI even when Vitest passes.
+
+- **Keep external-review readiness that arrives before the pending intent
+  (#135, TD-002):** a provider can finish while the review loop is still in its
+  internal fan-out, before it parks its pending intent. The readiness webhook
+  used to log `no pending intent for revision` and drop the signal; if the
+  loop's poll then still saw `analysis_pending`, the deferral stranded until
+  expiry. Helm now records a short-lived readiness note
+  (`data/external-review-readiness/`, expires with `max_defer_sec`), re-checks
+  once for an intent, and replays the note when the loop defers on that
+  revision. Additive storage only: the review-dispatch outbox format and the
+  webhook response are unchanged. See `docs/product-config.md`.
+- **Propagate the local-ai-reviewer companion reason; no retry on deterministic
+  failures (#134):** the adapter now reads the companion's `RESULT`/`REASON`
+  (also when no evidence file was written) instead of masking every failure as
+  `execution_unavailable`. Deterministic reasons such as
+  `review_contract_missing` (no `REVIEW.md`) return `escalate` with that reason,
+  so the stop rule escalates immediately instead of retrying and escalating
+  `external_repeated_skip`. Transient reasons stay retryable and now carry the
+  real reason. Helm's `review_md_missing` preflight also escalates now (was
+  `skipped:unavailable`). Companion stderr is captured as a bounded, redacted
+  tail and logged server-side only. See `docs/local-ai-reviewer.md`.
+- **Namespace item storage by product slug (#126):** items are now persisted at
+  `data/items/{productSlug}/{externalId}.json` instead of the flat
+  `data/items/{externalId}.json`, so two products sharing a data root with the
+  same `externalId` (e.g. `issue_1`) no longer overwrite each other. `ItemStore`
+  is scoped to one slug and `getItemStore(productSlug)` returns a per-product
+  store. Existing flat files are migrated automatically and idempotently on
+  first access (rename into the slug recorded in each file; never overwrites,
+  never deletes — unparseable or slug-less files are left in place and logged).
+  Single-product deployments need no action. Rollback: move each
+  `items/<slug>/*.json` back up to `items/`. Operators who hand-edit item files
+  now find them under `items/<productSlug>/`.
+- **Fewer unnecessary `adjudication_conflict` escalations on spec/plan review (#125):**
+  in the early artifact loop the review-adjudicator is told that draft edits
+  (wording, clarity, structure) are AUTO plan items, not conflicts, and that a
+  `doc_conflict` it resolves by the ADR > spec > CLAUDE.md hierarchy
+  (`Resolved by: …`) goes to the remediator instead of a human. Real
+  `product_decision` conflicts, unresolved `doc_conflict`s, implementation
+  review and explicit `HUMAN_REQUIRED` still escalate (ADR-037).
+
+- External review now follows the PR head: a push during a review (including the
+  remediator's own) retries the review on the new SHA instead of escalating to
+  `HUMAN_REQUIRED` as `external_repeated_skip` (#117).
+
+- **`dispatcher.test.ts` fan-out expectation caught up with its call site:** the
+  early-loop `spec-draft` wiring test asserted the `fanoutReviewers` options bag as an
+  exact literal, so the two options added to the call site afterwards —
+  `draftArtifactKind` (#110) and `subsequentReviewPass` (#111) — made it fail on
+  `develop`. The options themselves are correct for that lane (`'spec'` on the
+  draft-spec path, `false` on the first fan-out); only the expectation was stale. It now
+  asserts both fields explicitly.
+
+- **External-review readiness no longer races the pending intent (LEA-258, TD-002):**
+  the review loop wrote its pending-external-review intent only after the provider poll
+  returned `analysis_pending`. A fast provider (CodeRabbit on a small PR) could finish
+  and have GitHub deliver `external_review_ready` inside that window, so the webhook
+  logged `no pending intent for revision` and dropped the resume — the loop only
+  recovered on a later poll, which stretched cycles and hid the race. The loop now parks
+  a provisional intent _before_ the first poll (every persisted field is already known
+  at that point, so nothing is invented), and the defer callback upserts the same outbox
+  slot; the row is cleared when the wait ends without deferring. Readiness that lands
+  while the deferring job is still running is no longer discarded as a duplicate
+  revision — a duplicate against a _running_ job is now parked as a `review_dispatch`
+  for the post-job replay, the same as a different-revision conflict.
+
+- **Linear webhook ACK within 5s deadline:** `POST /api/webhooks/linear` verified the
+  signature and then awaited create/transition plus `replayPendingReviewDispatch`
+  (GitHub lookups) on the request path. Linear disables webhooks that exceed a 5s
+  response window — observed as the production webhook being auto-disabled on a
+  previous public ingress during busy early-loop bursts. After a valid signature, Helm now returns `200`
+  immediately and runs side effects in the background (idempotent create / no-op
+  invalid transitions). Misconfiguration (`503`) and bad signatures (`401`) still
+  fail closed on the request path.
+
+- **CodeRabbit commit status with null creator (LEA-246 early-loop):** GitHub Combined
+  Status often returns CodeRabbit entries with `creator: null`. The loader required a
+  trusted login and treated a miss as `unavailable`, which burned
+  `external_repeated_skip` before a pending intent could be stored (status webhooks then
+  had nothing to resume). Allowlisted contexts with a missing creator are now accepted;
+  only an explicit untrusted creator is rejected. No matching status yet yields a
+  synthetic `pending` status (defer) instead of skip. Rate-limited "Review rate limited"
+  success statuses defer when `defer_when_pending` is on, instead of counting as
+  unavailable skips.
+
+- **GitHub `ping` acknowledged for Linear products:** `/api/webhooks/github` returned
+  `400` for `X-GitHub-Event: ping` when the primary product used Linear (AF). GitHub
+  marks those deliveries failed and can disable the hook. Ping is now a no-op `200`
+  so Linear products can still subscribe to GitHub PR/status events for the review
+  loop. Documents `LINEAR_WEBHOOK_SECRET` in `.env.example` for AF.
+
+- **Codex GitHub unavailable states are legible in the escalation (#94, ADR-036):** the external `skipped` result gained an optional `providerReason`, and `evaluateExternalReviewStopRule` renders it into the `external_repeated_skip` escalation message and `externalReason` (`unavailable: review_dismissed`). Every unavailability previously read as a bare `unavailable`, so the human receiving the escalation could not tell a withdrawn verdict from an integration that was never reachable — the remaining acceptance criterion on #94, whose provider, adapter, loader, webhook resume, and docs shipped inside #95. A `DISMISSED` Codex review is the first reason to use it; it is still `skipped`, never read as clean. Additive and backward compatible: providers that set no reason keep the previous message verbatim.
+
+- **Review-loop escalation comment is upserted, not appended (#93, ADR-036 §6):** the `<!-- helm:review-loop-escalation -->` comment now goes through `upsertPRCommentByMarker` (the same path the Review Loop Summary already used) instead of `postPRComment`, for every escalation reason — `max_cycles`, `max_cycles_cumulative`, `no_progress`, `adjudication_conflict`, `external_escalate`, `external_repeated_skip`. A still-blocked item re-escalates on every re-dispatch, so appending piled identical comments on the PR (surfaced on #92, where a lane with an exhausted lifetime budget escalates on each subsequent dispatch). From this change on, escalations reuse the newest marked comment, rewriting it in place with the latest reason, this dispatch's cycle count, and the external signal — no new comment per escalation. Comments posted by earlier runs are left alone: there is no dedup migration, so a PR that already accumulated duplicates keeps them and the newest one is the one that gets updated. Stop-rule escalations also render the lane's lifetime counters (cycles completed plus the `max_cycles_cumulative` budget) so the budget state is legible from the current body. The escalation history stays on the item's history events, which remain idempotent per `(lane, reason, cyclesTotal)` (ADR-042 §5). Posting is still best-effort — a failed upsert never turns an escalation into a loop crash.
+
+- **Remediation recovery error reporting:** when remediation fails and the recovery transition back to `code-review` also fails, the loop error now includes `(remediation-recovery also failed)` (consistent with the post-success transition path).
+
+- **Haystack external review adapter (ADR-036, #53):** replaces the `not_implemented` stub in `runExternalReviewIfConfigured` with `HaystackExternalReviewAdapter`, wrapping `haystack triage --json` (poll-retry on transient `status` values) and optional `haystack pr-status --json`. Ports blocking vs advisory category rules from `haystack-reviewer.sh` (`Logic error`/`Critical` blocking; `Major` advisory unless `major_is_blocking: true`; `Rules violation` and other style categories advisory; unknown categories safe-fail to blocking). Normalized findings use stable ledger ids — provider-native id when present, else canonical `(path, category, line)` signature, never summary-hash. Returns `clean` | `needs_fixes` | `escalate` (`pending_timeout`/`timeout`) | `skipped`. Respects `review.external.haystack` config from product.yaml. Unit tests use fixture JSON under `packages/orchestrator/src/external-review/haystack/__fixtures__/`.
+
+- **External review stop-rule hardening (ADR-036, #57):** when external review is configured, the code-review loop retries skipped Haystack calls up to `review.loop.stop_rule.no_progress_cycles` (default 2), escalates immediately on adapter `escalate` or when `haystack pr-status` shows analysis-ready/rating evidence while triage was unavailable, and escalates on repeated skips without progress. Escalations post a marker comment (`<!-- helm:review-loop-escalation -->`) on the PR and surface `escalated`, `escalationReason`, and `cyclesCompleted` on dispatch results.
+
+- **Post-clean advisory dispositions (ADR-036, #56):** after a clean loop exit with remaining external advisories, upserts a **Review Loop Summary** PR comment (`<!-- helm:review-loop-summary -->`) with per-advisory dispositions (Rejected when matched against `false-positives.md` from the knowledge repo; Deferred otherwise). Uses marker-based update-in-place via `upsertPRCommentByMarker`. Does not re-run Haystack to clear advisories.
+
+- **Per-product native-state override — map a Helm stage to an exact Linear state by id (ADR-035):** lets a product point specific stages at specific Linear workflow states by **id**, overriding ADR-034's by-**type** 2-bucket default. ADR-034 maps both `merged` and `released` to a `completed`-**type** state and the Linear adapter keeps the _first_ state of that type — so a team with **two** completed-type states (`Merged` + `Released`) had `released` items mirror to the wrong column, making the H5 merged/released split invisible at the native-Status layer. Surfaced by the pilot product's native backfill (EP#13, 2026-06-07). Additive and backward-compatible — products without a map keep the ADR-034 behavior exactly.
+  - **New product config — `workflow.native_state_map: { <stage>: <linear state id> }`:** a per-product, per-stage override. Keys are validated as Helm workflow stages (any stage, not just `merged`/`released` — a team with two `started` states could map `code-review`/`in-development` too); values are Linear workflow-state **ids**. Resolved by **id** (not display name) so it survives a state rename in Linear; the `list-linear-states` helper (below) offsets the opacity of ids. Linear-only — ignored for GitHub Projects (native Status there is still deferred).
+  - **New adapter capability — `setWorkflowStateById(externalId, stateId)`:** an optional method on `IssueTrackerAdapter` (a sibling of `setWorkflowStateByType`). The Linear adapter validates `stateId` against the team's real states (a `Set` built from the same `LIST_TEAM_STATES` fetch) and reuses the `UPDATE_ISSUE_STATE` mutation; it throws `LinearNotFoundError` for an id not in the team, so a typo'd / stale config id is surfaced rather than sent. GitHub Projects leaves it undefined.
+  - **Precedence (shared by the live writeback and the backfill):** for a mapped stage with a `setWorkflowStateById`-capable adapter → write the configured id; otherwise → the existing by-type default (ADR-034). The decision lives in one helper (`resolveNativeStateWrite`) so `item-service` and `writeback-backfill` can never drift. Same Linear-gate, feature-detect, independent best-effort, timeout, and anti-echo as ADR-034 — a bad id is logged and swallowed, never failing the transition.
+  - **New discovery helper — `pnpm --filter @helm/api list-linear-states <slug>`:** prints a Linear product's team workflow states as `id  name  (type)` so an operator can copy the ids into `native_state_map`. No-op (with a clear message) for non-Linear products.
+
+- **Native workflow Status mirroring — Helm stage → Linear's native Status column (ADR-034):** Helm now drives Linear's **native workflow state** (the team's Status / Kanban column) from the item's stage, on the same best-effort writeback path that already writes the `helm:*` label (ADR-033). Previously the label was current but the native Status stayed at `Backlog`, so a board viewed by the native column showed every item as if nothing had progressed — surfaced during the private-product pilot (verified 2026-06-05, every LEA item read `Backlog` despite the label being correct). Additive and backward-compatible.
+  - **2-bucket mapping by state TYPE (`nativeStateTypeForStage` in `@helm/workflow`):** `merged` / `released` → a `completed`-type state (closes the issue, subsuming the deferred `setStatus`-close idea); every earlier stage → a `started`-type state ("In Development"). Mapped by Linear state **type** (`backlog | unstarted | started | completed | cancelled | triage`), not display name, so a team renaming "In Development" doesn't break us. `backlog` / `cancelled` are never auto-set — they stay human/initial. The mapping helper lives beside the state machine so it can never drift from `WORKFLOW_STAGES` (exhaustively tested).
+  - **New adapter capability — `setWorkflowStateByType(externalId, 'started' | 'completed')`:** an optional method on `IssueTrackerAdapter`. The Linear adapter builds a `type → stateId` map (first state per type by position) from the same `LIST_TEAM_STATES` fetch that already backed `setStatus`, and reuses the `UPDATE_ISSUE_STATE` mutation to target any resolved type (unlike `setStatus`, which is open/closed only). Throws `LinearNotFoundError` if the team has no state of the requested type. `setStatus` is unchanged.
+  - **Independent best-effort, Linear-only, anti-echo-gated:** the native-state set runs inside `item-service.writebackStage` after the label write, in its own try/timeout — a failure in one cannot block the other (the label is the primary signal, the native state a secondary mirror). Gated to `issue_tracker.provider === 'linear'` and feature-detected on the adapter, so GitHub Projects transitions skip it cleanly (its native Status field is a deferred follow-up). Tracker-originated transitions still write neither (anti-echo, unchanged).
+  - **Backfill extended:** `writeback-backfill` now also sets the native state per item for Linear products (best-effort per item; a native failure does not flip the item's label-reconcile result), reporting `nativeReconciled` / `nativeFailed` in its summary. This moves existing items (e.g. AF's LEA-103…109 → Completed) onto the native Kanban.
+
+- **Tracker writeback — workflow stage → Linear label / GitHub Projects single-select (ADR-033):** Helm now writes each stage change back to the external issue tracker as items advance. Previously stage lived only in the local item store, so the tracker showed every item as if nothing had progressed — surfaced during the private-product pilot, where every LEA item read stale in Linear despite the store advancing correctly. The adapter write-surface (`setSubStage`/`ensureSubStages`) existed and was unit-tested but had **zero** live call sites; this wires it into the transition path. Additive and backward-compatible — `ItemStore` semantics are unchanged.
+  - **New transition-service wrapper (`apps/api/src/services/item-service.ts`):** `transitionItem` / `forceTransitionItem` / `createItem` pair the store mutation with best-effort writeback through one private `writebackStage` choke point. The store stays pure-local (no adapter import — ADR-029); the wrapper is the only thing that touches the tracker. All stage-mutating call sites migrate to it (`routes/items`, `routes/dispatch`, `routes/webhooks` both providers, `routes/release`, `routes/rollback`).
+  - **Best-effort posture:** a tracker write that throws logs a warning and continues — the store remains the source of truth, so a tracker API hiccup never fails the workflow (consistent with how the webhook handlers already swallow external errors). A regression test proves the store result is still returned when the adapter throws.
+  - **Anti-echo:** writeback is skipped when the transition was tracker-originated (`triggeredBy` starts with `webhook:github-projects` / `webhook:linear`), preventing a tracker → webhook → store → writeback → tracker loop. **All other** triggers write back — `webhook:code-repo`, `webhook:knowledge-repo`, `webhook:release`, `manual:*`, `agent:*` — since those originate outside the tracker.
+  - **Scope = `setSubStage` only.** `setStatus` (auto-close on terminal stages) and `comment` (stage-change / PR-link notes) are deferred as separate policy decisions (noted in ADR-033). `ensureSubStages` is memoized once per adapter instance — neither adapter no-ops a repeat cheaply, so calling it per transition would be a network storm.
+  - **One-shot backfill command — `pnpm --filter @helm/api writeback-backfill <slug>`:** runs `ensureSubStages` once, then `setSubStage(currentStage)` for every item in the store (best-effort per item, `Reconciled N/M items` summary). Supports **both** providers (Linear and GitHub Projects). This is the recovery tool for items that advanced before writeback existed and for best-effort drift. The one-directional `sync` command (tracker → store, GitHub-only) is unchanged.
+
+- **`merged` workflow stage — split from `released` (ADR-032):** the final stage was a single `released` entered the moment the `helm/impl/<id>` PR merged, so `released` actually meant _merged_, not _shipped to users_. H5 inserts a distinct `merged` stage before `released`: a merged impl PR now lands the item in `merged`, and `released` is reached only by an explicit release trigger. `WORKFLOW_STAGES` grows to ten (`… 'remediation', 'merged', 'released'`); the state machine adds `code-review → merged` and `merged → released` (and removes `code-review → released` — see **Changed**). `released` stays terminal.
+  - **Manual operator promote — `POST /api/items/:externalId/release`:** advances one item `merged → released`. Body (Zod, `.strict()`): `{ reason?: string(1–500) }`. Responses: `200 { externalId, currentStage: 'released', historyEntry }` (history records `triggeredBy: 'manual:release'`, with `reason` in `note`); `400` on invalid body / invalid externalId / **item not in `merged`** (a `StageMismatchError`, mirroring the rollback endpoint, ADR-029); `404` if the item doesn't exist; `409` if the product opts out (`workflow.final_stage: merged`); `500` on unexpected failure. This is a normal **forward** edge, so it uses `ItemStore.transition()` (not `forceTransition` — that stays the rollback-only escape valve). Reuses `validateExternalId` + `mapErrorToResponse` (ADR-031).
+  - **Bulk release webhook — GitHub `release` event, `action: published`:** promotes **every** `merged` item of the instance product to `released` (`triggeredBy: 'webhook:release'`). Parsed by the tracker-agnostic `parseGitHubWebhook` (so it works for Linear products too — they still ship via GitHub releases) into a new `release_published` `NormalizedEvent`. Idempotent and delivery-safe: a per-item `WorkflowTransitionError`/`ItemNotFoundError` is logged and skipped, and the endpoint still returns `200`; non-`published` release actions are ignored. No-op for products with `workflow.final_stage: merged`.
+  - **`workflow.final_stage` product field:** `z.enum(['merged', 'released']).default('released')`. Gates the release **trigger**, not the state-machine **edge** (the `merged → released` edge always exists). A product with `final_stage: merged` (e.g. the playground, or any product with no user-facing release step) terminates at `merged`: the release endpoint returns `409` and the release webhook is a no-op. Default `released` is backward-compatible — existing `product.yaml` files are unaffected. (Placed under `workflow` alongside `stages_enabled` and the gates; the H5 brief's "top-level" framing predated the `workflow` grouping — reconciled in ADR-032.)
+  - Stage enumeration is automatic: both adapters' `ensureSubStages` build their option/label set from `WORKFLOW_STAGES`, so the new GitHub Projects single-select option and the Linear `helm:merged` label appear with no hand-maintained mapping.
+
+- **Product-context materialization for spec-writer / plan-writer worktrees (ADR-030):** before spawning the spec-writer or plan-writer agent, the dispatcher now writes the product's **full README and winning agent instruction file** (`AGENTS.md` / `AGENT.md` / `CLAUDE.md`, per the shared `AGENT_INSTRUCTION_FILES` order) into the agent's worktree (`data/worktrees/<slug>/<id>/`). The agent can now `cat`/`grep`/reference specific sections from disk instead of being limited to the truncated 2000-char `## Product Context` prompt snippet. Surfaced by the private-product pilot, where the plan-writer flagged the gap in its own Risks section across two consecutive items (LEA-105 and LEA-109, the latter as Evidence Point #3): _"The worktree provided here does not include CLAUDE.md, so any repo-specific notes from that file must be verified in the main branch before implementation."_
+  - New `materializeProductContext(workdir, product, token, fetchFn?)` in `fetch-product-context.ts` (exported from `@helm/orchestrator`) — a **sibling** of `fetchProductContext`, not a flag on it. Reuses the same `fetchRawFile` primitive; writes the **full file with no truncation** (the prompt-injected version keeps its 2000-char cap for context-window economy). Returns `MaterializedProductContext { readme, agentInstructions: { filename, … }, missingFiles[] }`; the agent instruction file is written under its **real winning variant name** (no rename). Best-effort posture: a 404 yields a `null` entry plus a `missingFiles` entry (the worktree simply lacks that file); a non-404 HTTP error propagates so the dispatcher can log it.
+  - Dispatcher wiring: invoked after worktree creation and before the runtime spawn in the **spec-writer** (token-gated + best-effort `.catch`, mirroring the existing `fetchProductContext` Part A) and **plan-writer** (token already asserted) paths. The **implementer is untouched** — it already gets `CLAUDE.md` via `provisionCodeWorkspace`'s shallow clone. A materialization failure logs and continues; it never fails the dispatch.
+  - `fetchProductContext` signature and 2000-char truncation behavior are **unchanged** — the `## Product Context` prompt section stays exactly as it was; materialization is purely additive.
+
+- **Operator rollback endpoint for failed implementer dispatches (ADR-029):** `POST /api/items/:externalId/rollback` rolls an item back from `in-development` to `plan-ready` after the implementer agent fails before any real work (Codex CLI crash, image-tool defect, environmental wedge). Replaces the previous workaround — hand-editing `<helm-data>/items/<id>.json`'s `currentStage` and appending a history entry by hand (documented in the private pilot driver prompt's gotchas table) — which is now **obsolete**. Surfaced by the private-product pilot, where LEA-109 hit this gap twice in one item.
+  - Body schema (Zod, `.strict()`): `{ fromStage: 'in-development', toStage: 'plan-ready', reason: string(1–500) }`. The allow-list is enforced at the schema boundary via **strict literals** — the single permitted pair is `in-development → plan-ready`; any future pair requires an intentional schema change, forcing deliberate review. `reason` is required even though the underlying `WorkflowEvent.note` is optional.
+  - Responses: `200 { externalId, currentStage: 'plan-ready', historyEntry }` on success; `400` on invalid body / invalid externalId / current stage not matching `fromStage`; `404` if the item doesn't exist; `409 { error, runningJobId }` if a dispatch job is currently running for the item; `500` on unexpected failures.
+  - The state machine (`VALID_TRANSITIONS`) is **untouched** — the rollback is an explicit escape valve, not a normal workflow edge. It calls a new sibling `ItemStore.forceTransition(...)` that bypasses `validateTransition` (asserting `currentStage === fromStage` to guard against races) while `transition()` and all its callers keep the state-machine guard intact. History records `triggeredBy: 'manual:rollback'` with the operator's reason in `note`. Concurrency reuses the existing job-store primitive via a new `JobStore.getRunningJobForItem(slug, externalId)` helper.
+  - Out of scope (explicit follow-up, see ADR-029): auto-rollback on classified failures, additional rollback pairs (e.g. `code-review → plan-ready`), and a dashboard UI — all open separately with their own evidence.
+
+- **Product-readiness gate (ADR-026):** an optional pre-dispatch precondition that blocks the spec-writer from running against an under-documented product, so it fails loudly with actionable `missing_context` instead of inventing context. Surfaced by the private-product pilot (a content-drifted `CLAUDE.md`).
+  - Schema: `workflow.readiness_gate` (optional, `skip` | `warn` | `required`, default `skip` → backward compatible; existing `product.yaml` files are unaffected). `skip` runs no check; `warn` checks and logs gaps but proceeds; `required` blocks dispatch.
+  - `checkProductReadiness(product, token, fetchFn?)` in `packages/orchestrator/src/readiness.ts` — for each `role: 'app'` code repo (`docs`/`infra` exempt), verifies a `README.md` and agent instructions (one of `AGENTS.md` / `AGENT.md` / `CLAUDE.md`) exist via the same `raw.githubusercontent` fetch primitive as `fetchProductContext` (no clone). Returns `{ ready, missingContext: [{ repo, role, missing[] }] }`. A 404 means absent; an unparseable repo URL or a missing token is reported as **unverifiable** (never silently passing); any other non-2xx/network error **propagates** so the caller can distinguish a precondition failure from an infrastructure failure.
+  - Dispatch route (`POST …/dispatch`): the gate runs **only** when the resolved specialist would be the spec-writer (discovery → spec-draft, or an explicit `specialistId: spec-writer`) and `readiness_gate !== 'skip'`, before job creation. `required` + not ready → `422 { error, missing_context }`; `required` + check throws → `502` (an infra failure is never reported as a `422` precondition failure); `warn` → logs and proceeds with `202`. Later stages and the operator-triggered remediators bypass the gate — they operate on structured artifacts, not raw repo docs, and the remediators are themselves the fix for missing context. `resolveSpecialistId(currentStage, specialistId?)` is now exported from `@helm/orchestrator` (single source of truth for the stage→specialist mapping, shared by the dispatcher and the gate).
+  - The `fetchProductContext` agent-instructions fallback chain is extended to `AGENTS.md → AGENT.md → CLAUDE.md` (was `AGENT.md → CLAUDE.md`); `AGENTS.md` is the cross-tool open standard. The accepted-filenames list (`AGENT_INSTRUCTION_FILES`) is the single source of truth shared by the reader and the gate so they cannot drift.
+  - Out of scope (explicit follow-up, see ADR-026): validating that files referenced in the issue body exist — deferred for false-positive risk ("create this file" issues legitimately reference not-yet-existing paths).
+
+- **Early-stage remediators — spec & plan (Session H2):** Helm can now iterate an already-published spec or plan PR _in place_ from operator feedback, closing the asymmetric-iteration gap (late stages iterated via the remediation gate; `spec-draft`/`plan-draft` were one-shot). See ADR-024.
+  - Two new specialists `spec-remediator` / `plan-remediator`, thin wrappers over a shared `early-remediator.ts` helper (`runEarlyRemediation`, `buildEarlyRemediatorPrompt`, `buildEarlyRemediatorParams`) parameterised by `kind: 'spec' | 'plan'`. Each one: resolves the open artifact PR, clones the knowledge repo at `helm/spec/<id>` / `helm/plan/<id>`, reads `specs/<id>.md` / `plans/<id>.md`, builds a prompt (`## Product Context`, `## Task`, `## Current {Spec|Plan}`, `## Feedback`, `## Hints`) instructing in-place edits (preserve untouched content, do NOT regenerate, do NOT open a new PR), spawns the runtime (`acceptEdits`, 15-min `EARLY_REMEDIATION_TIMEOUT_MS`), then fast-forward pushes back to the same branch (no `--force`) and returns the same `prUrl`. The item is **not** transitioned — it stays in its draft stage until the operator merges.
+  - `findArtifactPRUrl({ knowledgeRepo, externalId, kind, githubToken })` in `pr-helpers.ts` — queries `gh pr list --head helm/{spec,plan}/<id> --state open` (GitHub is the source of truth); null → `no open <kind> PR found for <id> on <branch>`.
+  - Dispatcher routing: `spec-remediator`/`plan-remediator` are operator-triggered (never in `STAGE_TO_SPECIALIST`). The branch enforces the stage invariant (`spec-remediator` requires `spec-draft`, `plan-remediator` requires `plan-draft`; else `… requires currentStage '<stage>', got '<actual>'`), non-empty feedback, and `GITHUB_TOKEN`, then runs the remediation with **no** stage transition.
+  - API: `POST …/dispatch` body gains `feedback?: string` (1–10000 chars). A Zod `superRefine` requires non-empty `feedback` when `specialistId` is a remediator (400 otherwise); `feedback` is threaded through `runDispatchJob` → dispatcher options. PR-comment triggers remain out of scope (no webhook ingestion yet).
 
 - **Implementer failures now report _why_ (post-pilot fix):** when the implementer agent does not finish successfully, `handleImplementerResult` appends the agent's `finalOutput` (truncated to 800 chars) to the returned error and the error log — e.g. `Agent finished with status 'error': [turn.failed] …` — instead of only the bare status. Falls back to the status-only message when `finalOutput` is empty.
 - **Code-reviewer findings now flow through the remediation safety net (post-pilot fix, ADR-025):** the remediation specialist previously consumed only security and test reviewer findings — code-reviewer CRITICAL/HIGH findings that the reviewer didn't self-apply (it wrote only its summary, no source edits) could pass through review unfixed. Discovered on the private-product pilot (LEA-104). The remediator is now the unified safety net behind all three reviewers: `shouldRemediate` gates on any reviewer's CRITICAL/HIGH, the dispatcher's `findingsByKind` map carries all three kinds, and `buildRemediationParams` iterates `['code', 'security', 'test']`. The code-reviewer still gets the first chance to self-apply (ADR-018); fixes are idempotent (an already-satisfied finding is a no-op). See ADR-025 and `docs/bugs/code-review-findings-no-remediation-fallback.md`.
@@ -485,3 +444,33 @@ to 'in-development'`. The dispatcher skips that self-transition and runs the
 - **Honest dispatch status (fix/dispatch-status-honesty):** `DispatchResult.status` now reflects the entire pipeline outcome — agent run **plus** post-agent steps (publish, PR creation, stage transition) — not just the raw agent exit code. Previously a `'done'` agent result was forwarded verbatim even when the publish or transition step had failed, causing jobs to report `status: 'done'` with no PR and an item stuck in an intermediate stage.
   - `resolveStatus(agentResult, handlerOutcome)` — new shared helper in `dispatcher.ts`. Rules: agent cancelled/errored → propagate directly; agent done + handler `error` field defined → `'error'`; agent done + handler succeeded → `'done'`. The helper is called in all three specialist branches (spec-writer, plan-writer, implementer).
   - `dispatcher.test.ts` — updated one existing assertion (spec file not created was already an error path but wrongly expected `'done'`); added 6 new test cases: spec-writer transition fails, spec-writer publish clone fails, plan-writer plan file not written, plan-writer publish clone fails, implementer no file changes (the exact e2e scenario that surfaced the bug), and implementer PR opened but code-review transition fails (verifies `prUrl` is preserved in error result).
+
+### Security
+
+- **Reject cross-origin browser requests to state-changing API routes (#162):**
+  the API has no authentication, so a web page open in the operator's
+  browser could send a simple cross-origin `POST` (for example to
+  `/api/products/:slug/items/:externalId/dispatch`) and trigger side effects.
+  Every non-`GET`/`HEAD`/`OPTIONS` request under `/api/*`, except the signed
+  GitHub/Linear webhooks, now needs an allowed `Origin` (the local UI on port
+  5173 by default, plus `HELM_ALLOWED_ORIGINS`), and without `Origin` a
+  `Sec-Fetch-Site` of `cross-site`/`same-site` is rejected. Rejections return
+  `403`. Requests with neither header (curl, scripts) still pass.
+  **Impact on existing instances:** curl/scripts, webhooks and the bundled UI
+  keep working. A browser-based tool on any other origin that writes to the
+  API gets `403` until its origin is added to `HELM_ALLOWED_ORIGINS` and the
+  API restarts. See `docs/local-dev.md`.
+
+- **API listens on `127.0.0.1` by default (#159):** the Bun API server set no
+  `hostname`, so it listened on every interface while having no
+  authentication. It now binds to loopback unless `HELM_API_HOST` sets another
+  interface (blank values use the default); a non-loopback host logs a warning
+  at startup. The startup log shows the real bind address, and the Vite dev
+  proxy follows `HELM_API_HOST` (default `127.0.0.1:3001`). **Impact on existing instances:** access from
+  the same machine (including a local tunnel or reverse proxy that targets
+  `127.0.0.1:3001`) keeps working. Instances reached from another machine stop
+  answering until they set `HELM_API_HOST` (for example `0.0.0.0`) and
+  restart. See `docs/local-dev.md`.
+
+[Unreleased]: https://github.com/lhpaul/helm/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/lhpaul/helm/releases/tag/v0.1.0

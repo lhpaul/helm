@@ -3,6 +3,6 @@ import { HELM_VERSION } from './index.js';
 
 describe('HELM_VERSION', () => {
   it('is the current semver string', () => {
-    expect(HELM_VERSION).toBe('0.0.0');
+    expect(HELM_VERSION).toBe('0.1.0');
   });
 });

@@ -1,0 +1,355 @@
+# Product Configuration
+
+## Specialist Timeouts
+
+Each entry under `specialists:` in `product.yaml` accepts an optional
+`timeout_sec` (positive integer, max 7200) that bounds how long Helm waits for
+that specialist's agent session before killing it with a `[timeout]` result.
+
+```yaml
+specialists:
+  plan-writer:
+    runtime: claude_code
+    model: claude-sonnet-4-5
+    timeout_sec: 1800 # long plans may take more than the 5 min default
+```
+
+Defaults when `timeout_sec` is omitted (unchanged behaviour):
+
+| Specialist                                                                  | Default                                                  |
+| --------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `spec-writer`, `plan-writer`                                                | Runtime default: 5 min (`claude_code`), 10 min (`codex`) |
+| `implementer`                                                               | 20 min                                                   |
+| `spec-remediator`, `plan-remediator`, `code-remediator`                     | 15 min                                                   |
+| `code-reviewer`, `security-reviewer`, `test-reviewer`, `review-adjudicator` | 10 min                                                   |
+
+The timeout is per specialist (all specialists of a product share one runtime,
+so there is no separate per-runtime setting). The value is passed per spawn and
+overrides the runtime's default.
+
+## Specialist Permissions (Claude runtime)
+
+Each entry under `specialists:` accepts an optional `permissions` block (#119)
+so a specialist can read extra context or use scoped tools without editing the
+operator's global Claude CLI settings. It is applied per spawn as
+`--add-dir`, `--allowedTools` and `--disallowedTools`, and is supported only
+with `runtime: claude_code` (a `codex` specialist with `permissions` fails
+validation).
+
+```yaml
+specialists:
+  spec-writer:
+    runtime: claude_code
+    model: claude-sonnet-4-5
+    permissions:
+      add_dirs: [/srv/product-context] # absolute paths, no `..`
+      allowed_tools: ['Read', 'Bash(pnpm test:*)']
+      gh_api_read_only: true # read-only `gh api`
+```
+
+- Omitted `permissions` leaves the CLI arguments unchanged (restrictive default).
+  Helm never sets `bypassPermissions` through this block.
+- `gh_api_read_only: true` allows `gh api` and denies method overrides
+  (`--method`, `-X`), body/field flags (`-f`, `-F`, `--field`, `--raw-field`),
+  `--input` and `gh api graphql`.
+- Unrestricted rules (`Bash`, `Bash(*)`, `*`) are rejected. Any other `gh` rule
+  in `allowed_tools` is rejected unless `allow_gh_mutations: true` is declared.
+
+Helm also guarantees `USER` and `LOGNAME` in the Claude subprocess env (derived
+from each other or the OS account). If neither can be resolved the spawn fails
+with an explicit error instead of a session that ends in "Not logged in".
+
+## Review Loop Budgets
+
+The review loop is bounded by two independent limits (ADR-036, ADR-042):
+
+```yaml
+review:
+  loop:
+    max_cycles: 5 # per-dispatch burst limit
+    max_cycles_cumulative: 15 # lifetime budget per item and lane
+    stop_rule:
+      no_progress_cycles: 2
+```
+
+`max_cycles` bounds a single dispatch — it is a cost guard on one run.
+`max_cycles_cumulative` bounds the item's whole life: remediation passes are
+counted in a durable per-item ledger, so re-dispatching (operator retry, PR
+`synchronize` webhook, resumed deferred external review) does **not** reset the
+count. Ledger writes are best effort: if a write fails, a later dispatch can
+load stale counters. Cycles from a failed write are not recoverable after the
+dispatch ends, so cumulative usage can remain undercounted.
+Without the ledger, an item can run dozens of cycles and never escalate.
+
+`max_cycles_cumulative` is optional and defaults to `max_cycles * 3`. It must be
+greater than or equal to `max_cycles` — a lifetime budget smaller than one
+burst is rejected at config parse time.
+
+The ledger is kept per **lane** (`code-review`, `spec-draft`, `plan-draft`), so
+a chatty draft review never spends the implementation PR's budget. The
+`no_progress` streak is carried across dispatches on the same ledger, so a
+re-dispatch can no longer launder a stalled remediation loop.
+
+When either budget is exhausted with blockers still open, the loop escalates:
+the job reports `escalated: true` with `escalationReason`, and Helm attempts
+to post the review-loop escalation comment on the PR. Comment delivery is best
+effort; operators should use the escalation result as the canonical signal.
+
+### Clearing an exhausted lifetime budget
+
+Nothing resets the ledger automatically. A re-dispatch after the budget is spent
+still runs one reviewer fan-out — that is how Helm learns whether the blockers
+are gone. If they are, the loop exits clean and never reaches the stop rule; the
+fan-out is not a remediation pass and does not consume budget. If they are not,
+it escalates again immediately instead of burning another remediation pass.
+
+Granting an escalated item more budget is a human decision, by design. Two ways:
+
+1. **Raise the budget** — increase `review.loop.max_cycles_cumulative` in the
+   product's `.helm/product.yaml`. Applies to every item of that product.
+2. **Clear one item's lane** — delete the lane key from `reviewLoopLedger` in
+   `$HELM_DATA_DIR/items/<productSlug>/<externalId>.json` (stop the API server first, since
+   item writes are serialized in-process):
+
+   ```jsonc
+   {
+     "reviewLoopLedger": {
+       "code-review": { "cyclesTotal": 15, ... } // ← delete this lane
+     }
+   }
+   ```
+
+   The lane is recreated on the next completed remediation pass, starting from
+   zero. Other lanes and the rest of the item state are untouched. The escalation
+   stays in the item's `history` either way.
+
+## External Review Providers
+
+A product runs at most one external reviewer, selected by
+`review.external.provider` (ADR-036). Omitting the block disables external
+review entirely — the loop then runs on Helm's own reviewer fan-out.
+
+| Provider       | Completion signal Helm trusts                          | Trust anchor                   |
+| -------------- | ------------------------------------------------------ | ------------------------------ |
+| `bugbot`       | check run with an allowlisted name                     | publishing GitHub App identity |
+| `coderabbit`   | commit status with an allowlisted context              | status sender login            |
+| `codex-github` | **submitted PR review** pinned to the exact commit SHA | review author login            |
+
+Every provider is a name **and** identity check: a matching name from any other
+app, or a matching identity on any other name, is ignored.
+
+### Readiness that arrives before the pending intent
+
+Helm resumes a deferred review from the provider's readiness webhook only when
+it finds a pending intent for that exact revision. The review loop parks that
+intent before its first provider poll, and the defer step upserts the same row.
+The provider, though, starts on the push, and the loop parks only when it
+enters the external wait. A fast provider can therefore report readiness before
+the item reaches `code-review`, or while the loop is still running Helm's own
+reviewer fan-out (#135, TD-002).
+
+That signal is not dropped. When readiness matches no pending intent, Helm
+writes a short-lived readiness note to
+`data/external-review-readiness/<product>/<provider>.<revision>.json`, logs
+`external review readiness recorded before its pending intent`, and checks once
+more for an intent written in the meantime. Then:
+
+- If the loop's poll sees the provider finish, the pass continues and the note
+  is dropped.
+- If the poll still reports `analysis_pending` and the loop defers, the defer
+  step replays the note through the normal resume path. The review is
+  re-dispatched as soon as the deferring job exits; no second webhook is
+  needed.
+- A note is replayed only when its repository matches the intent's (code repo
+  for implementation reviews, knowledge repo for draft reviews), and so do the
+  PR number and artifact branch when the payload had them. Readiness without
+  repository identity is not recorded, the same rule the direct resume path
+  applies. A note that does not match is kept for its own intent.
+- Notes expire with `review.external.max_defer_sec` (default 30 minutes) and are
+  swept with expired pending intents.
+
+The webhook response is unchanged (`{ "processed": true }`). Products that set
+`resume_on_check_run: false` never write notes.
+
+### `codex-github`
+
+```yaml
+review:
+  external:
+    provider: codex-github
+    defer_when_pending: true
+    resume_on_check_run: true
+    codex_github:
+      trusted_identities:
+        # The `[bot]` login only — see the exact-matching note below.
+        - 'chatgpt-codex-connector[bot]'
+      check_names: # optional — only used to name an in-flight analysis
+        - Codex
+        - Codex Review
+      blocking_severities:
+        - critical
+        - high
+```
+
+Codex publishes no commit status. It signals completion by **submitting a PR
+review**, so Helm treats "a review authored by a trusted identity exists for the
+target revision" as the readiness test, and resumes a deferred review from the
+`pull_request_review` (`submitted`) webhook. A review for an older revision does
+not resume anything — the SHA must match exactly.
+
+Findings map from Codex's own P-scale: `P0 → critical`, `P1 → high`,
+`P2 → medium`, `P3 → low`. An **unlabeled** comment is treated as `high`, not
+`medium` — Codex only posts what it considers high-priority, so an unparsed
+label must never silently demote a real blocker. A `CHANGES_REQUESTED` review
+blocks even when every inline thread has been resolved.
+
+Trusted-identity matching is exact for review authors: list the `[bot]` login,
+since a human could register the un-suffixed one. Check-run **app** identities
+are matched with the `[bot]` suffix ignored, because GitHub's app record carries
+the bare slug and that value is not user-settable.
+
+Only a **submitted** review counts. A draft (`PENDING`, `submitted_at` null) is
+visible on the reviews endpoint before its author submits it and carries no
+inline comments, so treating it as the verdict would forge a `clean` result;
+Helm keeps deferring until the review is submitted.
+
+**Operator prerequisite:** Codex reviews are not automatic by default. Either
+enable _Automatic reviews_ in Codex's GitHub settings for the repo, or comment
+`@codex review` on the PR. Without one of the two, no review is ever submitted:
+Helm defers, and the pending intent expires after `review.external.max_defer_sec`
+(default 30 minutes).
+
+#### The clean-terminal contract
+
+Helm returns `clean` for Codex only on evidence that is **all four** of:
+
+1. **Attributable** — authored by a trusted identity (exact match for review and
+   comment authors; only check-run **app** identities relax the `[bot]` suffix).
+2. **Head-pinned** — a submitted review whose `commit_id` matches the revision
+   under review, or a root PR comment whose `Reviewed commit:` marker names it.
+   Abbreviated SHAs match by prefix.
+3. **Terminal** — a verdict, not an acknowledgement. A 👍 reaction, a "starting
+   a review" comment, and a draft (`PENDING`) review are not verdicts.
+4. **Parseable as a pass** — the body reads as an explicit approval.
+
+Findings in a summary comment follow the same severity rules as inline ones: an
+explicit blocker (`must fix`, `changes requested`, a merge refusal) or a P0/P1
+label blocks, while a P2/P3-only summary lands on the advisory list.
+
+Root PR comments are the second evidence channel, and the one that gives a clean
+Codex run a terminal signal at all: Codex publishes no check run or status and
+does not always submit a review, but it does post a summary naming the commit it
+reviewed.
+
+When evidence disagrees: **blocking always wins**, whatever its age; then a
+**failed root-comment read** (missing evidence, not absent evidence — a clean
+review cannot silently override it, and it is the one unavailability with no
+timestamp to rank); otherwise the **newest** wins, and on an exact timestamp tie
+the less-clean side does.
+
+Both unavailability notices — an exhausted usage limit and a missing Codex
+environment — are dated, so neither outlives the condition it reported. An
+operator who creates the Codex environment mid-loop has the resulting fresh
+review supersede the recorded error, and a clean summary published after the
+quota resets supersedes the quota notice; a later bare acknowledgement never
+supersedes either.
+
+#### What no longer reads as clean
+
+Two distinct outcomes — neither of them `clean`.
+
+**Absent — never enters the evidence set:** reaction-only responses. Helm reads
+reactions from no provider, and a reaction carries no reviewed revision to pin
+to.
+
+**Dropped — reaches Helm, but produces no record:** comments from an untrusted
+author, stale reviews and stale summaries, and draft (`PENDING`) reviews. A stale
+blocker is dropped the same way, so it can never override current-head evidence.
+
+Both land in the same place operationally: with nothing terminal on the current
+head the loop stays deferred, and a lane that keeps finding nothing exits through
+the repeated-skip stop rule or expires with `max_defer_sec`.
+
+**Ranked as unavailable, each naming its cause:** a dismissed review
+(`review_dismissed`), a missing Codex cloud environment (`environment_missing` —
+`To use Codex here, create an environment for this repo`), an exhausted usage
+limit (`usage_limit`), a SHA-pinned response Helm cannot parse
+(`unrecognized_terminal_response`), and a failed root-comment read
+(`root_comments_unavailable`). The `external_repeated_skip` escalation names the
+reason, so a quota stop is distinguishable from a misconfiguration.
+
+Unavailability wording is only read outside quoted spans, and a multi-backtick or
+3+-tilde run in the body suppresses the **unavailability** classification
+specifically — the terminal verdicts still resolve normally. A Codex review of
+this very section quotes the phrases the classifier matches on.
+
+The `Reviewed commit:` marker is likewise read from unquoted prose only, and
+fails closed on an unclosed delimiter: only matched pairs can be stripped, so an
+unterminated fence is treated as quoting everything after it. Quoting a marker —
+in a fence, a block quote, a multi-backtick span, or an unterminated opener — and
+following it with approval prose would otherwise forge clean evidence for the
+current head.
+
+#### Resume path
+
+A trusted root comment whose marker names a **full** 40-hex SHA resumes a
+deferred intent from the `issue_comment` webhook, alongside the
+`pull_request_review`/`submitted` path. An abbreviated marker cannot address a
+pending intent (matched by exact revision); those runs are picked up on the next
+poll instead.
+
+> **Not the default yet.** The trusted clean signal above is implemented but has
+> not been dogfooded on a real PR, so the dogfood product still runs
+> `provider: coderabbit`. Promoting `codex-github` to a product's default is a
+> separate, explicitly approved change — see ADR-036's 2026-08-18 addendum.
+
+## Early Draft Review Loop
+
+Products can opt in to external review before spec and plan artifacts are ready
+for operator-authored remediation:
+
+```yaml
+review:
+  early_loop:
+    enabled: true
+```
+
+`review.early_loop.enabled` defaults to `false`. When the `review` section is
+omitted, Helm materializes the parsed product config as:
+
+```yaml
+review:
+  early_loop:
+    enabled: false
+```
+
+This default-off contract is intentional for rollout safety. Existing products
+keep their current operator-triggered `spec-remediator` and `plan-remediator`
+flows unless they explicitly set the flag to `true`.
+
+When enabled, the early loop applies only to knowledge-repo draft artifact PRs:
+
+- `helm/spec/<externalId>` while the item is in `spec-draft`, routed through
+  `spec-draft-reviewer`
+- `helm/plan/<externalId>` while the item is in `plan-draft`, routed through
+  `plan-draft-reviewer`
+
+The loop runs on supported draft PR open/synchronize webhooks from the canonical
+knowledge repo. It does not change implementation PR review, merge
+reconciliation, or explicit operator remediation commands.
+
+### Adjudication in the early loop (#125)
+
+When `review.loop.adjudication` is active, the `review-adjudicator` also runs in
+the early loop and escalates with `adjudication_conflict` on `HUMAN_REQUIRED`
+(ADR-037). Because a draft spec or plan is editable, the adjudicator is told to
+treat wording, clarity and structure findings as `AUTO`/`DEFERRED` plan items,
+not conflicts. A `doc_conflict` that it resolves by the ADR > spec > `CLAUDE.md`
+hierarchy must carry a `Resolved by: <ADR-NNN | spec | CLAUDE.md>` line; Helm
+then moves it to the unified plan as `AUTO` and does not escalate it, provided
+the adjudicator declares `AUTO_REMEDIATE` (an explicit `HUMAN_REQUIRED` is never lifted).
+
+Still escalating to a human: `product_decision` conflicts (behavior, scope or
+acceptance criteria not decided by an ADR, spec or settled decision), `doc_conflict`
+entries without a hierarchy `Resolved by` line (reviewer opinion never counts),
+and an explicit `HUMAN_REQUIRED` status. Implementation-PR review is unchanged.

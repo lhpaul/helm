@@ -1,0 +1,65 @@
+helm_version: '0'
+product:
+  slug: acme-platform
+  name: 'Acme Platform'
+
+issue_tracker:
+  provider: linear
+  api_key_env: LINEAR_API_KEY
+  team_key: ACME
+  webhook_secret_env: LINEAR_WEBHOOK_SECRET
+
+code_repos:
+  - url: https://github.com/acme-org/acme-app
+    default_branch: main
+    role: app
+  - url: https://github.com/acme-org/acme-docs
+    default_branch: main
+    role: docs
+
+knowledge_repo:
+  url: https://github.com/acme-org/acme-knowledge
+  default_branch: main
+
+workflow:
+  stages_enabled:
+    - discovery
+    - spec-draft
+    - spec-ready
+    - plan-draft
+    - plan-ready
+    - in-development
+    - code-review
+    - remediation
+    - released
+  designer_gate: skip
+  qa_gate: skip
+
+specialists:
+  spec-writer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  plan-writer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  implementer:
+    runtime: claude_code
+    model: claude-opus-4-7
+  code-reviewer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  security-reviewer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  test-reviewer:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  spec-remediator:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  plan-remediator:
+    runtime: claude_code
+    model: claude-sonnet-4-6
+  code-remediator:
+    runtime: claude_code
+    model: claude-sonnet-4-6

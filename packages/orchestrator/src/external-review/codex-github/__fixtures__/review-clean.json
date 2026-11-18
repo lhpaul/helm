@@ -1,0 +1,13 @@
+{
+  "review": {
+    "id": 900001,
+    "node_id": "PRR_kwDOclean",
+    "state": "COMMENTED",
+    "body": "Codex Review: didn't find any major issues. ✨",
+    "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "submitted_at": "2026-08-14T12:00:00Z",
+    "user": { "login": "chatgpt-codex-connector[bot]" }
+  },
+  "reviewComments": [],
+  "reviewThreads": []
+}

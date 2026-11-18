@@ -1,0 +1,482 @@
+import { z } from 'zod';
+import { WORKFLOW_STAGES } from '@helm/workflow';
+
+// ── Issue Tracker (discriminated union on `provider`) ────────────────────────
+
+const GitHubProjectsTrackerSchema = z
+  .object({
+    provider: z.literal('github_projects'),
+    org: z.string().min(1),
+    project_number: z.number().int().positive(),
+    custom_field_name: z.string().default('Helm Stage'),
+  })
+  .strict();
+
+const LinearTrackerSchema = z
+  .object({
+    provider: z.literal('linear'),
+    api_key_env: z.string().min(1),
+    team_key: z.string().min(1),
+    webhook_secret_env: z.string().min(1),
+  })
+  .strict();
+
+const IssueTrackerSchema = z.discriminatedUnion('provider', [
+  GitHubProjectsTrackerSchema,
+  LinearTrackerSchema,
+]);
+
+// ── Code Repo ────────────────────────────────────────────────────────────────
+
+const CodeRepoSchema = z
+  .object({
+    url: z.string().url(),
+    default_branch: z.string().min(1),
+    role: z.enum(['app', 'docs', 'infra']),
+  })
+  .strict();
+
+// ── Workflow ─────────────────────────────────────────────────────────────────
+// WORKFLOW_STAGES is the single source of truth — defined in @helm/workflow.
+
+const WorkflowStageSchema = z.enum(WORKFLOW_STAGES);
+
+// ── Specialists ──────────────────────────────────────────────────────────────
+// runtime enum (v0: claude_code | codex); extended to deepseek | anthropic_api | ollama in v1+
+
+/**
+ * Per-specialist Claude CLI permissions (#119). Opt-in: absent means the CLI
+ * args are unchanged. Never grants `bypassPermissions`.
+ */
+const UNRESTRICTED_TOOL_RULE = /^(?:\*|Bash|Bash\(\s*[*:\s]*\))$/;
+/**
+ * True when `rule` is exactly one tool rule: a tool name with an optional
+ * single parenthesised specifier that closes at the very end. The CLI splits
+ * `--allowedTools` entries on spaces outside parentheses, so `Read Bash` would
+ * smuggle in a second, unrestricted rule.
+ */
+function isSingleToolRule(rule: string): boolean {
+  const m = /^[A-Za-z][A-Za-z0-9_.:-]*/.exec(rule);
+  if (!m) return false;
+  const rest = rule.slice(m[0].length);
+  if (rest === '') return true;
+  if (!rest.startsWith('(') || !rest.endsWith(')')) return false;
+  let depth = 0;
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '(') depth++;
+    else if (rest[i] === ')') depth--;
+    if (depth === 0 && i < rest.length - 1) return false;
+    if (depth < 0) return false;
+  }
+  return depth === 0;
+}
+
+const GH_TOOL_RULE = /^Bash\((?:.*[\s/(;&|`$=])?gh(?:[\s:*)]|$)/;
+
+const SpecialistPermissionsSchema = z
+  .object({
+    /** Extra directories the agent may read (`--add-dir`). Absolute paths only. */
+    add_dirs: z
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .max(1024)
+          .refine((p) => /^(?:\/|[A-Za-z]:[\\/])/.test(p), 'must be an absolute path')
+          .refine((p) => !p.split(/[\\/]/).includes('..'), "must not contain '..' segments")
+          .refine((p) => !p.includes('\0'), 'must not contain NUL'),
+      )
+      .max(20)
+      .optional(),
+    /** Claude tool rules passed as `--allowedTools` (e.g. `Read`, `Bash(pnpm test:*)`). */
+    allowed_tools: z
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .max(300)
+          .refine((t) => !t.includes(','), "must not contain ','")
+          .refine(isSingleToolRule, 'must be exactly one tool rule per entry')
+          .refine(
+            (t) => !UNRESTRICTED_TOOL_RULE.test(t),
+            'unrestricted shell/tool rules are not allowed',
+          ),
+      )
+      .max(50)
+      .optional(),
+    /** Allow read-only `gh api` calls (GET only; method/body flags and graphql are denied). */
+    gh_api_read_only: z.boolean().optional(),
+    /** Explicit opt-in required for any `gh` rule in `allowed_tools`. */
+    allow_gh_mutations: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((perms, ctx) => {
+    if (perms.allow_gh_mutations) return;
+    perms.allowed_tools?.forEach((rule, i) => {
+      if (GH_TOOL_RULE.test(rule)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['allowed_tools', i],
+          message:
+            "'gh' rules in allowed_tools can mutate GitHub state; use gh_api_read_only or set allow_gh_mutations: true explicitly",
+        });
+      }
+    });
+  });
+
+const SpecialistSchema = z
+  .object({
+    runtime: z.enum(['claude_code', 'codex']),
+    model: z.string().min(1),
+    /**
+     * Optional reminders injected as a `## Hints` section into this
+     * specialist's prompt for this product. Free-form prose; one line per
+     * reminder. Use for patterns the specialist tends to miss (e.g. "Pin
+     * exact runtime dep versions", "Use singleQuote: true in Prettier").
+     *
+     * `.trim()` runs before the length check, so a whitespace-only hint is
+     * rejected (not silently rendered as an empty bullet) and stored trimmed.
+     */
+    extra_hints: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+    /**
+     * Optional per-specialist timeout in seconds (#118). Overrides the
+     * specialist's built-in default for this product. When omitted, the
+     * specialist's default applies (spec-writer / plan-writer: the runtime
+     * default — 5 min for claude_code, 10 min for codex; other specialists
+     * keep their own constants). Capped at 2 hours.
+     */
+    timeout_sec: z.number().int().positive().max(7200).optional(),
+    /**
+     * Optional Claude CLI permissions for this specialist (#119): extra
+     * readable directories and allowed tools, applied per spawn instead of the
+     * operator's global CLI settings. `claude_code` runtime only.
+     */
+    permissions: SpecialistPermissionsSchema.optional(),
+  })
+  .strict()
+  .superRefine((spec, ctx) => {
+    if (spec.permissions && spec.runtime !== 'claude_code') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['permissions'],
+        message: "'permissions' is only supported for the claude_code runtime",
+      });
+    }
+  });
+
+const SpecialistsSchema = z
+  .object({
+    'spec-writer': SpecialistSchema,
+    'plan-writer': SpecialistSchema,
+    implementer: SpecialistSchema,
+    'code-reviewer': SpecialistSchema,
+    'security-reviewer': SpecialistSchema,
+    'test-reviewer': SpecialistSchema,
+    // Early-stage remediators (ADR-024): iterate an already-published spec/plan
+    // PR in-place from operator feedback, mirroring the code-review remediation
+    // pattern. Each reads its own extra_hints.
+    'spec-remediator': SpecialistSchema,
+    'plan-remediator': SpecialistSchema,
+    // Renamed from `remediation` (ADR-024) so all three remediators form a
+    // coherent kebab-case family. The legacy `remediation` key is detected in
+    // product-parser with an actionable migration message (mirrors ADR-022).
+    'code-remediator': SpecialistSchema,
+    /** Optional — when configured, runs before remediation in the review loop (ADR-037). */
+    'review-adjudicator': SpecialistSchema.optional(),
+  })
+  .strict()
+  // H1 constraint: the dispatcher creates ONE runtime per product (selected from
+  // spec-writer.runtime) and reuses it for every specialist, so all specialists
+  // must share the same runtime. Reject mixed runtimes at validation instead of
+  // silently running every stage on spec-writer's runtime. Per-specialist
+  // runtimes require per-spawn runtime creation — deferred to H3 (see ADR-021).
+  .superRefine((specialists, ctx) => {
+    const runtimes = new Set(Object.values(specialists).map((s) => s.runtime));
+    if (runtimes.size > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['specialists'],
+        message:
+          `All specialists must use the same runtime (found: ${[...runtimes].sort().join(', ')}). ` +
+          `Mixed per-specialist runtimes are not supported yet — the dispatcher uses one runtime ` +
+          `per product. See ADR-021.`,
+      });
+    }
+  });
+
+const ExternalReviewSeveritySchema = z.enum(['critical', 'high', 'medium', 'low', 'info']);
+export const DEFAULT_BUGBOT_CHECK_NAMES = ['Bugbot', 'Bugbot / Review', 'Cursor / Bugbot'];
+export const DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES = [
+  'bugbot',
+  'cursor',
+  'cursor[bot]',
+  'cursor bugbot',
+];
+export const DEFAULT_BUGBOT_BLOCKING_SEVERITIES = ['critical', 'high', 'medium'] as const;
+
+/** Classic GitHub commit-status contexts posted by CodeRabbit. */
+export const DEFAULT_CODERABBIT_STATUS_CONTEXTS = ['CodeRabbit'];
+/**
+ * GitHub logins trusted for CodeRabbit status webhooks and review comments.
+ * Status events lack app identity — these logins are the Option C trust anchor.
+ */
+export const DEFAULT_CODERABBIT_TRUSTED_IDENTITIES = [
+  'coderabbitai[bot]',
+  'coderabbitai',
+  'coderabbitai-pro[bot]',
+];
+export const DEFAULT_CODERABBIT_BLOCKING_SEVERITIES = ['critical', 'high', 'medium'] as const;
+
+/**
+ * GitHub logins trusted to author a Codex GitHub code review.
+ * Codex signals completion by submitting a PR review (not a commit status), so
+ * the review author login is the trust anchor for both readiness and findings.
+ *
+ * Only the `[bot]` account is listed. The bare app slug is a registrable user
+ * login, so trusting it would let anyone who claims that account submit a review
+ * for the pending SHA and have a forged clean verdict accepted. Check-run **app**
+ * identities still match: that comparison strips the `[bot]` suffix from both
+ * sides, so the app record's bare slug matches this entry without the bare login
+ * ever being trusted to author a review.
+ */
+export const DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES = ['chatgpt-codex-connector[bot]'];
+/**
+ * Optional check-run names Codex may publish while a review is running.
+ * Codex readiness comes from the submitted review; a check run, when present,
+ * is only used to defer while the analysis is still in flight.
+ */
+export const DEFAULT_CODEX_GITHUB_CHECK_NAMES = ['Codex', 'Codex Review', 'codex'];
+export const DEFAULT_CODEX_GITHUB_BLOCKING_SEVERITIES = ['critical', 'high'] as const;
+
+// ── Root Product Schema ───────────────────────────────────────────────────────
+
+export const ProductSchema = z
+  .object({
+    helm_version: z.literal('0'),
+    product: z
+      .object({
+        slug: z
+          .string()
+          .min(1)
+          .regex(/^[a-z0-9-]+$/, 'must be lowercase alphanumeric with hyphens only'),
+        name: z.string().min(1),
+      })
+      .strict(),
+    issue_tracker: IssueTrackerSchema,
+    code_repos: z.array(CodeRepoSchema).min(1, 'at least one code_repo is required'),
+    knowledge_repo: z
+      .object({
+        url: z.string().url(),
+        default_branch: z.string().min(1),
+      })
+      .strict(),
+    workflow: z
+      .object({
+        stages_enabled: z.array(WorkflowStageSchema).min(1),
+        designer_gate: z.enum(['skip', 'optional', 'required']).default('skip'),
+        qa_gate: z.enum(['skip', 'smoke', 'regression']).default('skip'),
+        /**
+         * Pre-dispatch product-readiness gate (ADR-026). Before running the
+         * spec-writer, Helm checks that every app-role code repo carries a
+         * README and agent instructions (AGENTS.md / AGENT.md / CLAUDE.md) so
+         * the spec-writer fails loudly instead of inventing context.
+         *   - `skip`     — no check (default; backward compatible).
+         *   - `warn`     — check and log warnings, but proceed with dispatch.
+         *   - `required` — block dispatch with 422 + missing_context when not ready.
+         */
+        readiness_gate: z.enum(['skip', 'warn', 'required']).default('skip'),
+        /**
+         * Terminal stage for this product (ADR-032). The workflow always has
+         * the `merged → released` edge; this field gates whether the product
+         * ever fires the release trigger:
+         *   - `released` (default) — items advance to `released` once shipped,
+         *     via the operator endpoint or the GitHub release.published webhook.
+         *   - `merged` — the product has no user-facing release step (e.g. the
+         *     playground). Items terminate at `merged`; the release endpoint
+         *     returns 409 and the release webhook is a no-op for this product.
+         */
+        final_stage: z.enum(['merged', 'released']).default('released'),
+        /**
+         * Per-stage override of the native tracker Status, resolved by Linear
+         * workflow-state **id** (ADR-035). Maps a Helm stage to an exact Linear
+         * state id, overriding the by-**type** 2-bucket default (ADR-034) for
+         * that stage:
+         *   - keys are Helm workflow stages (validated against WORKFLOW_STAGES);
+         *   - values are Linear workflow-state ids (opaque UUIDs — use the
+         *     `list-linear-states` helper to discover them).
+         *
+         * Unmapped stages, and products without a `native_state_map`, fall back
+         * to the by-type default — so this is additive and backward-compatible.
+         * Resolved by id (not display name) so it survives a state rename in
+         * Linear. Linear-only: ignored for GitHub Projects (native Status
+         * mirroring there is still deferred).
+         */
+        native_state_map: z.record(WorkflowStageSchema, z.string().min(1)).optional(),
+      })
+      .strict(),
+    specialists: SpecialistsSchema,
+    notifications: z
+      .object({
+        slack_webhook: z.string().url().optional(),
+      })
+      .strict()
+      .optional(),
+    /**
+     * PR review loop configuration (ADR-036). Optional — defaults apply when omitted.
+     */
+    review: z
+      .object({
+        early_loop: z
+          .object({
+            enabled: z.boolean().default(false),
+          })
+          .strict()
+          .optional(),
+        external: z
+          .object({
+            provider: z
+              .enum(['bugbot', 'coderabbit', 'codex-github', 'local-ai-reviewer'])
+              .optional(),
+            defer_when_pending: z.boolean().optional(),
+            resume_on_check_run: z.boolean().optional(),
+            max_defer_sec: z.number().int().positive().optional(),
+            bugbot: z
+              .object({
+                check_names: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(DEFAULT_BUGBOT_CHECK_NAMES),
+                trusted_app_identities: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(DEFAULT_BUGBOT_TRUSTED_APP_IDENTITIES),
+                blocking_severities: z
+                  .array(ExternalReviewSeveritySchema)
+                  .min(1)
+                  .default([...DEFAULT_BUGBOT_BLOCKING_SEVERITIES]),
+              })
+              .strict()
+              .optional(),
+            coderabbit: z
+              .object({
+                status_contexts: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(DEFAULT_CODERABBIT_STATUS_CONTEXTS),
+                trusted_identities: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(DEFAULT_CODERABBIT_TRUSTED_IDENTITIES),
+                blocking_severities: z
+                  .array(ExternalReviewSeveritySchema)
+                  .min(1)
+                  .default([...DEFAULT_CODERABBIT_BLOCKING_SEVERITIES]),
+              })
+              .strict()
+              .optional(),
+            local_ai_reviewer: z
+              .object({
+                command: z.string().trim().min(1).default('local-ai-reviewer.sh'),
+                backend: z.enum(['codex', 'http']).default('codex'),
+                timeout_sec: z.number().int().positive().max(3600).default(900),
+                mode: z.enum(['ordinary', 'strict']).default('ordinary'),
+                /**
+                 * #120: opt-in external review of knowledge-repo spec/plan PRs
+                 * (early artifact loop). Off by default.
+                 */
+                artifacts: z
+                  .object({
+                    enabled: z.boolean().default(false),
+                    /** Operator wrapper running in the knowledge checkout; defaults to `command`. */
+                    command: z.string().trim().min(1).optional(),
+                  })
+                  .strict()
+                  .optional(),
+              })
+              .strict()
+              .optional(),
+            codex_github: z
+              .object({
+                trusted_identities: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(DEFAULT_CODEX_GITHUB_TRUSTED_IDENTITIES),
+                check_names: z
+                  .array(z.string().trim().min(1))
+                  .min(1)
+                  .default(DEFAULT_CODEX_GITHUB_CHECK_NAMES),
+                blocking_severities: z
+                  .array(ExternalReviewSeveritySchema)
+                  .min(1)
+                  .default([...DEFAULT_CODEX_GITHUB_BLOCKING_SEVERITIES]),
+              })
+              .strict()
+              .optional(),
+          })
+          .strict()
+          .optional(),
+        loop: z
+          .object({
+            max_cycles: z.number().int().positive().default(5),
+            /**
+             * Lifetime review/remediation budget for one item, accumulated across
+             * dispatches (ADR-042). Omitted → derived as `max_cycles * 3`.
+             */
+            max_cycles_cumulative: z.number().int().positive().optional(),
+            adjudication: z
+              .object({
+                enabled: z.boolean().default(true),
+              })
+              .strict()
+              .optional(),
+            stop_rule: z
+              .object({
+                no_progress_cycles: z.number().int().positive().default(2),
+              })
+              .strict()
+              .optional(),
+            /** Minimum internal finding severity that triggers remediation (ADR-036 revisit). */
+            remediate_severity: z
+              .enum(['critical_high', 'medium_and_above'])
+              .default('critical_high'),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((data, ctx) => {
+    if (
+      data.review?.loop?.adjudication?.enabled === true &&
+      !data.specialists['review-adjudicator']
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['review', 'loop', 'adjudication', 'enabled'],
+        message:
+          'review-adjudicator specialist must be configured when loop adjudication is enabled',
+      });
+    }
+
+    const loop = data.review?.loop;
+    if (loop?.max_cycles_cumulative !== undefined && loop.max_cycles_cumulative < loop.max_cycles) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['review', 'loop', 'max_cycles_cumulative'],
+        message:
+          'max_cycles_cumulative must be greater than or equal to max_cycles (lifetime budget cannot be smaller than the per-dispatch burst limit)',
+      });
+    }
+  });
+
+// ── Exported types ────────────────────────────────────────────────────────────
+
+export type Product = z.infer<typeof ProductSchema>;
+export type IssueTracker = z.infer<typeof IssueTrackerSchema>;
+export type CodeRepo = z.infer<typeof CodeRepoSchema>;
+// WorkflowStage is re-exported from @helm/workflow via config/index.ts — not redefined here.
+export type Specialist = z.infer<typeof SpecialistSchema>;

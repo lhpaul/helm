@@ -1,0 +1,63 @@
+{
+  "review": {
+    "id": 900002,
+    "node_id": "PRR_kwDOblocking",
+    "state": "COMMENTED",
+    "body": "Codex Review: found 2 issues.",
+    "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "submitted_at": "2026-08-14T12:00:00Z",
+    "user": { "login": "chatgpt-codex-connector[bot]" }
+  },
+  "reviewThreads": [
+    {
+      "id": "PRRT_kwDOopen",
+      "isResolved": false,
+      "path": "apps/api/src/routes/webhooks.ts",
+      "line": 210,
+      "comments": [
+        {
+          "id": 700001,
+          "node_id": "PRRC_kwDOopen",
+          "path": "apps/api/src/routes/webhooks.ts",
+          "line": 210,
+          "body": "**[P1] Webhook signature is compared non-constant-time**\n\nUse `timingSafeEqual` so a forged signature cannot be recovered byte by byte.",
+          "user": { "login": "chatgpt-codex-connector[bot]" }
+        }
+      ]
+    },
+    {
+      "id": "PRRT_kwDOresolved",
+      "isResolved": true,
+      "path": "apps/api/src/services/item-store.ts",
+      "line": 44,
+      "comments": [
+        {
+          "id": 700002,
+          "node_id": "PRRC_kwDOresolved",
+          "path": "apps/api/src/services/item-store.ts",
+          "line": 44,
+          "body": "**[P1] Ledger write is not clamped**\n\nAlready fixed in a follow-up commit.",
+          "user": { "login": "chatgpt-codex-connector[bot]" }
+        }
+      ]
+    }
+  ],
+  "reviewComments": [
+    {
+      "id": 700003,
+      "node_id": "PRRC_kwDOadvisory",
+      "path": "docs/product-config.md",
+      "line": 12,
+      "body": "**[P3] Nit:** stale wording in the provider table.",
+      "user": { "login": "chatgpt-codex-connector[bot]" }
+    },
+    {
+      "id": 700002,
+      "node_id": "PRRC_kwDOresolved",
+      "path": "apps/api/src/services/item-store.ts",
+      "line": 44,
+      "body": "**[P1] Ledger write is not clamped**\n\nAlready fixed in a follow-up commit.",
+      "user": { "login": "chatgpt-codex-connector[bot]" }
+    }
+  ]
+}

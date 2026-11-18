@@ -1,0 +1,44 @@
+{
+  "checkRun": {
+    "name": "Bugbot / Review",
+    "status": "completed",
+    "conclusion": "success",
+    "output": {
+      "title": "Bugbot review",
+      "summary": "Found review comments",
+      "text": null,
+      "annotations": []
+    }
+  },
+  "reviewComments": [
+    {
+      "id": 201,
+      "node_id": "comment-201",
+      "path": "src/threaded.ts",
+      "line": 8,
+      "body": "**HIGH**: Threaded Bugbot finding."
+    },
+    {
+      "id": 202,
+      "node_id": "comment-202",
+      "path": "src/standalone.ts",
+      "line": 21,
+      "body": "**CRITICAL**: Standalone Bugbot finding."
+    }
+  ],
+  "reviewThreads": [
+    {
+      "id": "thread-201",
+      "isResolved": false,
+      "path": "src/threaded.ts",
+      "line": 8,
+      "comments": [
+        {
+          "id": 201,
+          "node_id": "comment-201",
+          "body": "**HIGH**: Threaded Bugbot finding."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "review": {
+    "id": 900003,
+    "node_id": "PRR_kwDOchanges",
+    "state": "CHANGES_REQUESTED",
+    "body": "**[P0] The migration drops the column before backfilling it.**\n\nRun the backfill first.",
+    "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "submitted_at": "2026-08-14T12:00:00Z",
+    "user": { "login": "chatgpt-codex-connector[bot]" }
+  },
+  "reviewComments": [],
+  "reviewThreads": []
+}

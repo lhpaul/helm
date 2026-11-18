@@ -1,0 +1,158 @@
+import { describe, expect, it } from 'vitest';
+import {
+  INITIAL_STAGE,
+  canTransition,
+  getValidNextStages,
+  isWorkflowStage,
+  nativeStateTypeForStage,
+  validateTransition,
+} from './state-machine.js';
+import { WORKFLOW_STAGES, WorkflowTransitionError } from './types.js';
+
+describe('canTransition', () => {
+  describe('valid transitions', () => {
+    it('allows the primary forward path: discovery → spec-draft', () => {
+      expect(canTransition('discovery', 'spec-draft')).toBe(true);
+    });
+
+    it('allows code-review → remediation (CRITICAL/HIGH issues path)', () => {
+      expect(canTransition('code-review', 'remediation')).toBe(true);
+    });
+
+    it('allows code-review → in-development (reviewer requests changes)', () => {
+      expect(canTransition('code-review', 'in-development')).toBe(true);
+    });
+
+    it('allows code-review → merged (PR approved — item merged)', () => {
+      expect(canTransition('code-review', 'merged')).toBe(true);
+    });
+
+    it('allows merged → released (shipped to users)', () => {
+      expect(canTransition('merged', 'released')).toBe(true);
+    });
+
+    it('allows remediation → code-review (after fix, back to review)', () => {
+      expect(canTransition('remediation', 'code-review')).toBe(true);
+    });
+
+    it('allows spec-draft → discovery (backward — story needs rediscovery)', () => {
+      expect(canTransition('spec-draft', 'discovery')).toBe(true);
+    });
+  });
+
+  describe('invalid transitions', () => {
+    it('blocks discovery → released (illegal stage skip)', () => {
+      expect(canTransition('discovery', 'released')).toBe(false);
+    });
+
+    it('blocks code-review → released (ADR-032 — review now lands in merged, not released)', () => {
+      expect(canTransition('code-review', 'released')).toBe(false);
+    });
+
+    it('blocks released → discovery (released is terminal)', () => {
+      expect(canTransition('released', 'discovery')).toBe(false);
+    });
+
+    it('blocks merged → discovery (merged only advances to released)', () => {
+      expect(canTransition('merged', 'discovery')).toBe(false);
+    });
+
+    it('blocks merged → in-development (merged only advances to released)', () => {
+      expect(canTransition('merged', 'in-development')).toBe(false);
+    });
+
+    it('blocks merged → code-review (merged only advances to released)', () => {
+      expect(canTransition('merged', 'code-review')).toBe(false);
+    });
+
+    it('blocks in-development → remediation (must go through code-review first)', () => {
+      expect(canTransition('in-development', 'remediation')).toBe(false);
+    });
+  });
+});
+
+describe('validateTransition', () => {
+  it('does not throw for a valid transition', () => {
+    expect(() => validateTransition('plan-ready', 'in-development')).not.toThrow();
+  });
+
+  it('throws WorkflowTransitionError for an invalid transition', () => {
+    expect(() => validateTransition('discovery', 'released')).toThrow(WorkflowTransitionError);
+  });
+
+  it('error carries typed from and to properties', () => {
+    let caught: unknown;
+    try {
+      validateTransition('discovery', 'released');
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(WorkflowTransitionError);
+    const err = caught as WorkflowTransitionError;
+    expect(err.from).toBe('discovery');
+    expect(err.to).toBe('released');
+  });
+
+  it('error message includes the valid next stages', () => {
+    expect(() => validateTransition('discovery', 'released')).toThrow("'spec-draft'");
+  });
+
+  it("error message says 'none' when the from stage is terminal", () => {
+    expect(() => validateTransition('released', 'discovery')).toThrow('none');
+  });
+});
+
+describe('getValidNextStages', () => {
+  it('returns all three branches from code-review (approved path now → merged)', () => {
+    expect(getValidNextStages('code-review')).toEqual(['in-development', 'remediation', 'merged']);
+  });
+
+  it('returns [released] from merged (not terminal — gated forward edge)', () => {
+    expect(getValidNextStages('merged')).toEqual(['released']);
+  });
+
+  it('returns empty array for the terminal released stage', () => {
+    expect(getValidNextStages('released')).toEqual([]);
+  });
+});
+
+describe('constants and type guard', () => {
+  it('INITIAL_STAGE is discovery', () => {
+    expect(INITIAL_STAGE).toBe('discovery');
+  });
+
+  it('isWorkflowStage correctly identifies valid and invalid stages', () => {
+    expect(isWorkflowStage('in-development')).toBe(true);
+    expect(isWorkflowStage('merged')).toBe(true);
+    expect(isWorkflowStage('released')).toBe(true);
+    expect(isWorkflowStage('bogus-stage')).toBe(false);
+    expect(isWorkflowStage('')).toBe(false);
+  });
+});
+
+describe('nativeStateTypeForStage (ADR-034)', () => {
+  it('maps merged → completed', () => {
+    expect(nativeStateTypeForStage('merged')).toBe('completed');
+  });
+
+  it('maps released → completed', () => {
+    expect(nativeStateTypeForStage('released')).toBe('completed');
+  });
+
+  it.each(WORKFLOW_STAGES.filter((s) => s !== 'merged' && s !== 'released'))(
+    'maps pre-merged stage %s → started',
+    (stage) => {
+      expect(nativeStateTypeForStage(stage)).toBe('started');
+    },
+  );
+
+  it('is exhaustive: every WORKFLOW_STAGE maps to started or completed', () => {
+    for (const stage of WORKFLOW_STAGES) {
+      const type = nativeStateTypeForStage(stage);
+      expect(['started', 'completed']).toContain(type);
+      // 2-bucket invariant: completed iff terminal-area stage.
+      const isTerminal = stage === 'merged' || stage === 'released';
+      expect(type).toBe(isTerminal ? 'completed' : 'started');
+    }
+  });
+});

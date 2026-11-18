@@ -1,0 +1,96 @@
+import type { Product } from '@helm/shared';
+import { parseGitHubRepoUrl } from '../specialists/fetch-product-context.js';
+import { createBugbotExternalReviewAdapter, type BugbotAdapterDeps } from './bugbot/adapter.js';
+import {
+  createCodeRabbitExternalReviewAdapter,
+  type CodeRabbitAdapterDeps,
+} from './coderabbit/adapter.js';
+import {
+  createCodexGitHubExternalReviewAdapter,
+  type CodexGitHubAdapterDeps,
+} from './codex-github/adapter.js';
+import {
+  createLocalAiReviewerAdapter,
+  type LocalAiReviewerDeps,
+} from './local-ai-reviewer/adapter.js';
+import type { ExternalReviewContext, ExternalReviewResult } from './types.js';
+
+/** Parses `owner/repo#N` from a GitHub PR URL. */
+export function parsePullRequestRef(
+  prUrl: string,
+): { owner: string; repo: string; prNumber: number } | null {
+  const match = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  if (!match) return null;
+  return { owner: match[1]!, repo: match[2]!, prNumber: Number(match[3]) };
+}
+
+export type RunExternalReviewDeps = BugbotAdapterDeps &
+  CodeRabbitAdapterDeps &
+  CodexGitHubAdapterDeps &
+  LocalAiReviewerDeps;
+
+/**
+ * Runs the configured external reviewer when `review.external.provider` is set.
+ */
+export async function runExternalReviewIfConfigured(
+  product: Product,
+  prUrl: string,
+  deps?: RunExternalReviewDeps,
+  targetRevision?: string,
+  artifactKind?: 'spec' | 'plan',
+): Promise<ExternalReviewResult> {
+  const provider = product.review?.external?.provider;
+  if (!provider) {
+    return { status: 'skipped', reason: 'not_configured' };
+  }
+
+  // Artifact PRs (#120) live in the knowledge repo; implementation PRs in the code repo.
+  const reviewedRepo = artifactKind ? product.knowledge_repo : product.code_repos[0];
+  if (!reviewedRepo) {
+    return { status: 'skipped', reason: 'unavailable' };
+  }
+
+  const parsedRepo = parseGitHubRepoUrl(reviewedRepo.url);
+  const prRef = parsePullRequestRef(prUrl);
+  if (!parsedRepo || !prRef) {
+    return { status: 'skipped', reason: 'unavailable' };
+  }
+  if (
+    artifactKind &&
+    (prRef.owner.toLowerCase() !== parsedRepo.owner.toLowerCase() ||
+      prRef.repo.toLowerCase() !== parsedRepo.repo.toLowerCase())
+  ) {
+    return { status: 'skipped', reason: 'unavailable' };
+  }
+
+  const ctx: ExternalReviewContext = {
+    owner: prRef.owner,
+    repo: prRef.repo,
+    prNumber: prRef.prNumber,
+    prUrl,
+    defaultBranch: reviewedRepo.default_branch,
+    ...(targetRevision ? { targetRevision } : {}),
+    ...(artifactKind ? { artifactKind } : {}),
+  };
+
+  if (provider === 'local-ai-reviewer') {
+    return createLocalAiReviewerAdapter(product, deps).reviewPullRequest(ctx);
+  }
+
+  if (provider === 'bugbot') {
+    const adapter = createBugbotExternalReviewAdapter(product, deps);
+    return adapter.reviewPullRequest(ctx);
+  }
+
+  if (provider === 'coderabbit') {
+    const adapter = createCodeRabbitExternalReviewAdapter(product, deps);
+    return adapter.reviewPullRequest(ctx);
+  }
+
+  if (provider === 'codex-github') {
+    const adapter = createCodexGitHubExternalReviewAdapter(product, deps);
+    return adapter.reviewPullRequest(ctx);
+  }
+
+  return { status: 'skipped', reason: 'not_implemented' };
+}

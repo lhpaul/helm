@@ -1,0 +1,291 @@
+import { join } from 'node:path';
+import { ensureDataDir } from '@helm/storage';
+import { parseProductConfigFromFile, loadProductRegistry, ProductConfigError } from '@helm/shared';
+import type { Product } from '@helm/shared';
+import { GitHubProjectsAdapter, LinearAdapter } from '@helm/adapters';
+import type { IssueTrackerAdapter } from '@helm/adapters';
+import { ItemStore } from './item-store.js';
+import { migrateLegacyItems } from './item-store-migration.js';
+import { JobStore } from './job-store.js';
+import { isSafeFsPath } from './types.js';
+
+// ── ItemStore singleton ───────────────────────────────────────────────────────
+
+const _itemStores = new Map<string, ItemStore>();
+let _itemInitPromise: Promise<void> | null = null;
+
+/** Resolves the items root, migrating legacy flat item files once per process. */
+async function ensureItemsRoot(): Promise<string> {
+  const envDataDir = process.env.HELM_DATA_DIR?.trim();
+  const dataRoot = envDataDir ? envDataDir : join(process.cwd(), 'data');
+  const paths = await ensureDataDir(dataRoot);
+  if (_itemInitPromise === null) {
+    _itemInitPromise = migrateLegacyItems(paths.items).then((report) => {
+      if (report.migrated > 0 || report.skipped.length > 0) {
+        console.warn(
+          `[item-store] legacy item migration: migrated=${report.migrated} skipped=${report.skipped.length}`,
+        );
+      }
+    });
+    _itemInitPromise.catch(() => {
+      _itemInitPromise = null; // retry on next call
+    });
+  }
+  await _itemInitPromise;
+  return paths.items;
+}
+
+/**
+ * Returns the ItemStore scoped to `productSlug`, initializing it on first call.
+ * Items live under data/items/{productSlug}/; the first call per process also
+ * migrates legacy flat data/items/{externalId}.json files (idempotent).
+ * Reads HELM_DATA_DIR from env (defaults to 'data/' relative to process CWD).
+ */
+export async function getItemStore(productSlug: string): Promise<ItemStore> {
+  const cached = _itemStores.get(productSlug);
+  if (cached) return cached;
+  const itemsRoot = await ensureItemsRoot();
+  const existing = _itemStores.get(productSlug);
+  if (existing) return existing;
+  const store = new ItemStore(itemsRoot, productSlug);
+  _itemStores.set(productSlug, store);
+  return store;
+}
+
+// ── JobStore singleton ────────────────────────────────────────────────────────
+
+let _jobStore: JobStore | null = null;
+let _jobInitPromise: Promise<JobStore> | null = null;
+
+/**
+ * Returns the shared JobStore instance, initializing it on first call.
+ * Single-flight: concurrent calls during startup await the same promise.
+ * Reads HELM_DATA_DIR from env (defaults to 'data/' relative to process CWD).
+ */
+export async function getJobStore(): Promise<JobStore> {
+  if (_jobStore !== null) return _jobStore;
+  if (_jobInitPromise !== null) return _jobInitPromise;
+
+  _jobInitPromise = (async () => {
+    const envDataDir = process.env.HELM_DATA_DIR?.trim();
+    const dataRoot = envDataDir ? envDataDir : join(process.cwd(), 'data');
+    const paths = await ensureDataDir(dataRoot);
+    _jobStore = new JobStore(paths.jobs);
+    return _jobStore;
+  })();
+
+  try {
+    return await _jobInitPromise;
+  } finally {
+    _jobInitPromise = null;
+  }
+}
+
+// ── Product config singleton ──────────────────────────────────────────────────
+
+let _productConfig: Product | null = null;
+let _productInitPromise: Promise<Product> | null = null;
+
+/**
+ * Returns the cached Product config, loading it on first call.
+ * Single-flight: concurrent callers await the same initialization promise.
+ * Reads HELM_KNOWLEDGE_REPO_PATH from env to locate .helm/product.yaml.
+ */
+export async function getProductConfig(): Promise<Product> {
+  if (_productConfig !== null) return _productConfig;
+  if (_productInitPromise !== null) return _productInitPromise;
+
+  _productInitPromise = (async () => {
+    const knowledgePath = process.env.HELM_KNOWLEDGE_REPO_PATH?.trim();
+    if (!knowledgePath) {
+      throw new Error('HELM_KNOWLEDGE_REPO_PATH environment variable not set');
+    }
+    const configPath = join(knowledgePath, '.helm', 'product.yaml');
+    const config = await parseProductConfigFromFile(configPath);
+    _productConfig = config;
+    return config;
+  })();
+
+  try {
+    return await _productInitPromise;
+  } finally {
+    _productInitPromise = null;
+  }
+}
+
+// ── IssueTrackerAdapter singleton (provider-aware factory) ───────────────────
+
+let _issueTrackerAdapter: IssueTrackerAdapter | null = null;
+let _issueTrackerAdapterPromise: Promise<IssueTrackerAdapter> | null = null;
+
+/**
+ * Returns the shared IssueTrackerAdapter for the configured provider.
+ * Single-flight: concurrent callers await the same initialization promise.
+ * Dispatches to GitHubProjectsAdapter or LinearAdapter based on
+ * product.issue_tracker.provider.
+ */
+export async function getIssueTrackerAdapter(): Promise<IssueTrackerAdapter> {
+  if (_issueTrackerAdapter !== null) return _issueTrackerAdapter;
+  if (_issueTrackerAdapterPromise !== null) return _issueTrackerAdapterPromise;
+
+  _issueTrackerAdapterPromise = (async () => {
+    const config = await getProductConfig();
+    const provider = config.issue_tracker.provider;
+
+    if (provider === 'github_projects') {
+      const token = process.env.GITHUB_TOKEN?.trim();
+      if (!token) throw new Error('GITHUB_TOKEN environment variable is not set or blank');
+      _issueTrackerAdapter = new GitHubProjectsAdapter(config.issue_tracker, token);
+    } else if (provider === 'linear') {
+      const linearConfig = config.issue_tracker;
+      const apiKey = process.env[linearConfig.api_key_env]?.trim();
+      if (!apiKey) {
+        throw new Error(
+          `${linearConfig.api_key_env} environment variable is not set or blank (required for Linear adapter)`,
+        );
+      }
+      _issueTrackerAdapter = new LinearAdapter(linearConfig, apiKey);
+    } else {
+      throw new Error(`Unsupported issue_tracker.provider: ${provider as string}`);
+    }
+
+    return _issueTrackerAdapter;
+  })();
+
+  try {
+    return await _issueTrackerAdapterPromise;
+  } finally {
+    _issueTrackerAdapterPromise = null;
+  }
+}
+
+// ── GitHubProjectsAdapter singleton (kept for backward compatibility) ─────────
+
+let _githubAdapter: GitHubProjectsAdapter | null = null;
+let _githubAdapterPromise: Promise<GitHubProjectsAdapter> | null = null;
+
+/**
+ * Returns the shared GitHubProjectsAdapter, initializing it on first call.
+ * Single-flight: concurrent callers await the same initialization promise.
+ * Reads GITHUB_TOKEN from env; requires issue_tracker.provider === 'github_projects'.
+ * @deprecated Use getIssueTrackerAdapter() instead.
+ */
+export async function getGitHubAdapter(): Promise<GitHubProjectsAdapter> {
+  if (_githubAdapter !== null) return _githubAdapter;
+  if (_githubAdapterPromise !== null) return _githubAdapterPromise;
+
+  _githubAdapterPromise = (async () => {
+    const token = process.env.GITHUB_TOKEN?.trim();
+    if (!token) throw new Error('GITHUB_TOKEN environment variable is not set or blank');
+
+    const config = await getProductConfig();
+    if (config.issue_tracker.provider !== 'github_projects') {
+      throw new Error(
+        `getGitHubAdapter requires provider 'github_projects', got '${config.issue_tracker.provider}'`,
+      );
+    }
+    _githubAdapter = new GitHubProjectsAdapter(config.issue_tracker, token);
+    return _githubAdapter;
+  })();
+
+  try {
+    return await _githubAdapterPromise;
+  } finally {
+    _githubAdapterPromise = null;
+  }
+}
+
+// ── Product registry (multi-product) ─────────────────────────────────────────
+
+let _productRegistry: Product[] | null = null;
+let _productRegistryPromise: Promise<Product[]> | null = null;
+
+/**
+ * Returns all registered Products, initializing from the registry on first call.
+ * Single-flight: concurrent callers await the same promise.
+ *
+ * Discovery order:
+ *   1. If $HELM_KNOWLEDGE_REPO_PATH/.helm/products.yaml exists → load all products listed there.
+ *   2. Otherwise (ENOENT) → fall back to [getProductConfig()] for single-product backward compat.
+ *
+ * Paths in products.yaml are resolved relative to HELM_KNOWLEDGE_REPO_PATH itself
+ * (the knowledge repo root). Example: path "." → the repo itself; path
+ * "../helm-playground-knowledge" → a sibling repo. See ADR-004.
+ */
+export async function getProductRegistry(): Promise<Product[]> {
+  if (_productRegistry !== null) return _productRegistry.map((p) => structuredClone(p));
+  if (_productRegistryPromise !== null) {
+    return _productRegistryPromise.then((products) => products.map((p) => structuredClone(p)));
+  }
+
+  _productRegistryPromise = (async () => {
+    const knowledgePath = process.env.HELM_KNOWLEDGE_REPO_PATH?.trim();
+    if (!knowledgePath) throw new Error('HELM_KNOWLEDGE_REPO_PATH environment variable not set');
+    if (!isSafeFsPath(knowledgePath)) {
+      throw new Error("HELM_KNOWLEDGE_REPO_PATH contains invalid characters or '.'/'..' segments");
+    }
+
+    const registryFilePath = join(knowledgePath, '.helm', 'products.yaml');
+    const baseDir = knowledgePath; // paths in products.yaml are relative to the knowledge repo itself
+
+    let products: Product[];
+    try {
+      products = await loadProductRegistry(registryFilePath, baseDir);
+    } catch (err) {
+      // Fall back to single-product mode ONLY when the registry file itself is absent.
+      // ProductConfigError wraps the fs error: .code is preserved directly, but .path
+      // lives on .cause (the original NodeJS.ErrnoException). Checking .cause.path
+      // ensures we don't swallow ENOENT errors from a referenced product.yaml being
+      // missing — those must propagate so the operator can diagnose the broken entry.
+      const isMissingRegistryFile =
+        err instanceof ProductConfigError &&
+        err.code === 'ENOENT' &&
+        (err.cause as NodeJS.ErrnoException | undefined)?.path === registryFilePath;
+
+      if (isMissingRegistryFile) {
+        products = [await getProductConfig()];
+      } else {
+        throw err;
+      }
+    }
+
+    _productRegistry = products.map((p) => structuredClone(p));
+    return _productRegistry.map((p) => structuredClone(p));
+  })();
+
+  try {
+    const products = await _productRegistryPromise;
+    return products.map((p) => structuredClone(p));
+  } finally {
+    _productRegistryPromise = null;
+  }
+}
+
+// Transition + tracker-writeback wrappers (ADR-033) live in ./item-service.ts.
+// They are imported DIRECTLY from there by call sites (not re-exported here) on
+// purpose: item-service.ts imports the factory accessors above, so re-exporting
+// it would create an index↔item-service cycle. The cycle is benign at runtime
+// but breaks `vi.mock('./index.js', importOriginal)` — the spread would bind the
+// real wrappers to the real getItemStore instead of the test's mock. Keeping the
+// dependency one-directional (item-service → index) avoids that entirely.
+
+// ── Test utilities ────────────────────────────────────────────────────────────
+
+/**
+ * Resets all service singletons so the next call re-initializes from env.
+ * For use in tests only — do not call in production code.
+ */
+export function _resetForTests(): void {
+  _itemStores.clear();
+  _itemInitPromise = null;
+  _jobStore = null;
+  _jobInitPromise = null;
+  _productConfig = null;
+  _productInitPromise = null;
+  _issueTrackerAdapter = null;
+  _issueTrackerAdapterPromise = null;
+  _githubAdapter = null;
+  _githubAdapterPromise = null;
+  _productRegistry = null;
+  _productRegistryPromise = null;
+}

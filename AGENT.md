@@ -10,24 +10,85 @@ Persona objetivo: CTO de startup chica que sostiene calidad con poco equipo + ag
 
 ## Diseño y decisiones (fuente de verdad)
 
-Los documentos de diseño viven fuera del repo en:
+La visión, el diagnóstico, la arquitectura, el scope de v0, el setup y el roadmap son notas privadas del maintainer. No están en este repo. Quien tenga acceso a esas notas debe leerlas antes de tomar decisiones técnicas. Cubren:
 
-`/Users/lhpaul/Documents/Emprendimientos/Helm/`
+- visión del producto
+- diagnóstico: análisis cruzado de agent-hq, ai-dev-framework-template y un UX Lab interno previo
+- arquitectura: componentes, modelo de dominio, máquina de estados, capas de persistencia
+- scope exacto de v0: qué entra, qué no, decisiones cerradas
+- setup: credenciales y software requeridos
+- roadmap: estado vivo y pending
 
-Leé estos antes de tomar decisiones técnicas:
-
-- `00-VISION.md` — visión del producto
-- `01-DIAGNOSTICO.md` — análisis cruzado de agent-hq, ai-dev-framework-template, Zeki UX Lab
-- `02-ARQUITECTURA.md` — componentes, modelo de dominio, máquina de estados, capas de persistencia
-- `04-ROADMAP.md` — 18 sesiones en ~9 semanas a MVP
-- `05-V0-SCOPE.md` — scope exacto de v0: qué entra, qué no, decisiones cerradas
-- `06-SETUP.md` — credenciales y software requeridos
+`00-VISION.md`, `01-DIAGNOSTICO.md`, `02-ARQUITECTURA.md`, `05-V0-SCOPE.md` y `06-SETUP.md` quedaron como stubs. `agent-comms/` (incluido `ROADMAP.md`) se retiró el 2026-10-06; `04-ROADMAP.md` era solo un puntero a ese roadmap.
 
 ## Repositorios relacionados (referencias)
 
-- `/Users/lhpaul/Git/MOME/agent-hq` — herramienta existente en MOME. Fuente de patrones técnicos a heredar (orquestador, terminal bridge, fan-out reviewers, cost tracking). Leer su `CLAUDE.md` antes de implementar cualquier patrón que ya esté resuelto ahí.
-- `/Users/lhpaul/Git/ai-dev-framework-template` — template del que Helm hereda Spec → Plan → Code, REVIEW.md, branch naming, CHANGELOG. Leer su `AGENTS.md` para entender la filosofía protocol-first.
-- `/Users/lhpaul/Git/Helm/helm-knowledge` (próximamente) — knowledge repo del propio Helm: specs, plans, ADRs, retrospectivas.
+- `agent-hq` (checkout hermano) — herramienta interna previa. Fuente de patrones técnicos a heredar (orquestador, terminal bridge, fan-out reviewers, cost tracking). Leer su `CLAUDE.md` antes de implementar cualquier patrón que ya esté resuelto ahí.
+- [ai-dev-framework-template](https://github.com/lhpaul/ai-dev-framework-template) — template del que Helm hereda Spec → Plan → Code, REVIEW.md, branch naming, CHANGELOG. Leer su `AGENTS.md` para entender la filosofía protocol-first.
+- [helm-knowledge](https://github.com/lhpaul/helm-knowledge) — knowledge repo del propio Helm: `.helm/product.yaml`, specs, plans, ADRs, retrospectivas. En local, checkout hermano `helm-knowledge/`.
+
+## Backlog oficial (GitHub Project #3)
+
+El backlog canónico de Helm es https://github.com/users/lhpaul/projects/3
+(configurado en `helm-knowledge/.helm/product.yaml`).
+
+Al crear issues de framework desde una sesión o retro, **siempre** añádelos al
+proyecto (no basta con `gh issue create`):
+
+```bash
+./scripts/create-helm-backlog-issue.sh --title "…" --body "…" --type Workflow --label review-loop
+```
+
+Runbook: `helm-knowledge/operations/helm-backlog.md`.
+
+## Configuración local
+
+Las variables de entorno del server API viven en `apps/api/.env` (no en la raíz).
+Bun lee `.env` del directorio de trabajo del proceso — que es `apps/api/` cuando Turbo lanza el dev server.
+
+### Secrets con 1Password (recomendado)
+
+Un solo doc (`.env.example`) + un archivo de input por Product. `sync-env` inyecta secretos y escribe `.env`.
+
+```bash
+# Create apps/api/.env.<product> from the blocks in .env.example
+pnpm sync-env -- <product>   # slug: ^[a-z0-9][a-z0-9-]*$, max 64 chars
+pnpm sync-env -- helm        # Helm self-dogfood (GitHub Projects)
+pnpm dev
+```
+
+Requisitos: [1Password CLI](https://developer.1password.com/docs/cli/get-started/) (`op`) y sesión activa (`op signin`).
+
+| Archivo          | Commitear | Contenido                                    |
+| ---------------- | --------- | -------------------------------------------- |
+| `.env.example`   | sí        | Doc: variables + cómo usar 1Password         |
+| `.env.<product>` | no        | Input sync-env de un Product (refs `op://…`) |
+| `.env.helm`      | no        | Input sync-env para Helm-the-product         |
+| `.env`           | no        | Generado por `sync-env`; lo lee Bun          |
+
+Los inputs usan referencias `op://<vault>/<item>/<field>` para el PAT de GitHub,
+el secret del webhook de GitHub y, solo en Products con Linear, la API key y el
+secret del webhook de Linear. El layout concreto de vaults e items es del
+operador y no se documenta en este repo.
+
+Helm-the-product usa **GitHub Projects**, no Linear — no necesita Linear API key.
+
+### Variables
+
+| Variable                   | Descripción                                                                                          |
+| -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `HELM_KNOWLEDGE_REPO_PATH` | Path absoluto al knowledge repo del Product (donde vive `.helm/product.yaml`)                        |
+| `HELM_DATA_DIR`            | Path absoluto a `data/` operativo                                                                    |
+| `GITHUB_TOKEN`             | PAT GitHub                                                                                           |
+| `LINEAR_API_KEY`           | Solo Products con `issue_tracker.provider: linear`                                                   |
+| `GITHUB_WEBHOOK_SECRET`    | Secret del webhook GitHub hacia Helm                                                                 |
+| `HELM_API_HOST`            | Opcional. Interfaz donde escucha la API; default `127.0.0.1` (ver `docs/local-dev.md`)               |
+| `HELM_ALLOWED_ORIGINS`     | Opcional. Orígenes extra (coma) que pueden mutar la API desde el navegador (ver `docs/local-dev.md`) |
+
+Setup manual sin 1Password: escribir `.env` a mano con valores en claro (no recomendado para secretos).
+
+Si en el futuro `apps/web` necesita variables de entorno, irán en `apps/web/.env.example` / `apps/web/.env` por separado.
+No centralizamos en root para no necesitar dotenv-cli overhead.
 
 ## Stack confirmado (v0)
 
@@ -35,7 +96,7 @@ Leé estos antes de tomar decisiones técnicas:
 - Frontend: React 18 + Tailwind + Vite.
 - Monorepo: pnpm workspaces + Turborepo.
 - Persistencia: GitHub Projects/Linear (workflow) + knowledge repo (artefactos) + filesystem `data/` (operativo).
-- Runtime de agentes (v0): solo Claude Code spawn. Abstracción `AgentRuntimeAdapter` lista para agregar runtimes en v1+.
+- Runtime de agentes: Claude Code (default) + Codex CLI (ADR-021/028). Abstracción `AgentRuntimeAdapter` para más runtimes.
 
 ## Decisiones cerradas
 
@@ -45,7 +106,7 @@ Leé estos antes de tomar decisiones técnicas:
 4. Knowledge repo separado por producto.
 5. 5 specialists en MVP: spec-writer, plan-writer, implementer, 3 reviewers, remediation.
 6. Open source desde día uno (Apache 2.0).
-7. Piloto MOME contra repo de prueba primero.
+7. Piloto inicial contra repo de prueba primero.
 
 ## Convenciones
 
@@ -63,3 +124,88 @@ Sesión 2: bootstrap del monorepo. Tres bloques:
 3. Esqueletos: Hono `/health`, React + Vite + Tailwind con WS trivial.
 
 Meta: `pnpm dev` levanta server + dashboard, primer commit pusheado.
+
+## Flujo de trabajo asíncrono (autonomía en PRs)
+
+Para reducir round-trips humanos en cada bloque de sesión, Claude Code tiene autonomía documentada para operaciones mecánicas. La regla mental: humano filtra decisiones estratégicas; Claude Code ejecuta lo predecible.
+
+### Claude Code PUEDE hacer autónomamente:
+
+- Ejecutar `pnpm turbo run test`, `build`, `lint` y reportar resultado en el PR description.
+- Aplicar fixes de CodeRabbit que caen en categorías ya catched antes (path traversal en inputs externos, info leak de paths/tokens en error responses, race conditions en singletons o init, validación estricta con Zod `.strict()`, sanitización de inputs). Si el fix es claramente uno de estos patrones, aplicalo y commitea con `fix(...)` + "Addresses CodeRabbit review comment on PR #N".
+- Cuando LH aprueba un hito de limpieza de PR/reviewer-loop, esa aprobación autoriza el ciclo completo sobre ese PR: inspeccionar threads accionables, aplicar fixes puntuales, commitear, pushear a la misma branch, pedir re-review, esperar checks, volver a leer threads y repetir hasta estado terminal.
+- Resolver manualmente threads de CodeRabbit/Bugbot/PR-Agent si el fix está presente en el `headRefOid` actual y existe evidencia local o CI. Si el finding es stale o false positive, dejar un comentario breve con la evidencia antes de resolverlo.
+- Ejecutar el reviewer local después de cada push y verificar evidencia del head actual (ver "Reviewer loop básico" abajo).
+- Mergear el PR con `gh pr merge N --merge --delete-branch` después de:
+  1. Confirmar que tests, build y lint están verdes localmente.
+  2. Confirmar `RESULT=clean` del reviewer local con evidencia del head actual y cero blockers.
+  3. Pull del develop y switch a develop después del merge.
+
+### Claude Code DEBE parar y pedir input humano si:
+
+- Surge una decisión arquitectónica no cubierta en el plan high-level aprobado al inicio del bloque.
+- CodeRabbit reporta un finding que requiere refactor sustantivo (no fix puntual).
+- Tests fallan más de 2 retries seguidos sin pattern claro de fix.
+- Hay conflict de merge con develop.
+- El plan de un Bloque excede 90 minutos de tiempo estimado.
+- Surge una limitación técnica que requiere agregar/cambiar dependencias significativas no previstas.
+- La acción requerida es destructiva o cambia la autoridad externa del repo: force-push, cambio de branch base, modificación de branch protection, rotación de secrets, permisos, credenciales o ownership.
+- El siguiente paso es mergear y LH no autorizó explícitamente mergear en este hito (salvo la autorización permanente de Helm Dev, ver abajo).
+
+### Autorización permanente de auto-merge: agente Helm Dev
+
+El agente Helm Dev (sesiones `devsession` del proyecto `helm`, desde su clon aparte, no desde el checkout que sirve Helm AF) tiene autorización permanente de LH para mergear sus propios PRs a `develop` con `gh pr merge N --merge --delete-branch` cuando el riesgo es **low o medium** y se cumplen las condiciones de merge de arriba más CI verde.
+
+Debe escalar a LH (no mergear) si el PR:
+
+- es de riesgo **high** (cambios arquitectónicos, de modelo de datos/persistencia, migraciones, seguridad/auth, o de comportamiento amplio del orquestador);
+- apunta a `main` o a `release/*`, o es un `hotfix/*`;
+- toca `.github/workflows/`, branch protection/rulesets o permisos del repo;
+- toca secretos, `.env*`, credenciales o scripts de sync de secretos;
+- toca prod/deploy: Helm AF, LaunchAgents, tunnel, o cualquier despliegue.
+
+Nunca force-push, nunca tocar ramas/PRs ajenos. Helm AF se actualiza solo a mano por LH.
+
+### Reviewer loop básico para local AI reviewer
+
+Después de cada push, ejecutá el companion de ADF instalado en `PATH` desde el
+checkout del PR (requiere `codex`, login activo, `gh`, `jq` y `REVIEW.md`):
+
+```bash
+PR_NUMBER=N
+REVIEW_EVIDENCE=$(mktemp)
+export LOCAL_AI_REVIEWER_EVIDENCE_FILE="$REVIEW_EVIDENCE"
+LOCAL_AI_REVIEWER_BACKEND=codex local-ai-reviewer.sh "$PR_NUMBER" lhpaul helm \
+  --repo-root "$PWD" --timeout 900
+```
+
+- Configuración y contrato: [local AI reviewer](docs/local-ai-reviewer.md).
+- `RESULT=clean`, `BLOCKING_COUNT=0` y `REVIEWED_HEAD` igual al SHA completo del
+  head actual son la señal terminal; el archivo de evidencia debe confirmar ese
+  mismo SHA y resultado. Un resultado previo a un push no limpia el head nuevo.
+- `RESULT=needs_fixes`: evaluar cada blocker y aplicar fixes puntuales dentro del
+  alcance aprobado; luego commit, push y nueva revisión del head actual.
+- Timeout, evidencia ausente/obsoleta o resultado ambiguo no significan clean.
+  Reportar indisponibilidad; nunca depender de una reacción o check verde aislado.
+- Mantener validación local, CI, branch pusheada y workspace limpio. Releer por
+  GraphQL los threads accionables actuales; los threads abiertos no outdated deben
+  quedar resueltos con evidencia del fix, aunque el reviewer local no publique
+  comentarios en GitHub. CodeRabbit auto-review queda desactivado (#108).
+- Las referencias históricas a CodeRabbit en las categorías de fixes de este
+  archivo también se aplican a findings equivalentes del reviewer local.
+
+### Categorías auto-fixables (lista viva)
+
+Cuando CodeRabbit detecta uno de estos patrones, Claude Code puede aplicar el fix sin pedir input:
+
+- **Path traversal**: input externo usado en filesystem path sin validación. Fix: validar con `isValidExternalId()` / `EXTERNAL_ID_REGEX` de `@helm/shared` (única implementación) antes de construir el path.
+- **Info leak en error responses**: paths absolutos, tokens, mensajes internos enviados al cliente. Fix: log server-side con `console.error`, devolver mensaje genérico al cliente.
+- **Race condition en singleton lazy-init**: check-then-await sin single-flight pattern. Fix: shared in-flight promise + finally cleanup.
+- **Race condition en create-if-not-exists**: read-then-write sin atomicidad. Fix: `writeFile(path, content, { flag: 'wx' })` o equivalente.
+- **Validación laxa de body de API**: schemas Zod sin `.strict()`. Fix: agregar `.strict()` al schema.
+- **Empty string en input externo**: el `??` (nullish coalescing) y los truthy checks (`if (value)`) no atrapan empty strings. Aplica a env vars, body fields de API, query params, headers, payloads de webhook. Fix: `?.trim()` + truthiness check explícito, o `typeof === 'string' && value.length > 0` cuando matters. Si downstream usa el valor para filesystem operations o lookups, no asumir que truthy === válido.
+- **Mutable internal state returned by reference**: getter retorna array/object interno. Fix: spread copy `[...arr]` o `{...obj}` antes de retornar.
+- **Never-throw contract violations**: cuando una interfaz/contrato dice "esta función nunca debe lanzar" (típicamente para handlers de webhooks, eventos, error-paths críticos), envolver implementaciones en try-catch defensivo. Aplica a parseWebhook de cualquier adapter, callbacks de error handlers, y métodos que se llamen desde paths donde no hay recovery posible.
+- **Network operations without timeout / abort**: cualquier `fetch()`, `axios()`, request HTTP a sistema externo sin `AbortController` o timeout explícito puede colgar el proceso indefinidamente si el remote no responde. Fix: `AbortController` con timeout razonable (5-30s según el caso), `try/catch` que mapea errores de red a un tipo específico del dominio (e.g., `GitHubAPIError` con mensaje "request timeout"). Aplica a clientes HTTP custom, NO a clientes que ya manejan timeouts (Octokit con plugin de retry, fetch con `signal` configurado upstream).
+
+Si CodeRabbit reporta algo que NO está en esta lista, parar y pedir input humano.

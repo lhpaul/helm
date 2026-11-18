@@ -1,0 +1,25 @@
+{
+  "name": "@helm/adapters",
+  "version": "0.0.0",
+  "private": true,
+  "description": "IssueTrackerAdapter interface, shared types, and MockAdapter for testing.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@helm/shared": "workspace:*",
+    "@helm/workflow": "workspace:*",
+    "@octokit/graphql": "^9.0.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "vitest": "^2.1.9"
+  }
+}

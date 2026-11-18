@@ -6,8 +6,17 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "build": "echo 'no build yet — typescript instala en Bloque 2'",
-    "test": "echo 'no tests yet'",
-    "lint": "echo 'stub'"
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@helm/workflow": "workspace:*",
+    "yaml": "^2.9.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19"
   }
 }

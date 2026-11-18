@@ -1,0 +1,149 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { api } from './api.js';
+
+const mockFetch = vi.fn();
+vi.stubGlobal('fetch', mockFetch);
+
+function mockOk(body: unknown): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve(body),
+  } as unknown as Response;
+}
+
+function mockErr(status: number, body: unknown): Response {
+  return {
+    ok: false,
+    status,
+    statusText: `Error ${status}`,
+    json: () => Promise.resolve(body),
+  } as unknown as Response;
+}
+
+afterEach(() => vi.clearAllMocks());
+
+describe('api.getProduct', () => {
+  it('returns ok result on success', async () => {
+    const product = { helm_version: '0', product: { slug: 'helm', name: 'Helm' } };
+    mockFetch.mockResolvedValueOnce(mockOk(product));
+    const result = await api.getProduct();
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.product.slug).toBe('helm');
+  });
+
+  it('returns http error on non-200', async () => {
+    mockFetch.mockResolvedValueOnce(mockErr(404, { error: 'Not found' }));
+    const result = await api.getProduct();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.type).toBe('http');
+      expect((result.error as { status: number }).status).toBe(404);
+    }
+  });
+
+  it('returns network error on fetch throw', async () => {
+    mockFetch.mockRejectedValueOnce(new Error('Failed to fetch'));
+    const result = await api.getProduct();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.type).toBe('network');
+      expect(result.error.message).toBe('Failed to fetch');
+    }
+  });
+});
+
+describe('api.listItems', () => {
+  it('returns array of items', async () => {
+    const items = [{ externalId: 'issue_1', currentStage: 'discovery' }];
+    mockFetch.mockResolvedValueOnce(mockOk(items));
+    const result = await api.listItems();
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data).toHaveLength(1);
+  });
+});
+
+describe('api.getItemForProduct', () => {
+  it('calls the product-scoped item endpoint with URL-encoded slug and externalId', async () => {
+    const slug = 'helm/playground with space';
+    const externalId = 'issue/1 with space';
+    mockFetch.mockResolvedValueOnce(mockOk({ externalId, productSlug: slug }));
+    await api.getItemForProduct(slug, externalId);
+    const calledUrl = mockFetch.mock.calls[0]?.[0] as string;
+    expect(calledUrl).toContain(
+      `/api/products/${encodeURIComponent(slug)}/items/${encodeURIComponent(externalId)}`,
+    );
+  });
+
+  it('returns ok result with item data on success', async () => {
+    const item = { externalId: 'issue_1', productSlug: 'helm', currentStage: 'discovery' };
+    mockFetch.mockResolvedValueOnce(mockOk(item));
+    const result = await api.getItemForProduct('helm', 'issue_1');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.externalId).toBe('issue_1');
+  });
+
+  it('returns http error on 404', async () => {
+    mockFetch.mockResolvedValueOnce(mockErr(404, { error: 'Item not found' }));
+    const result = await api.getItemForProduct('helm', 'issue_999');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect((result.error as { status: number }).status).toBe(404);
+  });
+});
+
+describe('api.listProducts', () => {
+  it('returns array of products', async () => {
+    const products = [
+      { product: { slug: 'helm', name: 'Helm' } },
+      { product: { slug: 'helm-playground', name: 'Helm Playground' } },
+    ];
+    mockFetch.mockResolvedValueOnce(mockOk(products));
+    const result = await api.listProducts();
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data).toHaveLength(2);
+  });
+
+  it('returns network error on fetch throw', async () => {
+    mockFetch.mockRejectedValueOnce(new Error('Network failure'));
+    const result = await api.listProducts();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.type).toBe('network');
+  });
+});
+
+describe('api.getProductBySlug', () => {
+  it('URL-encodes special characters in the slug', async () => {
+    const slug = 'helm/playground with space';
+    mockFetch.mockResolvedValueOnce(mockOk({ product: { slug } }));
+    await api.getProductBySlug(slug);
+    const calledUrl = mockFetch.mock.calls[0]?.[0] as string;
+    expect(calledUrl).toContain(`/api/products/${encodeURIComponent(slug)}`);
+  });
+
+  it('returns http error on 404', async () => {
+    mockFetch.mockResolvedValueOnce(mockErr(404, { error: 'Product not found: ghost' }));
+    const result = await api.getProductBySlug('ghost');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect((result.error as { status: number }).status).toBe(404);
+  });
+});
+
+describe('api.listItemsForProduct', () => {
+  it('fetches from the product-scoped items endpoint and URL-encodes the slug', async () => {
+    const slug = 'helm/playground with space';
+    const items = [{ externalId: 'issue_1', productSlug: slug }];
+    mockFetch.mockResolvedValueOnce(mockOk(items));
+    const result = await api.listItemsForProduct(slug);
+    const calledUrl = mockFetch.mock.calls[0]?.[0] as string;
+    expect(calledUrl).toContain(`/api/products/${encodeURIComponent(slug)}/items`);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data).toHaveLength(1);
+  });
+
+  it('returns empty array when product has no items', async () => {
+    mockFetch.mockResolvedValueOnce(mockOk([]));
+    const result = await api.listItemsForProduct('new-product');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data).toHaveLength(0);
+  });
+});

@@ -66,6 +66,9 @@ web_modules/
 .yarn-integrity
 
 # dotenv environment variable files
+# Committed: .env.example only (docs).
+# Local inputs for sync-env: .env.<product> (gitignored).
+# Generated: .env (gitignored).
 .env
 .env.*
 !.env.example
@@ -155,3 +158,6 @@ data/
 # Claude Code config local (.claude/settings.local.json y .claude/projects/).
 # AGENT.md vive en root del repo, no en .claude/, por eso este patrón no lo bloquea.
 .claude/
+
+# Helm runtime data dirs (overridable via HELM_DATA_DIR)
+data-*/

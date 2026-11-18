@@ -447,6 +447,20 @@ to 'in-development'`. The dispatcher skips that self-transition and runs the
 
 ### Security
 
+- **Reject cross-origin browser requests to state-changing API routes (#162):**
+  the API has no authentication, so a web page open in the operator's
+  browser could send a simple cross-origin `POST` (for example to
+  `/api/products/:slug/items/:externalId/dispatch`) and trigger side effects.
+  Every non-`GET`/`HEAD`/`OPTIONS` request under `/api/*`, except the signed
+  GitHub/Linear webhooks, now needs an allowed `Origin` (the local UI on port
+  5173 by default, plus `HELM_ALLOWED_ORIGINS`), and without `Origin` a
+  `Sec-Fetch-Site` of `cross-site`/`same-site` is rejected. Rejections return
+  `403`. Requests with neither header (curl, scripts) still pass.
+  **Impact on existing instances:** curl/scripts, webhooks and the bundled UI
+  keep working. A browser-based tool on any other origin that writes to the
+  API gets `403` until its origin is added to `HELM_ALLOWED_ORIGINS` and the
+  API restarts. See `docs/local-dev.md`.
+
 - **API listens on `127.0.0.1` by default (#159):** the Bun API server set no
   `hostname`, so it listened on every interface while having no
   authentication. It now binds to loopback unless `HELM_API_HOST` sets another

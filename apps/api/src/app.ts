@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { HELM_VERSION } from '@helm/shared';
+import { originGuard, resolveAllowedOrigins } from './lib/origin-guard.js';
 import { dispatchRouter } from './routes/dispatch.js';
 import { itemsRouter } from './routes/items.js';
 import { jobsRouter } from './routes/jobs.js';
@@ -19,6 +20,12 @@ app.get('/health', (c) =>
     uptime_seconds: Math.floor(process.uptime()),
   }),
 );
+
+// Reject cross-origin browser requests to state-changing routes (#162).
+// Registered before the routers so it runs first for every /api/* request.
+const allowedOrigins = resolveAllowedOrigins(process.env);
+for (const warning of allowedOrigins.warnings) console.warn(warning);
+app.use('/api/*', originGuard(allowedOrigins.origins));
 
 app.route('/api', productRouter);
 app.route('/api', productsRouter);

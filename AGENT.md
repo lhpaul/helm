@@ -75,14 +75,15 @@ Helm-the-product usa **GitHub Projects**, no Linear — no necesita Linear API k
 
 ### Variables
 
-| Variable                   | Descripción                                                                            |
-| -------------------------- | -------------------------------------------------------------------------------------- |
-| `HELM_KNOWLEDGE_REPO_PATH` | Path absoluto al knowledge repo del Product (donde vive `.helm/product.yaml`)          |
-| `HELM_DATA_DIR`            | Path absoluto a `data/` operativo                                                      |
-| `GITHUB_TOKEN`             | PAT GitHub                                                                             |
-| `LINEAR_API_KEY`           | Solo Products con `issue_tracker.provider: linear`                                     |
-| `GITHUB_WEBHOOK_SECRET`    | Secret del webhook GitHub hacia Helm                                                   |
-| `HELM_API_HOST`            | Opcional. Interfaz donde escucha la API; default `127.0.0.1` (ver `docs/local-dev.md`) |
+| Variable                   | Descripción                                                                                          |
+| -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `HELM_KNOWLEDGE_REPO_PATH` | Path absoluto al knowledge repo del Product (donde vive `.helm/product.yaml`)                        |
+| `HELM_DATA_DIR`            | Path absoluto a `data/` operativo                                                                    |
+| `GITHUB_TOKEN`             | PAT GitHub                                                                                           |
+| `LINEAR_API_KEY`           | Solo Products con `issue_tracker.provider: linear`                                                   |
+| `GITHUB_WEBHOOK_SECRET`    | Secret del webhook GitHub hacia Helm                                                                 |
+| `HELM_API_HOST`            | Opcional. Interfaz donde escucha la API; default `127.0.0.1` (ver `docs/local-dev.md`)               |
+| `HELM_ALLOWED_ORIGINS`     | Opcional. Orígenes extra (coma) que pueden mutar la API desde el navegador (ver `docs/local-dev.md`) |
 
 Setup manual sin 1Password: escribir `.env` a mano con valores en claro (no recomendado para secretos).
 

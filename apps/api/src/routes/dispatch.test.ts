@@ -762,3 +762,52 @@ describe('POST /api/products/:slug/items/:externalId/dispatch', () => {
     );
   });
 });
+
+describe('POST dispatch — cross-origin protection (#162)', () => {
+  const dispatchWithHeaders = (headers: Record<string, string>) =>
+    app.request('/api/products/test-product/items/issue_1/dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+    });
+
+  it.each<Record<string, string>>([
+    { Origin: 'https://evil.example' },
+    { Origin: 'null' },
+    { 'Sec-Fetch-Site': 'cross-site' },
+  ])('rejects %j with 403 and creates no job', async (headers) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const runDispatchJobSpy = vi
+      .spyOn(dispatchScheduler, 'runDispatchJob')
+      .mockResolvedValue(undefined);
+    try {
+      const res = await dispatchWithHeaders(headers);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Cross-origin request rejected' });
+      expect(runDispatchJobSpy).not.toHaveBeenCalled();
+
+      const { getJobStore } = await import('../services/index.js');
+      const jobStore = await getJobStore();
+      expect(await jobStore.listJobsForItem('test-product', 'issue_1')).toEqual([]);
+    } finally {
+      runDispatchJobSpy.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it.each<Record<string, string>>([
+    { Origin: 'http://localhost:5173' },
+    { 'Sec-Fetch-Site': 'same-origin' },
+    {},
+  ])('accepts %j', async (headers) => {
+    const runDispatchJobSpy = vi
+      .spyOn(dispatchScheduler, 'runDispatchJob')
+      .mockResolvedValue(undefined);
+    try {
+      const res = await dispatchWithHeaders(headers);
+      expect(res.status).toBe(202);
+      expect(runDispatchJobSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      runDispatchJobSpy.mockRestore();
+    }
+  });
+});

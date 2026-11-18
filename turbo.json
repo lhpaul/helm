@@ -21,7 +21,7 @@
     "dev": {
       "cache": false,
       "persistent": true,
-      "passThroughEnv": ["HELM_API_HOST"]
+      "passThroughEnv": ["HELM_API_HOST", "HELM_ALLOWED_ORIGINS"]
     },
     "test": {
       "dependsOn": []

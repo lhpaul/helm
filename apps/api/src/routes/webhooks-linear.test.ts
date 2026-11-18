@@ -116,6 +116,22 @@ describe('POST /api/webhooks/linear', () => {
       expect(res.status).toBe(401);
     });
 
+    it('does not apply the cross-origin guard to signed webhooks (#162)', async () => {
+      const body = 'not-json';
+      const res = await app.request('/api/webhooks/linear', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'linear-signature': sign(body),
+          origin: 'https://evil.example',
+          'sec-fetch-site': 'cross-site',
+        },
+        body,
+      });
+      // Reaches the handler past signature verification (400 = JSON parse), not 403.
+      expect(res.status).toBe(400);
+    });
+
     it('returns 400 when body is not valid JSON (but signature is valid)', async () => {
       const body = 'not-json';
       const res = await post(body, sign(body));

@@ -21,6 +21,36 @@ Anything else that forwards to the API on the same machine (a tunnel, a reverse
 proxy) should target `127.0.0.1:3001`. A `localhost` target can resolve to
 `::1` first and miss an IPv4-only listener.
 
+## Cross-origin protection
+
+The API rejects browser requests from other sites to its state-changing routes
+(#162), because it has no authentication and a page open in your browser could
+otherwise trigger a dispatch. For every `/api/*` request that is not `GET`,
+`HEAD` or `OPTIONS`:
+
+- The GitHub and Linear webhooks (`/api/webhooks/github`,
+  `/api/webhooks/linear`) are not checked; they are verified by signature.
+- With an `Origin` header, the origin must be allowed. `Origin: null` is
+  always rejected. The check never trusts the `Host` header.
+- Without `Origin`, a `Sec-Fetch-Site` of `cross-site` or `same-site` is
+  rejected; `same-origin` and `none` pass.
+- With neither header the request passes. Browsers always send `Origin` on
+  cross-origin `POST`/`PUT`/`PATCH`/`DELETE`, so this keeps `curl` and scripts
+  working without changes.
+
+Rejected requests get `403 {"error":"Cross-origin request rejected"}` and a
+warning in the API log.
+
+Allowed origins are the local UI dev server (`http://localhost:5173`,
+`http://127.0.0.1:5173`, `http://[::1]:5173`) plus any origin listed in
+`HELM_ALLOWED_ORIGINS` (comma-separated, for example
+`HELM_ALLOWED_ORIGINS=http://192.168.1.10:5173,https://helm.example.com`).
+Entries must be bare `http`/`https` origins (no path, query or wildcard);
+invalid entries are ignored with a startup warning. Set it in the API
+environment and restart the API. Add the UI origin here when you serve the UI
+from another host or port, for example after exposing it with `HELM_API_HOST`
+and `vite --host`.
+
 ## Recover A Missed Artifact PR Merge
 
 Helm normally advances an item when GitHub delivers a merged pull request webhook

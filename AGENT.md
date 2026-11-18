@@ -110,7 +110,7 @@ No centralizamos en root para no necesitar dotenv-cli overhead.
 
 ## Convenciones
 
-- Branch naming: `feature/*`, `fix/*`, `refactor/*` desde `develop`; `hotfix/*`, `release/v*` desde `main`. Hereda de `ai-dev-framework-template`.
+- Branch naming: `feature/*`, `fix/*`, `refactor/*`, `release/v*` desde `develop`; `hotfix/*` desde `main`. Hereda de `ai-dev-framework-template`.
 - CHANGELOG: Keep a Changelog + SemVer. Feature/fix PRs agregan a `[Unreleased]` en develop. Hotfixes versionan directo en main.
 - No `git push --force` ni `git reset --hard` en shared branches sin OK explícito.
 - Stop y preguntar si una acción parece destructiva.

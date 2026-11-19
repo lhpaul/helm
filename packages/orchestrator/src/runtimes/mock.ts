@@ -3,9 +3,11 @@ import type {
   AgentResult,
   AgentSession,
   AgentStatus,
+  AgentUsage,
   IAgentRuntime,
   SpawnParams,
 } from '../runtime.js';
+import { unknownUsage } from '../runtime.js';
 
 // ── Script types ──────────────────────────────────────────────────────────────
 
@@ -26,6 +28,12 @@ export type MockScript = {
    * the mock spec-writer creating specs/{externalId}.md).
    */
   sideEffects?: (workdir: string) => Promise<void>;
+  /**
+   * Usage reported on completion. Omitted → `costUsd` is reported from the
+   * messages' `costUsd` only when at least one message carries it, otherwise
+   * the usage is unknown (so tests can exercise both paths).
+   */
+  usage?: AgentUsage;
 };
 
 // ── Session ───────────────────────────────────────────────────────────────────
@@ -78,6 +86,7 @@ class MockAgentSession implements AgentSession {
       finalOutput: '',
       totalCostUsd: 0,
       durationMs: Date.now() - startedAt,
+      usage: unknownUsage(),
     });
   }
 
@@ -91,6 +100,7 @@ class MockAgentSession implements AgentSession {
     this.startMs = Date.now();
     this.status = 'running';
     let totalCost = 0;
+    let anyCost = false;
     let lastContent = '';
 
     try {
@@ -109,6 +119,7 @@ class MockAgentSession implements AgentSession {
         };
         this.emit(clean);
         totalCost += clean.costUsd ?? 0;
+        if (typeof clean.costUsd === 'number') anyCost = true;
         lastContent = clean.content;
       }
 
@@ -125,6 +136,7 @@ class MockAgentSession implements AgentSession {
         finalOutput: this.script.finalOutput ?? lastContent,
         totalCostUsd: totalCost,
         durationMs: Date.now() - this.startMs,
+        usage: this.script.usage ?? this.scriptedUsage(anyCost, totalCost),
       });
     } catch {
       // sideEffects or a message handler threw — ensure wait() always resolves.
@@ -135,8 +147,14 @@ class MockAgentSession implements AgentSession {
         finalOutput: '',
         totalCostUsd: totalCost,
         durationMs: Date.now() - this.startMs,
+        usage: unknownUsage(),
       });
     }
+  }
+
+  private scriptedUsage(anyCost: boolean, totalCost: number): AgentUsage {
+    const usage = unknownUsage();
+    return anyCost ? { ...usage, costUsd: totalCost, costSource: 'reported' } : usage;
   }
 
   private emit(msg: AgentMessage): void {

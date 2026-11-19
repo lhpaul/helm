@@ -681,3 +681,44 @@ describe('defaultSpawn — stdin handling', () => {
     }
   });
 });
+
+// ── Usage capture (#151) ──────────────────────────────────────────────────────
+
+describe('CodexRuntime — usage capture', () => {
+  it.each([
+    ['exec-success.jsonl', { input: 47925, output: 939, cacheRead: 35968, reasoning: 652 }],
+    ['exec-success-0.136.jsonl', { input: 64435, output: 555, cacheRead: 50688, reasoning: 217 }],
+  ])('reads tokens from turn.completed.usage in %s with unknown USD', async (fixture, t) => {
+    const runtime = new CodexRuntime(() => makeFakeProcess(loadFixture(fixture)));
+
+    const result = await (await runtime.spawn(makeParams())).wait();
+
+    expect(result.usage).toEqual({
+      tokens: { ...t, cacheCreation: null },
+      costUsd: null,
+      costSource: 'unknown',
+    });
+    // Legacy field stays numeric for existing callers and is not authoritative.
+    expect(result.totalCostUsd).toBe(0);
+  });
+
+  it('reports unknown usage when the turn fails', async () => {
+    const runtime = new CodexRuntime(() => makeFakeProcess(loadFixture('turn-failed.jsonl')));
+
+    const result = await (await runtime.spawn(makeParams())).wait();
+
+    expect(result.status).toBe('error');
+    expect(result.usage?.tokens.input).toBeNull();
+    expect(result.usage?.costSource).toBe('unknown');
+  });
+
+  it('reports unknown usage when the process exits without a terminal event', async () => {
+    const runtime = new CodexRuntime(() => makeFakeProcess([]));
+
+    const result = await (await runtime.spawn(makeParams())).wait();
+
+    expect(result.status).toBe('error');
+    expect(result.usage?.tokens.output).toBeNull();
+    expect(result.usage?.costUsd).toBeNull();
+  });
+});

@@ -42,6 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cost per backlog item (#151, ADR-046):** every agent session now leaves a
+  usage record (tokens, reported cost or explicit unknown, duration, stage,
+  specialist, runtime) on its job file, and two read-only routes aggregate them:
+  `GET /api/products/:slug/items/:externalId/usage` (with per-stage breakdown)
+  and `GET /api/products/:slug/usage?from=&to=&groupBy=item|stage|month`, plus
+  `pnpm --filter @helm/api usage -- <slug> [externalId]` for a table. Unknown is
+  never zero: Codex reports tokens but no USD, so its cost is `null` and totals
+  carry `sessionsUnknown`; nothing is estimated from tokens. Review rounds come
+  from the job's `cyclesCompleted`. Additive: no migration (older jobs are
+  reported as `jobsNotInstrumented`), no new variables, no dependency or
+  workflow change; the routes sit behind the existing `HELM_API_TOKEN`.
+  `AgentResult` gains an optional `usage`; `totalCostUsd` is unchanged and now
+  documented as non-authoritative.
+
 - **Ensure review merge-gate labels (#128):** `scripts/ensure-review-labels.sh`
   creates the `ready-for-human-review` label when missing (idempotent, never
   edits or deletes existing labels; `--repo`, `--dry-run`). Documented in

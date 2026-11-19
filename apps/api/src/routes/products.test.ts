@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { app } from '../app.js';
+import { app as rawApp } from '../app.js';
+import { withOperatorToken } from '../test-support/operator-token.js';
 import { _resetForTests } from '../services/index.js';
+
+// Route tests run with API auth on; every request carries the test token.
+const app = withOperatorToken(rawApp);
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

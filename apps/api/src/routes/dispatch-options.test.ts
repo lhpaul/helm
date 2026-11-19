@@ -10,10 +10,14 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { app } from '../app.js';
+import { app as rawApp } from '../app.js';
+import { withOperatorToken } from '../test-support/operator-token.js';
 import { _resetForTests } from '../services/index.js';
 import type { Product } from '@helm/shared';
 import type { DispatchOptions } from '@helm/orchestrator';
+
+// Route tests run with API auth on; every request carries the test token.
+const app = withOperatorToken(rawApp);
 
 // ── Module-level mock of dispatchStageHandler ─────────────────────────────────
 // Captures the options argument without running real dispatch logic.

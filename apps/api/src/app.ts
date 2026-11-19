@@ -9,6 +9,7 @@ import { productRouter } from './routes/product.js';
 import { productsRouter } from './routes/products.js';
 import { releaseRouter } from './routes/release.js';
 import { rollbackRouter } from './routes/rollback.js';
+import { usageRouter } from './routes/usage.js';
 import { webhooksRouter } from './routes/webhooks.js';
 
 export const app = new Hono();
@@ -45,3 +46,4 @@ app.route('/api', releaseRouter);
 app.route('/api', webhooksRouter);
 app.route('/api', dispatchRouter);
 app.route('/api', jobsRouter);
+app.route('/api', usageRouter);

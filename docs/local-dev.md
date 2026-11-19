@@ -132,6 +132,63 @@ than loopback:
 
 Prefer fixing the token over disabling authentication.
 
+## Cost per item (usage records)
+
+Every agent session leaves one usage record on its job (`data/jobs/<jobId>.json`,
+field `usage`; ADR-046): item, job, specialist, stage (`spec`, `plan`, `code`,
+`review`, taken from the job's specialist), runtime, model, start/end,
+duration, tokens and cost. Records hold no prompts, outputs, paths or secrets.
+Retention is the same as `data/`; there is no cap.
+
+Read the aggregate (both routes are `GET`, read-only and behind
+`HELM_API_TOKEN` like every `/api/*` route; no new variables):
+
+```bash
+# One item, with a per-stage breakdown
+curl -H "Authorization: Bearer $HELM_API_TOKEN" \
+  http://127.0.0.1:3001/api/products/<slug>/items/<externalId>/usage
+
+# A product over a period: from inclusive, to exclusive, ISO date or date-time
+curl -H "Authorization: Bearer $HELM_API_TOKEN" \
+  "http://127.0.0.1:3001/api/products/<slug>/usage?from=2026-11-01&to=2026-12-01&groupBy=item"
+
+# Same numbers as a table, straight from the job files (no network)
+pnpm --filter @helm/api usage -- <slug> [externalId] [--from <iso>] [--to <iso>] [--group-by item|stage|month]
+```
+
+`groupBy` is `item`, `stage` or `month`; invalid dates or parameters return
+`400`. `from`/`to` filter sessions on the session's start and job-level
+figures (`reviewRounds`, `jobsInterrupted`, `jobsNotInstrumented`,
+`jobsWithCaptureGaps`) on the job's start, so a job that straddles a boundary
+counts its rounds wholly in the period where it started.
+
+How to read it:
+
+- **Unknown is never zero.** A figure the runtime did not report is `null` on
+  the record and is left out of the sums. Every total ships with its
+  denominator: `tokens.<counter>.sessionsReported`, `costUsd.sessionsWithCost`
+  and `costUsd.sessionsUnknown`. Codex reports tokens but no USD, so an
+  all-Codex item shows `costUsd.total: 0` with `sessionsUnknown` equal to its
+  session count. That `0` means "nothing known", not "free". Codex `input`
+  tokens include the cached portion (`cacheRead`).
+- **No estimated USD.** Cost is only what the runtime reported. Estimating USD
+  from tokens is a separate follow-up and would be a distinct field.
+- **Review rounds** are the sum of `cyclesCompleted` over the item's
+  `reviewer-fanout` jobs. Cycles of the early spec/plan review loops are not
+  counted as rounds; their sessions count under `spec`/`plan`. Code
+  remediation inside the review loop counts as `review`.
+- **Gaps are visible.** `jobsInterrupted` counts jobs closed as `orphaned`
+  after a restart (the session in flight at that moment leaves no record;
+  sessions that had already finished are kept). `jobsNotInstrumented` counts
+  jobs written before this feature (no `usage` field; their sessions are not
+  known). `jobsWithCaptureGaps` counts jobs where a record could not be
+  written. If both the record write and the counter update fail (for example
+  an unwritable data directory), only the server log shows it and the
+  aggregate cannot report it.
+- The external reviewer runs outside Helm's runtimes: the response carries
+  `external-review: not measured` instead of a number. Human wait time is not
+  measured.
+
 ## Recover A Missed Artifact PR Merge
 
 Helm normally advances an item when GitHub delivers a merged pull request webhook

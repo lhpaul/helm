@@ -3,9 +3,11 @@ import type {
   AgentResult,
   AgentSession,
   AgentStatus,
+  AgentUsage,
   IAgentRuntime,
   SpawnParams,
 } from '../runtime.js';
+import { unknownUsage } from '../runtime.js';
 import { buildSubprocessEnv, defaultSpawn, ensureUserIdentityEnv } from './_env.js';
 import type { SpawnFn, SubprocessLike } from './_env.js';
 
@@ -38,7 +40,34 @@ type ClaudeResultMessage = {
   duration_ms: number;
   result: string;
   permission_denials: unknown[];
+  usage?: Record<string, unknown>;
+  modelUsage?: Record<string, unknown>;
 };
+
+/** Reads a finite, non-negative counter or returns `null` (never a guessed 0). */
+function counter(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Usage from a Claude `result` message; anything the CLI omits stays `null`. */
+function usageFromResult(r: ClaudeResultMessage): AgentUsage {
+  const u = r.usage && typeof r.usage === 'object' ? r.usage : {};
+  const models =
+    r.modelUsage && typeof r.modelUsage === 'object' ? Object.keys(r.modelUsage).sort() : [];
+  return {
+    tokens: {
+      input: counter(u['input_tokens']),
+      output: counter(u['output_tokens']),
+      cacheRead: counter(u['cache_read_input_tokens']),
+      cacheCreation: counter(u['cache_creation_input_tokens']),
+      // Claude Code does not report reasoning tokens separately.
+      reasoning: null,
+    },
+    costUsd: counter(r.total_cost_usd),
+    costSource: counter(r.total_cost_usd) === null ? 'unknown' : 'reported',
+    ...(models.length > 0 ? { model: models.join(',') } : {}),
+  };
+}
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
@@ -86,6 +115,7 @@ class ClaudeCodeSession implements AgentSession {
       finalOutput: '',
       totalCostUsd: 0,
       durationMs: Date.now() - this.startMs,
+      usage: unknownUsage(),
     });
   }
 
@@ -108,6 +138,7 @@ class ClaudeCodeSession implements AgentSession {
           finalOutput: `[timeout] No result received within ${this.timeoutMs}ms`,
           totalCostUsd: 0,
           durationMs: Date.now() - this.startMs,
+          usage: unknownUsage(),
         });
       }
     }, this.timeoutMs);
@@ -161,6 +192,7 @@ class ClaudeCodeSession implements AgentSession {
         finalOutput: stderrContent ? `[stderr] ${stderrContent}` : '',
         totalCostUsd: 0,
         durationMs: Date.now() - this.startMs,
+        usage: unknownUsage(),
       });
     }
   }
@@ -271,6 +303,7 @@ class ClaudeCodeSession implements AgentSession {
           finalOutput,
           totalCostUsd: typeof r.total_cost_usd === 'number' ? r.total_cost_usd : 0,
           durationMs: typeof r.duration_ms === 'number' ? r.duration_ms : 0,
+          usage: usageFromResult(r),
         });
         return;
       }

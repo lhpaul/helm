@@ -695,3 +695,82 @@ describe('ensureUserIdentityEnv (#119)', () => {
     ).toThrow(/Cannot determine the OS user/);
   });
 });
+
+// ── Usage capture (#151) ──────────────────────────────────────────────────────
+
+describe('ClaudeCodeRuntime — usage capture', () => {
+  it('reports all four token counters, reported cost and the model from the result message', async () => {
+    const runtime = new ClaudeCodeRuntime(() =>
+      makeFakeProcess(loadFixture('write-success.jsonl')),
+    );
+
+    const result = await (await runtime.spawn(makeParams())).wait();
+
+    expect(result.usage).toEqual({
+      tokens: { input: 4, output: 146, cacheRead: 36446, cacheCreation: 9429, reasoning: null },
+      costUsd: 0.048494550000000004,
+      costSource: 'reported',
+      model: 'claude-sonnet-4-6',
+    });
+  });
+
+  it('leaves counters the result does not carry as null, not 0', async () => {
+    const line = JSON.stringify({
+      type: 'result',
+      is_error: false,
+      result: 'ok',
+      duration_ms: 10,
+      usage: { input_tokens: 7 },
+    });
+    const runtime = new ClaudeCodeRuntime(() => makeFakeProcess([line]));
+
+    const result = await (await runtime.spawn(makeParams())).wait();
+
+    expect(result.usage?.tokens).toEqual({
+      input: 7,
+      output: null,
+      cacheRead: null,
+      cacheCreation: null,
+      reasoning: null,
+    });
+    expect(result.usage?.costUsd).toBeNull();
+    expect(result.usage?.costSource).toBe('unknown');
+  });
+
+  it('reports unknown usage when the process exits without a result line', async () => {
+    const lines = loadFixture('write-success.jsonl').slice(0, 4);
+    const runtime = new ClaudeCodeRuntime(() => makeFakeProcess(lines));
+
+    const result = await (await runtime.spawn(makeParams())).wait();
+
+    expect(result.status).toBe('error');
+    expect(result.usage).toEqual({
+      tokens: { input: null, output: null, cacheRead: null, cacheCreation: null, reasoning: null },
+      costUsd: null,
+      costSource: 'unknown',
+    });
+  });
+
+  it('reports unknown usage on timeout', async () => {
+    const runtime = new ClaudeCodeRuntime(() => makeHangingProcess(), { timeoutMs: 30 });
+
+    const result = await (await runtime.spawn(makeParams())).wait();
+
+    expect(result.status).toBe('error');
+    expect(result.usage?.costUsd).toBeNull();
+    expect(result.usage?.costSource).toBe('unknown');
+    expect(result.usage?.tokens.input).toBeNull();
+  });
+
+  it('reports unknown usage on cancel', async () => {
+    const runtime = new ClaudeCodeRuntime(() => makeHangingProcess(), { timeoutMs: 30_000 });
+    const session = await runtime.spawn(makeParams());
+
+    await session.cancel();
+    const result = await session.wait();
+
+    expect(result.status).toBe('cancelled');
+    expect(result.usage?.costSource).toBe('unknown');
+    expect(result.usage?.costUsd).toBeNull();
+  });
+});

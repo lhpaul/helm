@@ -6,7 +6,10 @@ export type {
   AgentStatus,
   AgentMessage,
   AgentResult,
+  AgentUsage,
+  UsageTokens,
 } from './runtime.js';
+export { unknownUsage } from './runtime.js';
 
 export { MockAgentRuntime } from './runtimes/mock.js';
 export type { MockScript, MockScriptMessage } from './runtimes/mock.js';
@@ -16,7 +19,10 @@ export type { SubprocessLike, SpawnFn } from './runtimes/claude-code.js';
 
 export { CodexRuntime } from './runtimes/codex.js';
 
-export { dispatchStageHandler, resolveSpecialistId } from './dispatcher.js';
+export { dispatchStageHandler, resolveSpecialistId, stageForJobSpecialist } from './dispatcher.js';
+export type { UsageStage } from './dispatcher.js';
+export { UsageRecordingRuntime } from './runtimes/usage-recording.js';
+export type { UsageRecord, UsageRecordingContext } from './runtimes/usage-recording.js';
 export type { DispatchInput, DispatchResult, DispatchOptions } from './dispatcher.js';
 export type { DeferredExternalReviewIntent } from './review-loop/code-review-loop.js';
 export type { RunExternalReviewDeps } from './external-review/run.js';

@@ -3,9 +3,11 @@ import type {
   AgentResult,
   AgentSession,
   AgentStatus,
+  AgentUsage,
   IAgentRuntime,
   SpawnParams,
 } from '../runtime.js';
+import { unknownUsage } from '../runtime.js';
 import { GIT_CREDENTIAL_KEYS, buildSubprocessEnv, defaultSpawn } from './_env.js';
 import type { SpawnFn, SubprocessLike } from './_env.js';
 
@@ -113,6 +115,32 @@ type CodexTurnFailed = {
   error?: { message?: string };
 };
 
+/** Reads a finite, non-negative counter or returns `null` (never a guessed 0). */
+function counter(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Usage from `turn.completed.usage`. Codex reports tokens only: `costUsd` is
+ * `null` (subscription billing exposes no USD) and there is no cache-creation
+ * counter. `input_tokens` already includes the cached portion (reported
+ * separately as `cached_input_tokens`).
+ */
+function usageFromTurn(raw: unknown): AgentUsage {
+  const u = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  return {
+    tokens: {
+      input: counter(u['input_tokens']),
+      output: counter(u['output_tokens']),
+      cacheRead: counter(u['cached_input_tokens']),
+      cacheCreation: null,
+      reasoning: counter(u['reasoning_output_tokens']),
+    },
+    costUsd: null,
+    costSource: 'unknown',
+  };
+}
+
 // ── Session ───────────────────────────────────────────────────────────────────
 
 class CodexSession implements AgentSession {
@@ -160,6 +188,7 @@ class CodexSession implements AgentSession {
       finalOutput: '',
       totalCostUsd: 0,
       durationMs: Date.now() - this.startMs,
+      usage: unknownUsage(),
     });
   }
 
@@ -180,6 +209,7 @@ class CodexSession implements AgentSession {
           finalOutput: `[timeout] No result received within ${this.timeoutMs}ms`,
           totalCostUsd: 0,
           durationMs: Date.now() - this.startMs,
+          usage: unknownUsage(),
         });
       }
     }, this.timeoutMs);
@@ -223,6 +253,7 @@ class CodexSession implements AgentSession {
         finalOutput: stderrContent ? `[stderr] ${stderrContent}` : '',
         totalCostUsd: 0,
         durationMs: Date.now() - this.startMs,
+        usage: unknownUsage(),
       });
     }
   }
@@ -312,6 +343,7 @@ class CodexSession implements AgentSession {
           finalOutput: this.lastAgentText,
           totalCostUsd: 0,
           durationMs: Date.now() - this.startMs,
+          usage: usageFromTurn(evt['usage']),
         });
         return;
       }
@@ -324,6 +356,7 @@ class CodexSession implements AgentSession {
           finalOutput: `[turn.failed] ${message}`,
           totalCostUsd: 0,
           durationMs: Date.now() - this.startMs,
+          usage: unknownUsage(),
         });
         return;
       }

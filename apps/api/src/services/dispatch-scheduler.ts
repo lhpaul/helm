@@ -3,6 +3,8 @@ import { GitHubNotFoundError, LinearNotFoundError } from '@helm/adapters';
 import {
   dispatchStageHandler,
   resolveSpecialistId,
+  stageForJobSpecialist,
+  UsageRecordingRuntime,
   type DeferredExternalReviewIntent,
   type RunExternalReviewDeps,
 } from '@helm/orchestrator';
@@ -992,8 +994,24 @@ export async function runDispatchJob(
   },
 ): Promise<void> {
   const jobStore = await getJobStore();
+  let usageRuntime: UsageRecordingRuntime | undefined;
   try {
-    const runtime = createRuntimeForProduct(ctx.product, ctx.item.externalId, ctx.workdir);
+    const baseRuntime = createRuntimeForProduct(ctx.product, ctx.item.externalId, ctx.workdir);
+    // #151: record usage per session without touching any specialist. Jobs for
+    // specialists with no usage stage run no sessions and are left unwrapped.
+    const usageStage = stageForJobSpecialist(job.specialistId);
+    usageRuntime =
+      usageStage === undefined
+        ? undefined
+        : new UsageRecordingRuntime(baseRuntime, {
+            jobId: job.jobId,
+            stage: usageStage,
+            runtime:
+              ctx.product.specialists['spec-writer'].runtime === 'codex' ? 'codex' : 'claude-code',
+            onUsage: (record) => jobStore.appendUsage(job.jobId, record),
+            onCaptureFailure: () => jobStore.recordUsageCaptureFailure(job.jobId),
+          });
+    const runtime = usageRuntime ?? baseRuntime;
     const fetchTask = async (
       taskExternalId: string,
     ): Promise<{ title: string; body?: string } | null> => {
@@ -1112,6 +1130,8 @@ export async function runDispatchJob(
       },
     );
 
+    // Let in-flight usage records land before the final status write.
+    await usageRuntime?.flush();
     const now = new Date().toISOString();
     await jobStore.updateJob(job.jobId, {
       status: result.status,
@@ -1148,6 +1168,7 @@ export async function runDispatchJob(
     const now = new Date().toISOString();
     const message = err instanceof Error ? err.message : String(err);
     try {
+      await usageRuntime?.flush();
       await jobStore.updateJob(job.jobId, {
         status: 'error',
         error: message,

@@ -48,6 +48,33 @@ const STAGE_TO_SPECIALIST: Partial<Record<WorkflowStage, string>> = {
   'code-review': 'reviewer-fanout',
 };
 
+/** Workflow stage a usage record is attributed to (#151). */
+export type UsageStage = 'spec' | 'plan' | 'code' | 'review';
+
+const JOB_SPECIALIST_TO_USAGE_STAGE: Record<string, UsageStage> = {
+  'spec-writer': 'spec',
+  'spec-draft-reviewer': 'spec',
+  'spec-remediator': 'spec',
+  'plan-writer': 'plan',
+  'plan-draft-reviewer': 'plan',
+  'plan-remediator': 'plan',
+  implementer: 'code',
+  'reviewer-fanout': 'review',
+};
+
+/**
+ * Usage stage for every session of a dispatch, derived from the JOB's
+ * specialist (not the session's own): early spec/plan review loops reuse the
+ * code-review reviewer specialists, and code remediation inside the review
+ * loop counts as `review`. Returns undefined for specialists that run no
+ * sessions (unknown ids).
+ */
+export function stageForJobSpecialist(specialistId: string): UsageStage | undefined {
+  return Object.hasOwn(JOB_SPECIALIST_TO_USAGE_STAGE, specialistId)
+    ? JOB_SPECIALIST_TO_USAGE_STAGE[specialistId]
+    : undefined;
+}
+
 /**
  * Resolves the specialist a dispatch would run: an explicit override wins,
  * otherwise the stage-driven default. Returns undefined when no specialist maps

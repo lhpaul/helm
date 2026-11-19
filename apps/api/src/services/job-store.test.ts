@@ -374,3 +374,105 @@ describe('reconcileOrphanedJobs', () => {
     expect(count).toBe(0);
   });
 });
+
+// ── Usage records (#151, ADR-046) ─────────────────────────────────────────────
+
+import { writeFile } from 'node:fs/promises';
+import type { UsageRecord } from '@helm/orchestrator';
+
+const record = (n: number): UsageRecord => ({
+  productSlug: 'test-product',
+  externalId: 'issue_1',
+  jobId: 'j',
+  specialistId: `s${n}`,
+  stage: 'review',
+  runtime: 'claude-code',
+  model: null,
+  startedAt: '2026-11-01T00:00:00.000Z',
+  endedAt: '2026-11-01T00:00:01.000Z',
+  durationMs: 1000,
+  status: 'done',
+  tokens: { input: n, output: 1, cacheRead: null, cacheCreation: null, reasoning: null },
+  costUsd: null,
+  costSource: 'unknown',
+});
+
+describe('usage records', () => {
+  it('initializes usage and usageCaptureFailures on new jobs (the instrumentation marker)', async () => {
+    const created = await store.createJob(BASE_INPUT);
+    expect(created.usage).toEqual([]);
+    expect(created.usageCaptureFailures).toBe(0);
+
+    const viaGuard = await store.createJobIfNoRunning({ ...BASE_INPUT, externalId: 'issue_2' });
+    expect('job' in viaGuard && viaGuard.job.usage).toEqual([]);
+  });
+
+  it('keeps every record of N simultaneous appends and a concurrent final updateJob', async () => {
+    const job = await store.createJob(BASE_INPUT);
+    const n = 25;
+
+    await Promise.all([
+      ...Array.from({ length: n }, (_, i) => store.appendUsage(job.jobId, record(i))),
+      store.updateJob(job.jobId, { status: 'done', finishedAt: 'x' }),
+      store.recordUsageCaptureFailure(job.jobId),
+    ]);
+
+    const reloaded = await store.getJob(job.jobId);
+    expect(reloaded?.status).toBe('done');
+    expect(reloaded?.usageCaptureFailures).toBe(1);
+    expect(reloaded?.usage).toHaveLength(n);
+    // Records land in call order.
+    expect(reloaded?.usage?.map((r) => r.tokens.input)).toEqual(
+      Array.from({ length: n }, (_, i) => i),
+    );
+  });
+
+  it('the final status update cannot overwrite earlier usage', async () => {
+    const job = await store.createJob(BASE_INPUT);
+    await store.appendUsage(job.jobId, record(1));
+    await store.updateJob(job.jobId, { status: 'error', error: 'x' });
+    expect((await store.getJob(job.jobId))?.usage).toHaveLength(1);
+  });
+
+  it('an orphaned job keeps the sessions that finished before the restart', async () => {
+    const job = await store.createJob(BASE_INPUT);
+    await store.appendUsage(job.jobId, record(1));
+
+    expect(await store.reconcileOrphanedJobs()).toBe(1);
+
+    const reloaded = await store.getJob(job.jobId);
+    expect(reloaded?.status).toBe('error');
+    expect(reloaded?.error).toMatch(/orphaned/);
+    expect(reloaded?.usage).toHaveLength(1);
+  });
+
+  it('reads a legacy job without usage and leaves it without the marker', async () => {
+    const id = randomUUID();
+    await writeFile(
+      join(jobsDir, `${id}.json`),
+      JSON.stringify({
+        jobId: id,
+        ...BASE_INPUT,
+        status: 'done',
+        startedAt: '2026-01-01T00:00:00Z',
+      }),
+    );
+    const job = await store.getJob(id);
+    expect(job?.usage).toBeUndefined();
+    expect((await store.listJobsForItem('test-product', 'issue_1'))[0]?.usage).toBeUndefined();
+  });
+
+  it('appendUsage on a missing job rejects (surfaced as a capture failure by the decorator)', async () => {
+    await expect(store.appendUsage(randomUUID(), record(1))).rejects.toThrow(/not found/i);
+    await expect(store.appendUsage('../bad', record(1))).rejects.toThrow(/Invalid jobId/);
+  });
+
+  it('a failed write does not block later writes to the same job', async () => {
+    const job = await store.createJob(BASE_INPUT);
+    await rm(join(jobsDir, `${job.jobId}.json`));
+    await expect(store.appendUsage(job.jobId, record(1))).rejects.toThrow();
+    await writeFile(join(jobsDir, `${job.jobId}.json`), JSON.stringify({ ...job }));
+    await store.appendUsage(job.jobId, record(2));
+    expect((await store.getJob(job.jobId))?.usage).toHaveLength(1);
+  });
+});

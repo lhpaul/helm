@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readJson, writeJsonAtomic } from '@helm/storage';
-import type { DispatchResult } from '@helm/orchestrator';
+import type { DispatchResult, UsageRecord } from '@helm/orchestrator';
 
 // JOB_ID_REGEX: matches Node crypto.randomUUID() output (UUID v4)
 export const JOB_ID_REGEX =
@@ -19,6 +19,14 @@ export type Job = {
   finishedAt?: string;
   result?: DispatchResult;
   error?: string;
+  /**
+   * Per-session usage records (#151, ADR-046). Always initialized (`[]`) on
+   * new jobs; absent only on jobs written before usage capture existed, which
+   * is how legacy jobs are told apart from instrumented ones.
+   */
+  usage?: UsageRecord[];
+  /** Number of sessions whose usage record could not be persisted (best effort). */
+  usageCaptureFailures?: number;
 };
 
 /**
@@ -35,6 +43,25 @@ export class JobStore {
    * synchronous so two concurrent callers cannot both pass it before `add`.
    */
   private readonly _inflightKeys = new Set<string>();
+
+  /**
+   * Per-job write queues. Every write to an existing job file goes through
+   * `enqueue` so concurrent appends (the three reviewers of a fan-out finish
+   * together) and the final status update cannot lose each other's changes.
+   * The process is single-writer, like `_inflightKeys` above.
+   */
+  private readonly _writeQueues = new Map<string, Promise<unknown>>();
+
+  private enqueue<T>(jobId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this._writeQueues.get(jobId) ?? Promise.resolve();
+    const run = previous.then(task, task);
+    const tail = run.catch(() => undefined);
+    this._writeQueues.set(jobId, tail);
+    void tail.then(() => {
+      if (this._writeQueues.get(jobId) === tail) this._writeQueues.delete(jobId);
+    });
+    return run;
+  }
 
   /**
    * Validates that a jobId matches UUID v4 format.
@@ -67,6 +94,8 @@ export class JobStore {
       externalId: input.externalId,
       specialistId: input.specialistId,
       status: 'running',
+      usage: [],
+      usageCaptureFailures: 0,
       ...(input.targetRevision ? { targetRevision: input.targetRevision } : {}),
       startedAt: now,
     };
@@ -153,22 +182,50 @@ export class JobStore {
    * Throws if the job does not exist.
    */
   async updateJob(jobId: string, updates: Partial<Omit<Job, 'jobId'>>): Promise<Job> {
-    const existing = await readJson<Job>(this.jobPath(jobId));
-    if (existing === null) {
-      throw new Error(`Job not found: "${jobId}"`);
-    }
-    const updated: Job = { ...existing, ...updates };
-    await writeJsonAtomic(this.jobPath(jobId), updated);
-    return { ...updated };
+    const path = this.jobPath(jobId);
+    return this.enqueue(jobId, async () => {
+      const existing = await readJson<Job>(path);
+      if (existing === null) {
+        throw new Error(`Job not found: "${jobId}"`);
+      }
+      const updated: Job = { ...existing, ...updates };
+      await writeJsonAtomic(path, updated);
+      return { ...updated };
+    });
   }
 
   /**
-   * Lists all jobs for a given product item, sorted newest first.
-   * Returns an empty array if no jobs match.
-   * Filenames are validated against JOB_ID_REGEX before path construction
-   * to reject any non-UUID entries written outside the store.
+   * Appends one usage record to the job (one write per finished session, so a
+   * job orphaned by a restart keeps the sessions that already ended). The
+   * write is queued synchronously, so records land in call order. Legacy jobs
+   * without `usage` are not touched: they stay "not instrumented".
    */
-  async listJobsForItem(productSlug: string, externalId: string): Promise<Job[]> {
+  async appendUsage(jobId: string, record: UsageRecord): Promise<void> {
+    const path = this.jobPath(jobId);
+    await this.enqueue(jobId, async () => {
+      const existing = await readJson<Job>(path);
+      if (existing === null) {
+        throw new Error(`Job not found: "${jobId}"`);
+      }
+      await writeJsonAtomic(path, { ...existing, usage: [...(existing.usage ?? []), record] });
+    });
+  }
+
+  /** Best-effort marker that a session's usage record could not be persisted. */
+  async recordUsageCaptureFailure(jobId: string): Promise<void> {
+    const path = this.jobPath(jobId);
+    await this.enqueue(jobId, async () => {
+      const existing = await readJson<Job>(path);
+      if (existing === null) return;
+      await writeJsonAtomic(path, {
+        ...existing,
+        usageCaptureFailures: (existing.usageCaptureFailures ?? 0) + 1,
+      });
+    });
+  }
+
+  /** Reads every well-named job file (UUID stems only — rejects dotfiles/temp files). */
+  private async readAllJobs(): Promise<Job[]> {
     let entries: string[];
     try {
       entries = await readdir(this.jobsDir);
@@ -186,11 +243,30 @@ export class JobStore {
     });
 
     const results = await Promise.all(jobFiles.map((f) => readJson<Job>(join(this.jobsDir, f))));
+    return results.filter((j): j is Job => j !== null);
+  }
 
-    return results
-      .filter(
-        (j): j is Job => j !== null && j.productSlug === productSlug && j.externalId === externalId,
-      )
+  /**
+   * Lists all jobs for a given product item, sorted newest first.
+   * Returns an empty array if no jobs match.
+   */
+  async listJobsForItem(productSlug: string, externalId: string): Promise<Job[]> {
+    const jobs = await this.readAllJobs();
+    return jobs
+      .filter((j) => j.productSlug === productSlug && j.externalId === externalId)
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .map((j) => ({ ...j }));
+  }
+
+  /**
+   * Lists every job of a product (all items), newest first. Used by the usage
+   * aggregate (#151); a full scan of the jobs directory, same as the per-item
+   * listing (ADR-046 "Revisit when").
+   */
+  async listJobsForProduct(productSlug: string): Promise<Job[]> {
+    const jobs = await this.readAllJobs();
+    return jobs
+      .filter((j) => j.productSlug === productSlug)
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
       .map((j) => ({ ...j }));
   }

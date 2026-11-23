@@ -69,17 +69,15 @@ const openai = (id: string, input: number, cacheRead: number, output: number): P
 });
 
 // Left out on purpose (no single list price per token type): Claude Haiku 5.5
-// (price depends on prompt size, tiers are not modelled). They show as
+// (price depends on prompt size, tiers are not modelled) and Claude Opus
+// 4.6/4.7/4.8 (not seen in any fixture). They show as
 // `noPrice` / `unpricedModels`.
 export const PRICE_TABLE: PriceTable = {
-  version: '2026-11-23.1',
+  version: '2026-11-23.2',
   asOf: READ,
   models: [
     claude('claude-fable-5-2', 8, 10, 0.2, 40),
     claude('claude-opus-5-5', 4, 5, 0.2, 20),
-    claude('claude-opus-4-8', 5, 6.25, 0.5, 25),
-    claude('claude-opus-4-7', 5, 6.25, 0.5, 25),
-    claude('claude-opus-4-6', 5, 6.25, 0.5, 25),
     claude('claude-sonnet-5-5', 2, 2.5, 0.1, 10),
     claude('claude-sonnet-5', 2, 2.5, 0.2, 10),
     claude('claude-sonnet-4-6', 3, 3.75, 0.3, 15),

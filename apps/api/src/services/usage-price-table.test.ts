@@ -32,4 +32,15 @@ describe('shipped price table', () => {
     expect(lookupPrice(PRICE_TABLE.models[0]!.id)).toBeDefined();
     expect(lookupPrice(`${PRICE_TABLE.models[0]!.id}-x`)).toBeUndefined();
   });
+
+  it('models without a traceable price stay unpriced', () => {
+    for (const id of [
+      'claude-opus-4-6',
+      'claude-opus-4-7',
+      'claude-opus-4-8',
+      'claude-haiku-5-5',
+    ]) {
+      expect(lookupPrice(id)).toBeUndefined();
+    }
+  });
 });

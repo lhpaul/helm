@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { UsageRecord } from '@helm/orchestrator';
 import type { Job } from './job-store.js';
 import { buildUsageReport, formatUsageTable } from './usage.js';
+import { ESTIMATE_NOTE } from './usage-estimate.js';
+import { PRICE_TABLE } from './usage-price-table.js';
 
 const NULL_TOKENS = {
   input: null,
@@ -71,7 +73,7 @@ describe('buildUsageReport — item aggregate', () => {
     expect(r.tokens.cacheCreation).toEqual({ total: 5, sessionsReported: 1 });
     expect(r.tokens.reasoning).toEqual({ total: 7, sessionsReported: 1 });
     expect(r.costUsd).toEqual({ total: 0.5, sessionsWithCost: 1, sessionsUnknown: 1 });
-    expect(r.notes).toEqual(['external-review: not measured']);
+    expect(r.notes).toEqual(['external-review: not measured', ESTIMATE_NOTE]);
     expect(r.scope).toEqual({ productSlug: 'p', externalId: 'issue_1', from: null, to: null });
   });
 
@@ -354,5 +356,133 @@ describe('formatUsageTable', () => {
     expect(out).toContain('stage:code');
     expect(out).toContain('0.5000 (1/1)');
     expect(out).toContain('external-review: not measured');
+  });
+});
+
+describe('estimatedCostUsd block (#168)', () => {
+  const claudeS = (over: Partial<UsageRecord> = {}) =>
+    session({
+      stage: 'code',
+      model: 'claude-sonnet-4-6',
+      tokens: { input: 4, output: 146, cacheRead: 36446, cacheCreation: 9429, reasoning: null },
+      ...over,
+    });
+  const codexS = (over: Partial<UsageRecord> = {}) =>
+    codexSession({
+      stage: 'code',
+      model: 'gpt-5.4-mini',
+      tokens: { input: 1000, output: 100, cacheRead: 400, cacheCreation: null, reasoning: 50 },
+      ...over,
+    });
+  const claudeUsd = (4 * 3 + 36446 * 0.3 + 9429 * 3.75 + 146 * 15) / 1e6;
+  const codexUsd = (600 * 0.75 + 400 * 0.075 + 100 * 4.5) / 1e6;
+
+  const mixed = () => [
+    job('implementer', {
+      usage: [
+        claudeS(),
+        codexS(),
+        codexS({ model: 'mystery-model' }),
+        codexS({ model: null }),
+        session({ stage: 'code', tokens: NULL_TOKENS, costUsd: null, costSource: 'unknown' }),
+        claudeS({ model: 'claude-sonnet-4-6,claude-opus-4-6' }),
+      ],
+    }),
+  ];
+
+  it('is separate, labelled and has its own denominator', () => {
+    const r = buildUsageReport(mixed(), q);
+    const e = r.estimatedCostUsd;
+    expect(e.total).toBeCloseTo(claudeUsd + codexUsd, 12);
+    expect(e.sessionsEstimated).toBe(2);
+    expect(e.sessionsNotEstimated).toBe(4);
+    expect(e.sessionsEstimated + e.sessionsNotEstimated).toBe(r.sessions);
+    expect(e.notEstimatedReasons).toEqual({ noPrice: 1, noModel: 1, noTokens: 1, multiModel: 1 });
+    expect(Object.values(e.notEstimatedReasons).reduce((a, b) => a + b, 0)).toBe(4);
+    expect(e.unpricedModels).toEqual(['mystery-model']);
+    expect(e.priceTable).toEqual({ version: PRICE_TABLE.version, asOf: PRICE_TABLE.asOf });
+    expect(e.note).toBe(ESTIMATE_NOTE);
+    // costUsd keeps its own semantics and denominator.
+    expect(r.costUsd).toEqual({ total: 1, sessionsWithCost: 2, sessionsUnknown: 4 });
+  });
+
+  it('never alters records or sums with costUsd; Claude has both, Codex only the estimate', () => {
+    const jobs = [job('implementer', { usage: [claudeS(), codexS()] })];
+    const before = JSON.stringify(jobs);
+    const r = buildUsageReport(jobs, q);
+    expect(JSON.stringify(jobs)).toBe(before);
+    expect(r.costUsd).toEqual({ total: 0.5, sessionsWithCost: 1, sessionsUnknown: 1 });
+    expect(r.estimatedCostUsd.sessionsEstimated).toBe(2);
+    const codexOnly = buildUsageReport([job('implementer', { usage: [codexS()] })], q);
+    expect(codexOnly.costUsd).toEqual({ total: 0, sessionsWithCost: 0, sessionsUnknown: 1 });
+    expect(codexOnly.estimatedCostUsd.total).toBeCloseTo(codexUsd, 12);
+    expect(JSON.stringify(r)).not.toContain('"totalCost"');
+  });
+
+  it('appears in byStage and groups with note and priceTable, honouring from/to', () => {
+    const jobs = [
+      job('implementer', {
+        usage: [
+          claudeS(),
+          codexS({ startedAt: '2026-12-05T00:00:00.000Z' }),
+          session({ stage: 'spec', model: 'nope' }),
+        ],
+      }),
+    ];
+    const r = buildUsageReport(jobs, { ...q, groupBy: 'month' });
+    const blocks = [
+      r.estimatedCostUsd,
+      ...Object.values(r.byStage).map((c) => c!.estimatedCostUsd),
+    ];
+    blocks.push(...r.groups!.map((g) => g.estimatedCostUsd));
+    expect(blocks.length).toBe(1 + 2 + 2);
+    for (const b of blocks) {
+      expect(b.note).toBe(ESTIMATE_NOTE);
+      expect(b.priceTable.version).toBe(PRICE_TABLE.version);
+    }
+    expect(r.groups!.map((g) => [g.key, g.estimatedCostUsd.sessionsEstimated])).toEqual([
+      ['2026-11', 1],
+      ['2026-12', 1],
+    ]);
+    const nov = buildUsageReport(jobs, { ...q, to: new Date('2026-12-01T00:00:00Z') });
+    expect(nov.estimatedCostUsd.sessionsEstimated).toBe(1);
+  });
+
+  it('an empty scope reports zeros; odd and legacy records never throw', () => {
+    const empty = buildUsageReport([], q);
+    expect(empty.estimatedCostUsd).toMatchObject({
+      total: 0,
+      sessionsEstimated: 0,
+      sessionsNotEstimated: 0,
+    });
+    const odd = job('implementer', {
+      usage: [
+        { ...claudeS(), tokens: undefined } as unknown as UsageRecord,
+        { ...claudeS(), tokens: { input: -1, output: NaN } } as unknown as UsageRecord,
+        { ...claudeS(), model: 42 } as unknown as UsageRecord,
+      ],
+    });
+    const r = buildUsageReport([odd], q);
+    expect(r.estimatedCostUsd.total).toBe(0);
+    expect(r.estimatedCostUsd.sessionsNotEstimated).toBe(3);
+  });
+
+  it('caps and sorts unpricedModels', () => {
+    const usage = Array.from({ length: 30 }, (_, i) =>
+      codexS({ model: `m-${String(29 - i).padStart(2, '0')}` }),
+    );
+    const r = buildUsageReport([job('implementer', { usage })], q);
+    const list = r.estimatedCostUsd.unpricedModels;
+    expect(list).toHaveLength(20);
+    expect(list[0]).toBe('m-00');
+    expect(list).toEqual([...list].sort());
+  });
+
+  it('the table output prints the extra column, the note and no combined total', () => {
+    const out = formatUsageTable(buildUsageReport(mixed(), q));
+    expect(out).toContain('est. USD (tokens×list)');
+    expect(out).toContain(ESTIMATE_NOTE);
+    expect(out).toContain(PRICE_TABLE.version);
+    expect(out.toLowerCase()).not.toContain('total cost');
   });
 });

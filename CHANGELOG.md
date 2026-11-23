@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loopback or firewall the port first). See `docs/local-dev.md`
   ("API authentication").
 
+### Added
+
+- **Estimated USD from tokens (#168, ADR-047):** the usage aggregates
+  (`GET …/usage`, per item and per period, and the `usage` script) gain a
+  separate, labelled `estimatedCostUsd` block computed at read time from the
+  recorded tokens and a versioned per-model price table of public list prices
+  (`apps/api/src/services/usage-price-table.ts`, source URL and date per
+  entry). It has its own denominator, counts why sessions could not be
+  estimated (`notEstimatedReasons`, never `0` for unknown) and never changes or
+  mixes with `costUsd`. Nothing is stored on the record; no new dependency,
+  variable or migration.
+
 ## [0.1.0] - 2026-11-17
 
 ### Added

@@ -171,8 +171,27 @@ How to read it:
   all-Codex item shows `costUsd.total: 0` with `sessionsUnknown` equal to its
   session count. That `0` means "nothing known", not "free". Codex `input`
   tokens include the cached portion (`cacheRead`).
-- **No estimated USD.** Cost is only what the runtime reported. Estimating USD
-  from tokens is a separate follow-up and would be a distinct field.
+- **Estimated USD is a separate, labelled block (#168).** `costUsd` is only
+  what the runtime reported. `estimatedCostUsd` is computed when the report is
+  read, from each session's tokens and model and the per-model price table in
+  `apps/api/src/services/usage-price-table.ts` (public list prices, each entry
+  with its source URL and date; nothing is stored on the record). It is never
+  added to or substituted for `costUsd`, and it appears in the overall block,
+  every `byStage` entry and every `groups` entry, each with `priceTable`
+  (`version`, `asOf`) and the `note`: _what this usage would cost at public API
+  list price, not a billed amount; all cache writes use a single rate_. For
+  Codex (subscription) it means the API-list-price equivalent, useful for
+  comparison, not for budgeting. It has its own denominator:
+  `sessionsEstimated + sessionsNotEstimated = sessions`, independent of
+  `costUsd.sessionsWithCost`. A session is not estimated (never `0`) when it
+  has no tokens (`noTokens`), no model (`noModel`), several models
+  (`multiModel`), a model missing from the table (`noPrice`, listed in
+  `unpricedModels`: add a price or an alias), a required counter missing
+  (`incompleteTokens`) or inconsistent counters (`inconsistentTokens`); the
+  counts per reason are in `notEstimatedReasons`. A bare `total: 0` with
+  `sessionsEstimated: 0` means nothing could be estimated. Updating the table
+  is a normal PR that cites the source and date; it is reviewed monthly, and
+  past estimates move when the table changes (the table version says which).
 - **Review rounds** are the sum of `cyclesCompleted` over the item's
   `reviewer-fanout` jobs. Cycles of the early spec/plan review loops are not
   counted as rounds; their sessions count under `spec`/`plan`. Code

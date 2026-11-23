@@ -87,6 +87,11 @@ describe('GET /api/products/:slug/items/:externalId/usage', () => {
     expect(body.byStage.code?.sessions).toBe(1);
     expect(body.scope.externalId).toBe('issue_1');
     expect(body.notes).toContain('external-review: not measured');
+    expect(
+      body.estimatedCostUsd.sessionsEstimated + body.estimatedCostUsd.sessionsNotEstimated,
+    ).toBe(1);
+    expect(body.estimatedCostUsd.note).toMatch(/^estimate:/);
+    expect(body.estimatedCostUsd.priceTable.version).toBeTruthy();
   });
 
   it('returns an empty aggregate for an item without jobs', async () => {

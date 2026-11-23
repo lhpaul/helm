@@ -66,12 +66,13 @@ web_modules/
 .yarn-integrity
 
 # dotenv environment variable files
-# Committed: .env.example only (docs).
+# Committed: .env.example and the secret-free *.mini.example templates (docs).
 # Local inputs for sync-env: .env.<product> (gitignored).
 # Generated: .env (gitignored).
 .env
 .env.*
 !.env.example
+!*.mini.example
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache

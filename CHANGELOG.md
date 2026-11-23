@@ -40,6 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Committed Mini env template for `sync-env` (helm#138):**
+  `apps/api/.env.leasity-tenants.mini.example` carries the Mac Mini paths and
+  the five `op://` references with no secret values, so `apps/api/.env` can be
+  regenerated on the Mini itself instead of being hand-written there or
+  injected from another machine. `.gitignore` exempts `*.mini.example` and
+  `.env.example` points to it. No runtime change.
+
 - **Estimated USD from tokens (#168, ADR-047):** the usage aggregates
   (`GET …/usage`, per item and per period, and the `usage` script) gain a
   separate, labelled `estimatedCostUsd` block computed at read time from the

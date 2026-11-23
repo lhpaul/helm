@@ -1,6 +1,9 @@
 import { stageForJobSpecialist } from '@helm/orchestrator';
 import type { UsageRecord, UsageStage } from '@helm/orchestrator';
 import type { Job } from './job-store.js';
+import { ESTIMATE_NOTE, estimateSessionCost } from './usage-estimate.js';
+import type { NotEstimatedReason } from './usage-estimate.js';
+import { PRICE_TABLE } from './usage-price-table.js';
 
 /**
  * Usage aggregation (#151, spec `issue_151`). Pure functions over job files.
@@ -31,11 +34,30 @@ export interface TokenTotal {
   sessionsReported: number;
 }
 
+/**
+ * Separate, labelled USD ESTIMATE from tokens (#168). Own denominator
+ * (`sessionsEstimated + sessionsNotEstimated = sessions`); never added to or
+ * mixed with `costUsd`.
+ */
+export interface EstimatedCostUsd {
+  total: number;
+  sessionsEstimated: number;
+  sessionsNotEstimated: number;
+  notEstimatedReasons: Partial<Record<NotEstimatedReason, number>>;
+  /** Distinct model ids of `noPrice` sessions (sorted, at most 20). */
+  unpricedModels: string[];
+  priceTable: { version: string; asOf: string };
+  note: string;
+}
+
+export const MAX_UNPRICED_MODELS = 20;
+
 export interface UsageCore {
   sessions: number;
   durationMs: number;
   tokens: Record<TokenKey, TokenTotal>;
   costUsd: { total: number; sessionsWithCost: number; sessionsUnknown: number };
+  estimatedCostUsd: EstimatedCostUsd;
   reviewRounds: number;
   jobsInterrupted: number;
   jobsNotInstrumented: number;
@@ -72,8 +94,11 @@ export interface UsageQuery {
 
 // ── Accumulator ───────────────────────────────────────────────────────────────
 
+/** Every distinct unpriced model seen per core; capped and sorted when the report is built. */
+const unpricedSeen = new WeakMap<UsageCore, Set<string>>();
+
 function emptyCore(): UsageCore {
-  return {
+  const core: UsageCore = {
     sessions: 0,
     durationMs: 0,
     tokens: {
@@ -84,11 +109,45 @@ function emptyCore(): UsageCore {
       reasoning: { total: 0, sessionsReported: 0 },
     },
     costUsd: { total: 0, sessionsWithCost: 0, sessionsUnknown: 0 },
+    estimatedCostUsd: {
+      total: 0,
+      sessionsEstimated: 0,
+      sessionsNotEstimated: 0,
+      notEstimatedReasons: {},
+      unpricedModels: [],
+      priceTable: { version: PRICE_TABLE.version, asOf: PRICE_TABLE.asOf },
+      note: ESTIMATE_NOTE,
+    },
     reviewRounds: 0,
     jobsInterrupted: 0,
     jobsNotInstrumented: 0,
     jobsWithCaptureGaps: 0,
   };
+  unpricedSeen.set(core, new Set());
+  return core;
+}
+
+function finalizeCore(core: UsageCore): void {
+  core.estimatedCostUsd.unpricedModels = [...(unpricedSeen.get(core) ?? [])]
+    .sort()
+    .slice(0, MAX_UNPRICED_MODELS);
+}
+
+/** Estimate accumulation; reads tokens and model only, never `costUsd`. */
+function addEstimate(core: UsageCore, s: UsageRecord): void {
+  const est = core.estimatedCostUsd;
+  let result = estimateSessionCost(s);
+  if (result.usd !== null && !Number.isFinite(est.total + result.usd)) {
+    result = { usd: null, reason: 'inconsistentTokens' };
+  }
+  if (result.usd !== null) {
+    est.total += result.usd;
+    est.sessionsEstimated += 1;
+    return;
+  }
+  est.sessionsNotEstimated += 1;
+  est.notEstimatedReasons[result.reason] = (est.notEstimatedReasons[result.reason] ?? 0) + 1;
+  if (result.reason === 'noPrice' && result.model) unpricedSeen.get(core)?.add(result.model);
 }
 
 /** A finite, non-negative number or `null`; tolerates malformed persisted data. */
@@ -114,6 +173,7 @@ function addSession(core: UsageCore, s: UsageRecord): void {
   } else {
     core.costUsd.sessionsUnknown += 1;
   }
+  addEstimate(core, s);
 }
 
 function isInterrupted(job: Job): boolean {
@@ -209,6 +269,8 @@ export function buildUsageReport(jobs: readonly Job[], query: UsageQuery): Usage
     if (c) stages[s] = c;
   }
 
+  for (const c of [total, ...byStage.values(), ...groups.values()]) finalizeCore(c);
+
   const report: UsageReport = {
     scope: {
       productSlug: query.productSlug,
@@ -218,7 +280,7 @@ export function buildUsageReport(jobs: readonly Job[], query: UsageQuery): Usage
     },
     ...total,
     byStage: stages,
-    notes: [EXTERNAL_REVIEW_NOTE],
+    notes: [EXTERNAL_REVIEW_NOTE, ESTIMATE_NOTE],
   };
   if (query.groupBy) {
     report.groupBy = query.groupBy;
@@ -249,6 +311,7 @@ export function formatUsageTable(report: UsageReport): string {
     'cache_create (n)',
     'reasoning (n)',
     'cost_usd (known/unknown)',
+    'est. USD (tokens×list) (est/not)',
     'review_rounds',
     'interrupted',
     'not_instrumented',
@@ -264,6 +327,7 @@ export function formatUsageTable(report: UsageReport): string {
     fmt(c.tokens.cacheCreation),
     fmt(c.tokens.reasoning),
     `${c.costUsd.total.toFixed(4)} (${c.costUsd.sessionsWithCost}/${c.costUsd.sessionsUnknown})`,
+    `${c.estimatedCostUsd.total.toFixed(4)} (${c.estimatedCostUsd.sessionsEstimated}/${c.estimatedCostUsd.sessionsNotEstimated})`,
     String(c.reviewRounds),
     String(c.jobsInterrupted),
     String(c.jobsNotInstrumented),
@@ -287,5 +351,7 @@ export function formatUsageTable(report: UsageReport): string {
     '',
     '(n) = sessions that reported the figure; cost_usd sums known values only. ' +
       `Note: ${EXTERNAL_REVIEW_NOTE}.`,
+    `${ESTIMATE_NOTE}. Price table ${PRICE_TABLE.version} (as of ${PRICE_TABLE.asOf}); ` +
+      'est. USD is separate from cost_usd and is never added to it.',
   ].join('\n');
 }

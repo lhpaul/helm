@@ -42,10 +42,15 @@ vi.mock('./item-service.js', () => ({
   transitionItem: vi.fn(),
 }));
 
-vi.mock('@helm/orchestrator', () => ({
-  dispatchStageHandler: vi.fn(),
-  resolveSpecialistId: vi.fn(),
-}));
+vi.mock('@helm/orchestrator', async (importOriginal) => {
+  // Usage capture (#151) is exercised for real; only the dispatch entry points are mocked.
+  const actual = await importOriginal<typeof import('@helm/orchestrator')>();
+  return {
+    ...actual,
+    dispatchStageHandler: vi.fn(),
+    resolveSpecialistId: vi.fn(),
+  };
+});
 
 vi.mock('./github-pr.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./github-pr.js')>();

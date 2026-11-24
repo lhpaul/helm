@@ -93,11 +93,51 @@ export interface AgentMessage {
   timestamp: string;
 }
 
+/**
+ * Token counters for one session. Each member is a measured number or `null`
+ * when the runtime did not report it (never a guessed `0`).
+ */
+export interface UsageTokens {
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheCreation: number | null;
+  reasoning: number | null;
+}
+
+/**
+ * Usage reported by the runtime for one session (#151). `null` means the
+ * source did not provide the value; `0` only ever means a measured zero.
+ */
+export interface AgentUsage {
+  tokens: UsageTokens;
+  /** USD reported by the runtime, or `null` when unknown (never an estimate). */
+  costUsd: number | null;
+  costSource: 'reported' | 'unknown';
+  /** Model the runtime reports it used, when it says so. */
+  model?: string;
+}
+
+/** Usage with every counter unknown — sessions that never produced a usage report. */
+export function unknownUsage(): AgentUsage {
+  return {
+    tokens: { input: null, output: null, cacheRead: null, cacheCreation: null, reasoning: null },
+    costUsd: null,
+    costSource: 'unknown',
+  };
+}
+
 export interface AgentResult {
   status: 'done' | 'error' | 'cancelled';
   /** Last substantive output from the agent (may be empty on error/cancel). */
   finalOutput: string;
-  /** Sum of all costUsd values across messages in this session. */
+  /**
+   * Sum of known costs across messages in this session; `0` when none is
+   * known. NOT authoritative: `0` can mean "unknown" (see `usage`). Kept for
+   * existing callers; usage aggregates read `usage.costUsd` instead.
+   */
   totalCostUsd: number;
   durationMs: number;
+  /** Tokens and cost as reported by the runtime; absent on legacy runtimes. */
+  usage?: AgentUsage;
 }

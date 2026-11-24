@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-24
+
+### Upgrade notes
+
+- **`HELM_API_TOKEN` is now required (#160, ADR-045) — BREAKING for
+  operators.** Every `/api/*` route (reads and writes) and the `GET /ws`
+  upgrade require `Authorization: Bearer <HELM_API_TOKEN>`. `GET /health` and
+  the signed webhooks (`/api/webhooks/github`, `/api/webhooks/linear`) are
+  unchanged. The API **fails closed**: with `HELM_API_TOKEN` unset, blank or
+  shorter than 32 characters it starts, logs an error naming the variable and
+  answers `401` on every protected route. The Vite dev proxy adds the header
+  from `HELM_API_TOKEN` in the `pnpm dev` shell.
+  **Upgrade steps:** (1) generate a token (`openssl rand -hex 32`) and store
+  it in the secrets manager; (2) add the `HELM_API_TOKEN=op://…` line to the
+  product's private `sync-env` input (see `apps/api/.env.example`) and
+  regenerate `apps/api/.env`; (3) restart the API; (4) export
+  `HELM_API_TOKEN` in the shell that runs `pnpm dev`; (5) add
+  `-H "Authorization: Bearer $HELM_API_TOKEN"` to every `curl`/script call to
+  `/api/*` except webhooks, reads included. Webhooks and `/health` watchdogs
+  need no change; keep any public ingress restricted to `/api/webhooks/*` and
+  `/health` as defense in depth. **Opt-out/rollback:**
+  `HELM_API_AUTH=disabled` turns the check off (startup warning); use it only
+  after confirming that any public ingress only serves `/api/webhooks/*` and
+  `/health` (or sits behind an authenticated proxy) and that the API is not
+  reachable through a non-loopback `HELM_API_HOST` bind (move it back to
+  loopback or firewall the port first). See `docs/local-dev.md`
+  ("API authentication").
+
+### Added
+
+- **Cost per backlog item (#151, ADR-046):** every agent session now leaves a
+  usage record (tokens, reported cost or explicit unknown, duration, stage,
+  specialist, runtime) on its job file, and two read-only routes aggregate them:
+  `GET /api/products/:slug/items/:externalId/usage` (with per-stage breakdown)
+  and `GET /api/products/:slug/usage?from=&to=&groupBy=item|stage|month`, plus
+  `pnpm --filter @helm/api usage -- <slug> [externalId]` for a table. Unknown is
+  never zero: Codex reports tokens but no USD, so its cost is `null` and totals
+  carry `sessionsUnknown`; nothing is estimated from tokens. Review rounds come
+  from the job's `cyclesCompleted`. Additive: no migration (older jobs are
+  reported as `jobsNotInstrumented`), no new variables, no dependency or
+  workflow change; the routes sit behind the existing `HELM_API_TOKEN`.
+  `AgentResult` gains an optional `usage`; `totalCostUsd` is unchanged and now
+  documented as non-authoritative.
+
+- **Estimated USD from tokens (#168, ADR-047):** the usage aggregates
+  (`GET …/usage`, per item and per period, and the `usage` script) gain a
+  separate, labelled `estimatedCostUsd` block computed at read time from the
+  recorded tokens and a versioned per-model price table of public list prices
+  (`apps/api/src/services/usage-price-table.ts`, source URL and date per
+  entry). It has its own denominator, counts why sessions could not be
+  estimated (`notEstimatedReasons`, never `0` for unknown) and never changes or
+  mixes with `costUsd`. Nothing is stored on the record; no new dependency,
+  variable or migration.
+
+### Security
+
+- **Operator token on the API (#160, ADR-045) — BREAKING for operators:**
+  every `/api/*` route (reads and writes) and the `GET /ws` upgrade now
+  require `Authorization: Bearer <HELM_API_TOKEN>`, compared in constant time.
+  `GET /health` and the signed webhooks (`/api/webhooks/github`,
+  `/api/webhooks/linear`) are unchanged. Failures answer
+  `401 {"error":"Unauthorized"}` with `WWW-Authenticate: Bearer`. The #162
+  origin guard still runs first. The API **fails closed**: with
+  `HELM_API_TOKEN` unset, blank or shorter than 32 characters it starts, logs
+  an error naming the variable and answers `401` on every protected route, so
+  updating without the token breaks the dashboard and operator `curl` while
+  webhooks keep advancing items. The Vite dev proxy adds the header from
+  `HELM_API_TOKEN` in the `pnpm dev` shell (never exposed to the browser);
+  Turbo passes `HELM_API_TOKEN` and `HELM_API_AUTH` through to `dev`.
+  **Upgrade steps:** (1) generate a token (`openssl rand -hex 32`) and store
+  it in the secrets manager; (2) add the `HELM_API_TOKEN=op://…` line to the
+  product's private `sync-env` input (see `apps/api/.env.example`) and
+  regenerate `apps/api/.env`; (3) restart the API; (4) export
+  `HELM_API_TOKEN` in the shell that runs `pnpm dev`; (5) add
+  `-H "Authorization: Bearer $HELM_API_TOKEN"` to every `curl`/script call to
+  `/api/*` except webhooks, reads included. Webhooks and `/health` watchdogs
+  need no change; keep any public ingress restricted to `/api/webhooks/*` and
+  `/health` as defense in depth. **Opt-out/rollback:**
+  `HELM_API_AUTH=disabled` turns the check off (startup warning); use it only
+  after confirming that any public ingress only serves `/api/webhooks/*` and
+  `/health` (or sits behind an authenticated proxy) and that the API is not
+  reachable through a non-loopback `HELM_API_HOST` bind (move it back to
+  loopback or firewall the port first). See `docs/local-dev.md`
+  ("API authentication").
+
 ## [0.1.0] - 2026-11-17
 
 ### Added
@@ -472,5 +557,6 @@ to 'in-development'`. The dispatcher skips that self-transition and runs the
   answering until they set `HELM_API_HOST` (for example `0.0.0.0`) and
   restart. See `docs/local-dev.md`.
 
-[Unreleased]: https://github.com/lhpaul/helm/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/lhpaul/helm/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/lhpaul/helm/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lhpaul/helm/releases/tag/v0.1.0

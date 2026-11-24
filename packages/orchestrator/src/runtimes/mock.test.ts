@@ -184,3 +184,32 @@ describe('MockAgentRuntime', () => {
     expect(result.finalOutput).toBe('');
   });
 });
+
+describe('MockAgentRuntime — usage (#151)', () => {
+  it('reports cost as reported when a message carries costUsd', async () => {
+    const runtime = new MockAgentRuntime({ messages: [msg('a', 0.25), msg('b', 0.5)] });
+    const result = await (await runtime.spawn(makeParams('/tmp/x'))).wait();
+    expect(result.usage?.costUsd).toBeCloseTo(0.75);
+    expect(result.usage?.costSource).toBe('reported');
+  });
+
+  it('reports unknown cost when no message carries costUsd', async () => {
+    const runtime = new MockAgentRuntime({
+      messages: [{ role: 'agent', content: 'a', timestamp: new Date().toISOString() }],
+    });
+    const result = await (await runtime.spawn(makeParams('/tmp/x'))).wait();
+    expect(result.usage?.costUsd).toBeNull();
+    expect(result.usage?.costSource).toBe('unknown');
+  });
+
+  it('returns scripted usage verbatim', async () => {
+    const usage = {
+      tokens: { input: 1, output: 2, cacheRead: null, cacheCreation: null, reasoning: null },
+      costUsd: null,
+      costSource: 'unknown' as const,
+    };
+    const runtime = new MockAgentRuntime({ messages: [], usage });
+    const result = await (await runtime.spawn(makeParams('/tmp/x'))).wait();
+    expect(result.usage).toEqual(usage);
+  });
+});
